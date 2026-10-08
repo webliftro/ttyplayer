@@ -118,7 +118,7 @@ def check_control_dir():
 def play(target: list[str], video: bool = False, limit: int = 5):
     """Play a YouTube link or playlist, or search and pick what to play.
 
-    Keys while playing: space pause, left/right or , . seek, up/down volume,
+    Keys while playing: space pause, left/right or , . seek, up/down or - + volume,
     n next, p previous, q quit.
     """
     start_playback(resolve(target, limit), video)

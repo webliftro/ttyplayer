@@ -40,6 +40,9 @@ KEYS = {
     "right": ("seek", SEEK_SECONDS),
     "up": ("change_volume", VOLUME_STEP),
     "down": ("change_volume", -VOLUME_STEP),
+    "+": ("change_volume", VOLUME_STEP),
+    "=": ("change_volume", VOLUME_STEP),  # the + key without shift
+    "-": ("change_volume", -VOLUME_STEP),
     "n": ("next",),
     "p": ("prev",),
 }

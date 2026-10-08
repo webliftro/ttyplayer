@@ -35,13 +35,13 @@ ttyplayer stop                       quit the player
 ttyplayer status                     1:23 / 4:56  Playing  <title>
 ```
 
-Keys while playing:
+Keys in `ttyplayer play` (the terminal player; `ttyplayer tui` has its own table below):
 
 | Key | Action |
 |---|---|
 | space | pause / resume |
 | left / right, `,` / `.` | seek 5 seconds |
-| up / down | volume |
+| up / down, `-` / `+` | volume |
 | `n` / `p` | next / previous in the queue |
 | `q` or Ctrl-C | quit, restores the terminal and stops mpv |
 
@@ -59,6 +59,7 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 
 | Where | Key | Action |
 |---|---|---|
+| table | `↑` / `↓` | move through the list (volume is `-` / `+`) |
 | anywhere | `/` | focus the search box (`esc` returns to the table) |
 | anywhere | `?` | help: every key and command (`esc` closes) |
 | anywhere | `1` `2` `3` `4` | Search / Queue / History / Favorites tab |

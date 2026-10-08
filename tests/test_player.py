@@ -1531,3 +1531,14 @@ assert not hasattr(player, "termios")
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@posix_only
+def test_minus_plus_and_equals_change_the_volume(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    calls = []
+    client.change_volume = lambda step: calls.append(step)
+    path = os.path.join(tempfile.mkdtemp(prefix="ct-"), "control.sock")
+    run_with_keys(client, ["-", "+", "=", "q"], monkeypatch, path)
+    os.rmdir(os.path.dirname(path))
+    assert calls == [-player.VOLUME_STEP, player.VOLUME_STEP, player.VOLUME_STEP]
