@@ -1,6 +1,7 @@
 import _thread
 import json
 import os
+import queue
 import secrets
 import shutil
 import signal
@@ -25,7 +26,8 @@ SEEK_SECONDS = 5
 VOLUME_STEP = 5
 VOLUME_POLL_SECONDS = 2
 VOLUME_CELLS = 10
-VOLUME_SOURCES = {"ao-volume": "device", "volume": "player"}  # in order of preference
+VOLUME_SOURCES = {"system-volume": "system", "ao-volume": "device", "volume": "player"}  # in order of preference
+SYSTEM_VOLUME_TIMEOUT = 1  # seconds osascript may take
 CONNECT_ATTEMPTS = 30  # x 0.1s = 3s for mpv to create its socket
 KEY_POLL_SECONDS = 0.1  # how often the Windows key reader looks for a key, or a remote stop
 
@@ -66,6 +68,35 @@ def volume_meter(volume, muted=False):
         return f"{icon} {'▯' * VOLUME_CELLS} --"
     filled = max(0, min(VOLUME_CELLS, round(volume / 100 * VOLUME_CELLS)))
     return f"{icon} {'▮' * filled}{'▯' * (VOLUME_CELLS - filled)} {round(volume)}%"
+
+
+def macos():
+    return sys.platform == "darwin"
+
+
+def osascript(script):
+    """Run one AppleScript; its output, or None if osascript is missing, fails or times out."""
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=SYSTEM_VOLUME_TIMEOUT
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def read_system_volume():
+    """The macOS output volume, 0-100; None when it can't be read."""
+    output = osascript("output volume of (get volume settings)")
+    try:
+        return int(output)
+    except (TypeError, ValueError):
+        return None  # no output, or "missing value" when the output device has no volume
+
+
+def write_system_volume(volume):
+    """Set the macOS output volume to volume (an int, 0-100); whether osascript did."""
+    return osascript(f"set volume output volume {int(volume)}") is not None
 
 
 def status_line(status):
@@ -197,6 +228,7 @@ class MpvClient:
     idle = True  # nothing loaded: before the first track, after the queue ran out
     request_id = 0  # of the last command sent
     poller = None
+    volume_writer = None  # macOS only
 
     def __init__(self, video=False, on_play=None, on_state=None):
         # on_play(video) is called whenever a queued video starts; the CLI uses
@@ -233,6 +265,8 @@ class MpvClient:
         self.stop_polling = threading.Event()
         self.poller = threading.Thread(target=self.poll_volume, daemon=True)
         self.poller.start()
+        if macos():
+            self.start_volume_writer()
 
     # --- wire protocol -------------------------------------------------
 
@@ -270,6 +304,8 @@ class MpvClient:
             if callback:  # replies nobody asked for (observe_property, loadfile, ...) are dropped
                 callback(message.get("data") if message.get("error") == "success" else None)
         elif message.get("event") == "property-change":
+            if message["name"] == "ao-volume" and "data" not in message:
+                return  # coreaudio's first event has no data; the poll reads the real value
             self.state[message["name"]] = message.get("data")
             self.notify()
         elif message.get("event") == "playback-restart":
@@ -293,20 +329,72 @@ class MpvClient:
             return True
 
     def poll_volume(self):
-        """Refresh ao-volume every VOLUME_POLL_SECONDS while a track is loaded, until quit().
+        """Refresh the volumes every VOLUME_POLL_SECONDS while a track is loaded, until quit().
 
-        mpv sends no property-change for ao-volume when the OS changes it (the system
-        volume on coreaudio, the app's stream volume on PulseAudio/PipeWire), so it is read.
+        mpv sends no property-change for ao-volume when the OS changes it (the app's
+        stream volume on PulseAudio/PipeWire), so it is read. On macOS mpv can't see the
+        system volume at all, so osascript reads it here, never at once with write_volumes().
         """
         while not self.stop_polling.wait(VOLUME_POLL_SECONDS):
             if not self.idle:
+                if macos():
+                    self._system_volume(lambda: self._commit_volume("system-volume", read_system_volume()))
                 self.get_property("ao-volume", self._ao_volume_read)
 
-    def _ao_volume_read(self, value):
-        """Store a polled ao-volume, None when the output has none; notify only on a change."""
-        if value != self.state.get("ao-volume"):
-            self.state["ao-volume"] = value
+    def start_volume_writer(self):
+        """Start the thread that sets the system volume, so a key never waits on osascript."""
+        self.system_volume_lock = threading.Lock()  # one osascript at a time, see _system_volume()
+        self.volume_steps = queue.Queue()  # steps for write_volumes(), in the order they were pressed
+        self.stop_writing = threading.Event()
+        self.volume_writer = threading.Thread(target=self.write_volumes, daemon=True)
+        self.volume_writer.start()
+
+    def stop_volume_writer(self):
+        """Stop write_volumes(), dropping the steps not yet written."""
+        self.stop_writing.set()
+        self.volume_steps.put(None)  # wakes it if it waits for a step
+        self.volume_writer.join(timeout=1)
+
+    def write_volumes(self):
+        """Apply each queued step to the system volume, one osascript at a time, until stop_volume_writer()."""
+        while True:
+            step = self.volume_steps.get()
+            try:
+                if self.stop_writing.is_set():
+                    return
+                self._system_volume(lambda: self._write_system_volume_step(step))
+            finally:
+                self.volume_steps.task_done()
+
+    def _write_system_volume_step(self, step):
+        """Write the system volume moved by step; whether the stored value changed."""
+        current = self.state.get("system-volume")
+        if current is None:  # a failed read since the key: the step is dropped
+            return False
+        volume = max(0, min(100, current + step))
+        return write_system_volume(volume) and self._commit_volume("system-volume", volume)
+
+    def _system_volume(self, change):
+        """Run change() under system_volume_lock; notify() after releasing it if it changed something.
+
+        The poll's read and the writer's write each hold it from osascript to the
+        stored value, so a read begun before a write can't store its older volume after it.
+        """
+        with self.system_volume_lock:
+            changed = change()
+        if changed:
             self.notify()
+
+    def _ao_volume_read(self, value):
+        if self._commit_volume("ao-volume", value):
+            self.notify()
+
+    def _commit_volume(self, name, value):
+        """Store a volume, None when there is none; whether it changed."""
+        if value == self.state.get(name):
+            return False
+        self.state[name] = value
+        return True
 
     # --- lifecycle ------------------------------------------------------
 
@@ -314,6 +402,8 @@ class MpvClient:
         if self.poller:
             self.stop_polling.set()  # before the socket closes under it
             self.poller.join(timeout=1)
+        if self.volume_writer:
+            self.stop_volume_writer()
         self.send(["quit"])
         try:
             self.process.wait(timeout=2)
@@ -360,9 +450,12 @@ class MpvClient:
         self.send(["seek", seconds])
 
     def change_volume(self, step):
-        """Change the volume the meter shows: the device's when mpv exposes it, else mpv's own."""
-        name, _ = self.shown_volume()
-        self.send(["add", name or "volume", step])
+        """Change the volume the meter shows: the system's on macOS, the device's when mpv exposes it, else mpv's own."""
+        backend = self.volume_backend()
+        if backend == "system-volume":
+            self.volume_steps.put(step)  # write_volumes() runs osascript off the caller's (maybe the TUI's) thread
+        else:
+            self.send(["add", backend or "volume", step])
 
     def toggle_mute(self):
         self.send(["cycle", "mute"])
@@ -513,16 +606,17 @@ class MpvClient:
 
     # --- display --------------------------------------------------------
 
-    def shown_volume(self):
-        """(property, value) of the first VOLUME_SOURCES property mpv gave a number for; (None, None) if none."""
+    def volume_backend(self):
+        """The first VOLUME_SOURCES key with a number in state (system-volume only on macOS); None if none."""
         for name in VOLUME_SOURCES:
-            value = self.state.get(name)
-            if isinstance(value, (int, float)):
-                return name, value
-        return None, None
+            if name == "system-volume" and not macos():
+                continue
+            if isinstance(self.state.get(name), (int, float)):
+                return name
+        return None
 
     def status(self):
-        volume_property, volume = self.shown_volume()
+        volume_property = self.volume_backend()
         return {
             "title": self.current_title(),
             "uploader": self.current_uploader(),
@@ -531,7 +625,7 @@ class MpvClient:
             "paused": bool(self.state.get("pause")),
             "index": self.index + 1,
             "total": len(self.queue),
-            "volume": volume,
+            "volume": self.state.get(volume_property),
             "volume_source": VOLUME_SOURCES.get(volume_property),
             "muted": bool(self.state.get("mute")),
             "up_next": self.up_next(),

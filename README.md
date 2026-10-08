@@ -47,6 +47,8 @@ Keys while playing:
 
 On Windows (Windows Terminal, PowerShell) the keys, arrows included, map the same way.
 
+The volume meter, and the volume keys here and in the TUI, follow the Mac's system volume on macOS (the Mac's own volume keys move the meter within 2 seconds) and mpv's device (per-app) volume on Linux and Windows.
+
 Picks accept several numbers at once: `1 3 5` queues those three in that order. After a search, `m` lists the next batch of results.
 
 `TTYPLAYER_TIMING=1 ttyplayer play <words>` prints how long the YouTube lookup took and adds `started in 2.4s` (from `loadfile` to the first sound) to the status line.

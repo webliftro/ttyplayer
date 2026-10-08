@@ -1381,6 +1381,38 @@ async def test_panel_shows_the_muted_speaker_while_muted(clients, served):
 
 
 @drive
+async def test_volume_keys_on_macos_set_the_system_volume_off_the_app_thread(monkeypatch, served):
+    """The real change_volume(), osascript faked: the write leaves the Textual thread, the meter follows."""
+    monkeypatch.setattr(player.sys, "platform", "darwin")
+    writes = []  # (volume, thread ident) per osascript write
+
+    def write(volume):
+        writes.append((volume, threading.get_ident()))
+        return True
+
+    monkeypatch.setattr(player, "write_system_volume", write)
+
+    class SystemVolumeClient(FakeClient):
+        change_volume = player.MpvClient.change_volume
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.state["system-volume"] = 60
+            self.start_volume_writer()
+
+    made = []
+    app = make_app(lambda *args, **kwargs: made.append(SystemVolumeClient(*args, **kwargs)) or made[-1])
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter", "plus", "plus")
+        await asyncio.to_thread(made[0].volume_steps.join)
+        await pilot.pause()
+        assert [volume for volume, _ in writes] == [65, 70]
+        assert app.app_thread not in {thread for _, thread in writes}
+        assert text(app, "#np-volume") == "🔊 ▮▮▮▮▮▮▮▯▯▯ 70%"
+
+
+@drive
 async def test_panel_meter_follows_the_device_volume(clients, served):
     app = make_app(clients)
     async with run(app) as pilot:

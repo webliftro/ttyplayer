@@ -18,6 +18,12 @@ posix_only = pytest.mark.skipif(utils.WINDOWS, reason="POSIX socket or terminal"
 REAL_INTERRUPT_MAIN = player.interrupt_main  # make_remote_client replaces it
 
 
+@pytest.fixture(autouse=True)
+def not_macos(monkeypatch):
+    """Off macOS by default, so no test runs the real osascript on the developer's Mac."""
+    monkeypatch.setattr(player.sys, "platform", "linux")
+
+
 def test_format_time_zero():
     assert player.format_time(0) == "0:00"
 
@@ -1029,6 +1035,227 @@ def test_change_volume_moves_the_volume_the_meter_shows(state, target, monkeypat
     assert client.sent == [["add", target, 5], ["add", target, -5]]
 
 
+def test_an_ao_volume_event_without_data_keeps_the_polled_value():
+    client = wired_client([A])
+    client.play_current()
+    client.state.update({"ao-volume": 80.0, "volume": 100.0})
+    client.handle_message({"event": "property-change", "id": 7, "name": "ao-volume"})
+    assert (client.status()["volume"], client.status()["volume_source"]) == (80.0, "device")
+
+
+def test_an_ao_volume_event_without_data_leaves_it_unknown():
+    client = wired_client([A])
+    client.handle_message({"event": "property-change", "id": 7, "name": "ao-volume"})
+    assert "ao-volume" not in client.state
+
+
+# --- volume: macOS system volume --------------------------------------------
+
+
+def mac_client(monkeypatch, system_volume=60):
+    """wired_client on darwin, osascript faked: reads return system_volume, writes are kept in client.written."""
+    monkeypatch.setattr(player.sys, "platform", "darwin")
+    client = wired_client([A])
+    client.system_volume = system_volume
+    client.written = []
+
+    def write(volume):
+        client.written.append(volume)
+        client.system_volume = volume
+        return True
+
+    monkeypatch.setattr(player, "read_system_volume", lambda: client.system_volume)
+    monkeypatch.setattr(player, "write_system_volume", write)
+    client.start_volume_writer()
+    client.play_current()
+    return client
+
+
+def change_volume(client, step):
+    """change_volume(), then wait for the volume writer to finish it."""
+    client.change_volume(step)
+    client.volume_steps.join()
+
+
+def test_the_poll_stores_the_system_volume_on_macos_and_notifies(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=62)
+    client.state.update({"ao-volume": 80.0, "volume": 100.0})
+    poll(client)
+    assert client.state["system-volume"] == 62
+    assert (client.notified[-1]["volume"], client.notified[-1]["volume_source"]) == (62, "system")
+    assert [r["command"] for r in client.ipc.requests] == [["get_property", "ao-volume"]]
+
+
+def test_an_unchanged_system_volume_does_not_notify(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=62)
+    poll(client)
+    notified = len(client.notified)
+    poll(client)
+    assert len(client.notified) == notified
+
+
+def test_a_failed_system_volume_read_falls_back_to_ao_volume(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=62)
+    client.state.update({"ao-volume": 80.0, "volume": 100.0})
+    poll(client)
+    client.system_volume = None
+    poll(client)
+    assert (client.notified[-1]["volume"], client.notified[-1]["volume_source"]) == (80.0, "device")
+
+
+def test_the_system_volume_is_ignored_off_macos(monkeypatch):
+    monkeypatch.setattr(player, "read_system_volume", lambda: pytest.fail("osascript off macOS"))
+    client = wired_client([A])
+    client.play_current()
+    client.state.update({"system-volume": 30, "ao-volume": 80.0})
+    poll(client)
+    assert (client.status()["volume"], client.status()["volume_source"]) == (80.0, "device")
+
+
+def test_change_volume_on_macos_sets_the_system_volume_and_notifies(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=60)
+    client.state.update({"ao-volume": 80.0, "volume": 100.0})
+    poll(client)
+    client.ipc.requests.clear()
+    change_volume(client, 5)
+    assert client.written == [65]
+    assert (client.notified[-1]["volume"], client.notified[-1]["volume_source"]) == (65, "system")
+    assert client.ipc.requests == []  # mpv's volumes are left alone
+
+
+@pytest.mark.parametrize("start, step, written", [(98, 5, 100), (3, -5, 0)])
+def test_change_volume_on_macos_clamps_to_0_100(start, step, written, monkeypatch):
+    client = mac_client(monkeypatch, system_volume=start)
+    poll(client)
+    change_volume(client, step)
+    assert client.written == [written]
+    assert client.status()["volume"] == written
+
+
+def test_change_volume_on_macos_writes_off_the_callers_thread_in_order(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=60)
+    poll(client)
+    threads = []
+    write = player.write_system_volume
+    monkeypatch.setattr(player, "write_system_volume", lambda volume: threads.append(threading.get_ident()) or write(volume))
+    client.change_volume(5)
+    client.change_volume(5)
+    client.change_volume(-20)
+    client.volume_steps.join()
+    assert client.written == [65, 70, 50]
+    assert threading.get_ident() not in threads
+    assert [s["volume"] for s in client.notified[-3:]] == [65, 70, 50]
+
+
+def test_a_failed_system_volume_write_keeps_the_meter(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=60)
+    poll(client)
+    monkeypatch.setattr(player, "write_system_volume", lambda volume: False)
+    notified = len(client.notified)
+    change_volume(client, 5)
+    assert client.status()["volume"] == 60
+    assert len(client.notified) == notified
+
+
+def test_a_system_volume_read_in_flight_holds_a_write_back(monkeypatch):
+    """The poll's read began at 60 and a key writes before it returns: the write waits, then builds on 60."""
+    client = mac_client(monkeypatch, system_volume=60)
+    poll(client)
+    reading, release = threading.Event(), threading.Event()
+
+    def slow_read():
+        volume = client.system_volume
+        reading.set()
+        release.wait(timeout=5)
+        return volume
+
+    monkeypatch.setattr(player, "read_system_volume", slow_read)
+    poller = threading.Thread(target=poll, args=(client,))
+    poller.start()
+    assert reading.wait(timeout=5)
+    client.change_volume(5)
+    time.sleep(0.2)  # time for a writer that doesn't wait for the read to write 65
+    assert client.written == []
+    release.set()
+    poller.join(timeout=5)
+    client.volume_steps.join()
+    assert client.written == [65]
+    assert client.status()["volume"] == 65
+    poll(client)  # reads 65, no older value
+    change_volume(client, 5)
+    assert client.written == [65, 70]
+    assert client.status()["volume"] == 70
+
+
+def test_the_volume_writer_runs_only_on_macos(monkeypatch):
+    client, _ = piped_client(monkeypatch)
+    client.quit()
+    assert client.volume_writer is None
+
+
+def test_quit_stops_the_volume_writer_and_drops_the_steps_not_yet_written(monkeypatch):
+    monkeypatch.setattr(player.sys, "platform", "darwin")
+    writing, release = threading.Event(), threading.Event()
+    written = []
+
+    def slow_write(volume):
+        writing.set()
+        release.wait(timeout=5)
+        written.append(volume)
+        return True
+
+    monkeypatch.setattr(player, "write_system_volume", slow_write)
+    client, _ = piped_client(monkeypatch)
+    assert client.volume_writer.is_alive()
+    client.state["system-volume"] = 60
+    client.change_volume(5)
+    assert writing.wait(timeout=5)
+    client.change_volume(5)
+    client.change_volume(5)
+    quitting = threading.Thread(target=client.quit)
+    quitting.start()
+    assert client.stop_writing.wait(timeout=5)
+    release.set()
+    quitting.join(timeout=5)
+    assert not client.volume_writer.is_alive()
+    assert written == [65]
+
+
+def test_change_volume_on_macos_without_a_system_volume_moves_ao_volume(monkeypatch):
+    client = mac_client(monkeypatch, system_volume=None)
+    client.state.update({"ao-volume": 80.0})
+    client.change_volume(5)
+    assert client.written == []
+    assert client.ipc.requests[-1]["command"] == ["add", "ao-volume", 5]
+
+
+@pytest.mark.parametrize(
+    "run, volume",
+    [
+        (lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="62\n"), 62),
+        (lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="missing value\n"), None),
+        (lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout=""), None),
+        (lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("osascript")), None),
+        (lambda *a, **k: (_ for _ in ()).throw(subprocess.TimeoutExpired("osascript", 1)), None),
+    ],
+)
+def test_read_system_volume(run, volume, monkeypatch):
+    monkeypatch.setattr(player.subprocess, "run", run)
+    assert player.read_system_volume() == volume
+
+
+def test_write_system_volume_runs_one_fixed_script(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs["timeout"]))
+        return subprocess.CompletedProcess(argv, 0, stdout="")
+
+    monkeypatch.setattr(player.subprocess, "run", run)
+    assert player.write_system_volume(65) is True
+    assert calls == [(["osascript", "-e", "set volume output volume 65"], player.SYSTEM_VOLUME_TIMEOUT)]
+
+
 # --- platforms (windows) ----------------------------------------------------------
 
 
@@ -1265,14 +1492,19 @@ class FakePipe:
         self.closed = True
 
 
-def test_mpv_client_on_windows_talks_over_a_named_pipe(monkeypatch):
+def piped_client(monkeypatch):
+    """A real MpvClient() over a FakePipe, as on Windows, and the argvs it started mpv with; no mpv runs."""
     monkeypatch.setattr(player, "WINDOWS", True)
     monkeypatch.setattr(player, "PipeTransport", FakePipe)
     FakePipe.made.clear()
     argvs = []
     process = type("Process", (), {"wait": lambda self, timeout: None})()
     monkeypatch.setattr(player.subprocess, "Popen", lambda argv: argvs.append(argv) or process)
-    client = player.MpvClient()
+    return player.MpvClient(), argvs
+
+
+def test_mpv_client_on_windows_talks_over_a_named_pipe(monkeypatch):
+    client, argvs = piped_client(monkeypatch)
     client.quit()
     [pipe] = FakePipe.made
     assert f"--input-ipc-server={pipe.path}" in argvs[0]
