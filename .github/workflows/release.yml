@@ -1,0 +1,17 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # checkout of this private repo
+      id-token: write  # trusted publishing: PyPI trusts this workflow, no stored secrets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1

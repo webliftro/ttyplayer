@@ -1,0 +1,180 @@
+# ttyplayer Architecture
+
+## Overview
+
+ttyplayer is a thin, well-structured controller around two external tools:
+
+- **yt-dlp** resolves what to play: turns a query into a list of videos, a playlist link into its entries, and a video link into one video.
+- **mpv** produces sound and video. It runs in the background and is driven over its JSON IPC socket.
+
+ttyplayer itself never decodes audio or talks to YouTube's HTML directly.
+
+## Modules
+
+```
+src/ttyplayer/
+  cli.py       Typer app: play, search, history, favorite, favorites, tui, version,
+               pause, next, prev, stop, status. Glue only.
+  tui.py       TtyplayerApp (Textual): header, search bar, Search/Queue/History/Favorites tables,
+               now-playing panel, help modal, command palette, themes, toasts over MpvClient;
+               styles in tui.tcss (see docs/tui-design.md).
+  youtube.py   is_url, search, fetch -> list[Video]. Wraps yt-dlp errors in YouTubeError.
+  player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
+               handle_control for the control socket.
+  control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
+  history.py   JSON lines record of what was played; load() newest first, one per video.
+  favorites.py JSON lines list the user curates; add() dedupes by id, remove(n) by listed position,
+               remove_id(id), ids() for the ♥ markers.
+  models.py    Video dataclass: id, title, uploader, duration; url derived from id.
+  utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks.
+```
+
+Dependencies point one way:
+
+```
+cli  ->  youtube, player, history, favorites, control, tui (imported only by the tui command)
+tui  ->  youtube, player, history, favorites, control, utils, models
+player  ->  control
+youtube, player, history, favorites  ->  models, utils
+```
+
+`youtube.py`, `player.py`, `history.py`, and `favorites.py` know nothing about each other or about Typer. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
+
+## Data flow
+
+```
+user input
+   |
+   v
+cli.play(target, --video, --limit)
+   |
+   +-- is URL? --> youtube.fetch(url) -> [Video]        (1 or many, playlists expand)
+   |
+   +-- else ----> youtube.search(query, limit) -> [Video]
+                  print numbered list, ask for picks "1 3 5" -> [Video]
+   |
+   v
+cli.start_playback(videos, with_video)
+   |
+   v
+player.MpvClient(video, on_play=history.record)
+   add() each video, play_current(), run()
+   |
+   v
+key loop (main thread)         listener thread
+  space/arrows/n/p/q  ---->    reads one JSON line at a time:
+  seek/change_volume/            handle_message(message):
+  toggle_pause -> send()           property-change -> state, notify()
+                                   playback-restart -> started_in (first one after loadfile)
+                                   end-file eof    -> next(), or notify() at the end
+                                 notify(): on_state(status()) if set, else render()
+```
+
+## TUI
+
+`ttyplayer tui` runs `tui.TtyplayerApp(client_factory=player.MpvClient, resolve=tui.resolve, video=...)`. Only `tui.py` imports Textual, and `cli.py` imports `tui` inside the command, so the other commands start without it.
+
+Layout, top to bottom: `Header` (clock); the search row (`SearchBox` + a `LoadingIndicator` shown only while a lookup runs); a `TabbedContent` with four `DataTable`s of the same columns (`#`, `Title`, `Uploader`, `Length`): `ResultsTable`, `QueueTable`, `HistoryTable`, `FavoritesTable`; the `NowPlaying` panel (three lines: state · title · uploader · `[i/n]`, the progress bar and time, 🔊/🔇 volume · up next · start-up time); Textual's `Footer`. `?` pushes `HelpScreen`; Ctrl-P opens Textual's command palette.
+
+Threads: the app thread owns every widget. The `lookup` worker thread runs `youtube.*`; the player's listener thread (and the control socket's thread, through `handle_control`) reach the screen only through `on_state` → `call_from_thread`. Actions on the app thread call `MpvClient` methods directly; those take `queue_lock` and call `notify()` after releasing it.
+
+```
+Enter in the search box -> spinner on; lookup worker thread: resolve(text)
+                             is_url? youtube.fetch : youtube.search(text, 10)
+                           -> call_from_thread: spinner off; refill the table, cursor on row 1,
+                              focus it (or a toast: No videos found / YouTube lookup failed)
+m on the Search table   -> spinner on; the same worker: unseen(resolve(text, shown + 10), shown)
+                           -> call_from_thread: rows appended, numbered on (or No more results)
+Enter / a on a row      -> first use: client_factory(video, on_play=app.on_play,
+   (Search, History,                                 on_state=on_player_state), control.serve(...)
+    Favorites)             Enter: queue = that row and the rows after it in that table, play_current();
+                           a: add(), play if it was empty, else notify()
+f on a row / d          -> favorites.add / remove_id, toast; the Favorites table and every ♥ redrawn
+  (f with no row: the track playing)
+on_play (under queue_lock) -> history.record(video), mark the History table stale (never waits)
+tab 3 / 4 shown         -> History / Favorites table reloaded from history.load(50) / favorites.load()
+keys on the table       -> BINDINGS -> app actions -> toggle_pause / seek / change_volume / toggle_mute
+                           / next / prev
+t / Ctrl-P              -> action_next_theme: App.theme = the next of sorted(available_themes), toast /
+                           CommandPalette: TtyplayerCommands (from COMMANDS) + Textual's system commands
+keys on the Queue table -> Enter jump(row) / d remove(row) / K J move(row, row∓1) / c clear_others()
+listener thread         -> on_state(status) -> call_from_thread -> History reloaded if stale,
+                           NowPlaying.show(status), ▸ on the rows,
+                           show_queue(): the Queue table rebuilt from client.queue / client.index
+q, Ctrl-C, ttyplayer stop -> app exits -> on_unmount: remote.stop(), then client.quit()
+```
+
+The screen and keys are specified in `docs/tui-design.md`. `NowPlaying.show(status)` is the only writer of the now-playing panel, and it reads nothing but `MpvClient.status()`. Every message is a toast (`App.notify`, markup off so titles and yt-dlp errors print as they are); the panel never shows messages and the table keeps its rows on an error. The Queue tab is a view of `client.queue` / `client.index`, never a second list: every edit is an `MpvClient` method, and its `notify()` rebuilds the table (only when the queue or index changed, so time-pos ticks leave it alone), the tab title `Queue (n)` and the panel's `[i/n]` / `Up next`. The History and Favorites tabs read the files the CLI writes, through `history.load()` / `favorites.load()` / `favorites.ids()` only; each `PickTable` (Search, History, Favorites) keeps its own `videos` list in row order, and `m` uses the CLI's `utils.unseen`. `on_play` runs under the player's `queue_lock`, so it records and flags the History tab, which reloads on the `on_state` that follows instead of waiting for the app thread. Keys are defined once in the `BINDINGS` lists of the app, `SearchBox`, `VideoTable` (the playback keys and `f` every table shares), `PickTable` (Enter, `a`), `ResultsTable` (`m`), `FavoritesTable` (`d`) and `QueueTable`: the Footer shows the ones with `show=True`, and the `?` help modal lists all of them from the same lists. The command palette (Ctrl-P) keeps Textual's own provider (theme picker, keys, quit) and adds `TtyplayerCommands`, built from the one `COMMANDS` list of (name, action, help): each entry runs `app.run_action(action)`, the same `action_*` its key runs, and the help modal lists the same `COMMANDS` under "Commands". `t` cycles `App.theme` through `sorted(available_themes)`; nothing about the theme is stored between runs. Styles live in `src/ttyplayer/tui.tcss` (theme variables only), loaded through `CSS_PATH` and shipped in the wheel.
+
+`ttyplayer stop` sends SIGINT as before; under Textual's asyncio loop that cancels the app, which unmounts normally. `q`, `/`, `?` and `1`–`4` are ordinary app bindings: the focused search box consumes them as letters, a table does not, so they act from a table (Esc first from the box); Ctrl-C is a priority binding and quits from anywhere. If remote control cannot start, its stderr warning is captured and shown as a warning toast.
+
+## mpv IPC
+
+mpv is started with `--idle --no-terminal --input-ipc-server=<private socket>`; `--no-video` unless asked. The socket lives in a per-client temp dir so two ttyplayers never share an mpv, and the dir is removed on every exit path.
+
+Messages are newline-delimited JSON:
+
+- request: `{"command": ["set_property", "pause", true]}`
+- reply: `{"request_id": 0, "error": "success"}`
+- event: `{"event": "property-change", "id": 1, "name": "time-pos", "data": 12.3}`
+
+mpv only reports property changes you subscribe to, so `__init__` sends `observe_property` for `time-pos`, `duration`, `pause`, `media-title`, `volume`, `mute` and `ao-volume`. Commands used: `loadfile`, `cycle pause`, `seek`, `add volume` / `add ao-volume`, `cycle mute`, `get_property`, `quit`.
+
+`send()` tags every command with an increasing `request_id`. `get_property(name, callback)` registers the callback for that id before sending; `handle_message` hands a reply's `data` to it (`None` on an error) and drops replies nobody registered (`observe_property`, `loadfile`, ...).
+
+mpv has two volumes: `volume`, its own gain, and `ao-volume`, the audio output's (the system volume on coreaudio, the app's stream volume on PulseAudio/PipeWire and WASAPI; `property unavailable` where the output has none). `status()["volume"]` is `ao-volume` when it is a number, else `volume`, with `volume_source` `"device"` or `"player"`; `change_volume()` adds to the same property, so the keys move the meter that is shown. mpv sends no `property-change` for `ao-volume` when the OS changes it, so a daemon thread reads it with `get_property` every `VOLUME_POLL_SECONDS` (2) while a track is loaded and notifies only on a change; `quit()` stops it before closing the socket.
+
+The connect is retried for up to 3 seconds because mpv creates the socket a moment after it starts. `quit` waits 2 seconds for mpv to exit, then kills it.
+
+## Control socket
+
+While `run()` owns the keyboard, the player also listens on a Unix socket so another terminal can drive it: `ttyplayer pause`, `next`, `prev`, `stop`, `status`. The socket is `$XDG_RUNTIME_DIR/ttyplayer/control.sock`, or `<tempdir>/ttyplayer-<uid>/control.sock` without `XDG_RUNTIME_DIR`; the dir is created `0700`, so only the same user can send commands. A dir that already exists must be a real directory (not a symlink) owned by the user with no group/other permissions, or the server refuses it before touching anything inside. A stale socket file is replaced; the most recently started player owns the path.
+
+One request per connection, newline-delimited JSON:
+
+- request: `{"command": "pause"}`
+- reply: `{"ok": true}`, `{"ok": true, "title": ..., "position": ..., "duration": ..., "paused": false, "index": 1, "total": 3, "started_in": 2.4}` for `status`, or `{"ok": false, "error": "unknown command x"}`
+
+`control.Server` runs on a daemon thread and calls `MpvClient.handle_control(name)`, which performs what the keys do: `pause` is the space key, `mute` the TUI's `M` (no CLI command sends it yet), `next`/`prev` move the queue, `status` returns `MpvClient.status()`, the same values `render()` draws (`player.status_line` formats them for both). `stop` sends SIGINT to the main thread, so `run()` leaves through its Ctrl-C path. `run()` stops the server and removes the socket in the same `finally` that restores the terminal. Bytes that are not UTF-8 count as a malformed request. If the dir is unsafe or the socket cannot be bound, one warning goes to stderr and playback continues without remote control.
+
+`MpvClient.send()` is called from three threads now (keyboard, listener, control), plus the TUI. `send_lock` makes each command line one atomic write, and the `queue_lock` RLock guards every queue change (`play_current()`, `next()`, `prev()`, `jump()`, `remove()`, `move()`, `clear_others()`, the `eof` step), so two `n` presses from different threads move the queue once each instead of racing on `index`. The same lock covers the `playback-restart` measurement, so a track change can't land inside it. Callbacks run after the lock is released: the TUI's `on_state` waits for the app thread, which may itself be waiting to move the queue.
+
+## Queue
+
+ttyplayer owns the queue: `MpvClient.queue` is a list of `Video`, `index` the current one. `next`/`prev` move and load; the listener steps on `end-file` with reason `eof`, or marks the client `idle` at the end of the queue (`idle` is also true before anything plays). The TUI's edits are `jump(i)` (play that index), `remove(i)` (removing the current track plays the next one, else the previous one, else sends `stop` and leaves an empty idle queue), `move(i, j)` (the current track stays current wherever it lands) and `clear_others()` (keep only the current track, or empty the queue when idle); each returns whether something changed. All of them, and `next`/`prev`/`play_current`, go through `_edit(change)`: the change runs under `queue_lock`, and `notify()` runs after the lock is released, only if something changed. `_play_index(i)` is the one place that loads a track, resets `started_in`/`loaded_at` and calls `on_play`. The status line shows the current title from the queue, not from mpv, so there is no file-name flicker while yt-dlp resolves the stream. `status()` carries `idle`; while idle with an empty queue the title is None (mpv's `media-title` outlives its track), and the TUI's panel and both `▸` markers treat an idle client as playing nothing.
+
+`play_current()` stamps `time.monotonic()` when it sends `loadfile`; the first `playback-restart` event after it stores the difference as `started_in` in `status()` (mpv sends another restart after every seek, which is ignored). With `TTYPLAYER_TIMING=1` (read by `player.timing()`), `status_line` appends `started in <n>s` and `cli.lookup()` prints `lookup took <n>s` to stderr.
+
+`on_play(video)` fires whenever a queued video starts. The CLI passes `history.record` (the TUI a wrapper around it); the player knows nothing about files.
+
+`on_state(status)` is for a UI that owns the terminal itself. When set, `notify()` (called on every property change, every queue change, and an `eof` at the end of the queue) hands it `status()` and nothing is printed; when `None`, `notify()` calls `render()`, which prints the status line. `status()` is the one source for `render()`, `on_state` and the control socket's `status` reply; it also carries `volume` and `muted` (the observed `mute` property), which `status_line()` and the TUI panel both draw with `player.volume_meter()`, and `up_next`, which `render()` adds after the status line. `seek()`, `change_volume()`, `toggle_mute()` and `toggle_pause()` are the only places that encode those mpv commands, so keys, remote control and a UI all go through them.
+
+## Platforms
+
+`utils.WINDOWS` (`sys.platform == "win32"`) is the one platform test; `player` and `control` import it, and tests patch each module's copy to run the Windows branches on every OS. There are two seams, and nothing above them (the CLI, the TUI, `send()`/`listen()`/`quit()`, `serve`/`send`) knows which side it is on.
+
+- **Player.** `ipc_path()` gives mpv a socket in a private temp dir on POSIX, or `\\.\pipe\ttyplayer-<pid>-<random>` on Windows (no dir to remove). `connect()` retries either for 3 seconds and returns a transport with `write(bytes)`, `readline() -> bytes` and `close()`: `SocketTransport` (the Unix socket) or `PipeTransport` (the pipe opened as a binary file, `open(path, "r+b", buffering=0)`). Keys come from `terminal_keys()` (stdin in cbreak mode, `termios`/`tty` imported on POSIX only) or `console_keys()` (`msvcrt`, `kbhit()` polled every `KEY_POLL_SECONDS` so a remote `stop` lands without a key press; arrows arrive as `\xe0`/`\x00` plus a letter, `\x03` is Ctrl-C). Both yield key names (a character, or `left`/`right`/`up`/`down`), and `MpvClient.press()` looks them up in the one `KEYS` table. `interrupt_main()` is `pthread_kill(SIGINT)` on POSIX and `_thread.interrupt_main()` on Windows, where it lands on the next poll tick.
+- **Control.** `control_endpoint()` is what `Server` and `send` use: `SocketEndpoint` is the Unix socket above; `LoopbackEndpoint` listens on `127.0.0.1` on an ephemeral port, writes `"<port> <token>"` (a random 32-hex token) to `%LOCALAPPDATA%\ttyplayer\control.txt` (`utils.data_path`), and requires `{"command": ..., "token": ...}`; a missing or wrong token gets `{"ok": false, "error": "bad token"}`. Any local process can reach the port, so the token, readable only through the user's profile, is what gates commands (other users with admin rights are out of scope). A player's `stop()` removes the file only if it still holds its own port and token.
+
+`utils.data_path` falls back to `%LOCALAPPDATA%\ttyplayer` on Windows when `XDG_DATA_HOME` is unset. CI runs the suite on ubuntu, macOS and Windows.
+
+## Error handling
+
+- mpv missing or never answering: one-line message, exit 1.
+- yt-dlp failures (no network, bad link, private video) raise `YouTubeError`; the CLI prints one line and exits 1. yt-dlp's own stderr output is silenced.
+- Zero results: "No videos found", exit 1, before any prompt.
+- Bad picks: re-prompt with the valid range.
+- Ctrl-C, `q`, and `ttyplayer stop` all go through `quit` and the `finally` that restores the terminal.
+- Remote commands with no player running: "No ttyplayer is playing", exit 1.
+
+## Testing
+
+Tests never touch the network or start mpv.
+
+- `youtube.py`: a `FakeYoutubeDL` monkeypatched in place of the real class.
+- `player.py`: `build_argv` directly; queue, title, and `handle_control` logic on a client built with `__new__` and a recording `load`/`send`; `run()` around a fake stdin and stubbed termios.
+- `control.py`: a real Unix socket in a short temp dir, with a recording handler.
+- `history.py`, `favorites.py`: real files under pytest's `tmp_path`.
+- `cli.py`: Typer `CliRunner` with `youtube.*`, `history_path`, `favorites_path`, and `player.MpvClient` monkeypatched; a `FakeClient` records what was queued.
+- `utils.py`: pure functions, direct assertions.
+- `tui.py`: Textual's `run_test()` pilot, headless, with a fake `resolve` and a recording `FakeClient` factory; `control.serve` monkeypatched. Async test bodies run under `asyncio.run` (no pytest plugin).

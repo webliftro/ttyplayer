@@ -1,0 +1,125 @@
+/* ttyplayer tui — layout per docs/tui-design.md. Theme variables only, so every theme fits. */
+
+#search-row {
+    height: 3;
+}
+
+#search-row SearchBox {
+    width: 1fr;
+}
+
+#search-row LoadingIndicator {
+    width: 6;
+    height: 3;
+    color: $accent;
+}
+
+TabbedContent {
+    height: 1fr;
+}
+
+ResultsTable {
+    height: 1fr;
+}
+
+NowPlaying {
+    height: 5;
+    border: round $primary;
+    border-title-color: $accent;
+    background: $surface;
+    padding: 0 1;
+}
+
+NowPlaying #np-idle {
+    display: none;
+    text-style: dim;
+}
+
+NowPlaying.-idle #np-idle {
+    display: block;
+}
+
+NowPlaying.-idle .np-line {
+    display: none;
+}
+
+.np-line {
+    height: 1;
+}
+
+#np-state {
+    width: 3;
+}
+
+#np-title {
+    width: auto;
+    max-width: 70%;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    text-style: bold;
+    color: $accent;
+}
+
+#np-uploader {
+    width: 1fr;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+    text-style: dim;
+}
+
+#np-position {
+    width: auto;
+}
+
+#np-progress {
+    width: 1fr;
+}
+
+#np-progress Bar {
+    width: 1fr;
+}
+
+#np-time {
+    width: auto;
+    padding-left: 1;
+}
+
+#np-volume {
+    width: auto;
+}
+
+#np-next {
+    width: 1fr;
+    padding-left: 4;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+#np-timing {
+    width: auto;
+    text-style: dim;
+}
+
+HelpScreen {
+    align: center middle;
+}
+
+#help {
+    width: auto;
+    height: auto;
+    max-height: 90%;
+    border: round $primary;
+    border-title-color: $accent;
+    background: $panel;
+    padding: 1 2;
+}
+
+#help Static {
+    width: auto;
+}
+
+.help-heading {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+}

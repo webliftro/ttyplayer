@@ -1,0 +1,40 @@
+[project]
+name = "ttyplayer"
+version = "0.3.0"
+description = "ttyplayer: a modern YouTube player for the terminal — search, queue, and play audio or video via mpv"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["youtube", "music", "player", "mpv", "cli", "terminal", "tui", "yt-dlp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+dependencies = [
+    "textual>=8.2",
+    "typer>=0.27.2",
+    "yt-dlp>=2026.8.19",
+]
+
+[project.urls]
+Homepage = "https://github.com/webliftro/ttyplayer"
+Repository = "https://github.com/webliftro/ttyplayer"
+
+[project.scripts]
+ttyplayer = "ttyplayer.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
