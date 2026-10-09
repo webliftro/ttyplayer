@@ -1,5 +1,6 @@
 import dataclasses
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -8,6 +9,8 @@ import pytest
 
 from ttyplayer import settings
 from ttyplayer.settings import Settings, SettingsError
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="Path.home() ignores HOME on Windows")
 
 
 def test_settings_fields_and_defaults():
@@ -89,7 +92,7 @@ def test_update_rejects_a_bad_value_and_saves_nothing(tmp_path, key, value, mess
 
 
 def test_load_turns_a_read_error_into_one_line(tmp_path):
-    with pytest.raises(SettingsError, match=f"Cannot read {tmp_path}") as caught:
+    with pytest.raises(SettingsError, match=f"Cannot read {re.escape(str(tmp_path))}") as caught:
         settings.load(tmp_path)
     assert "\n" not in str(caught.value)
 
@@ -107,6 +110,7 @@ def test_search_limit_range_is_inclusive(tmp_path, limit):
     assert settings.update("search_limit", limit, tmp_path / "s.toml").search_limit == int(limit)
 
 
+@posix_only
 def test_settings_path_defaults_to_dot_config_on_posix(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "WINDOWS", False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
