@@ -2,8 +2,10 @@
 
 import contextlib
 import dataclasses
+import datetime
 import functools
 import io
+import random
 import threading
 
 from rich.text import Text
@@ -19,6 +21,7 @@ from textual.widgets import (
     Header,
     Input,
     LoadingIndicator,
+    OptionList,
     ProgressBar,
     Static,
     TabbedContent,
@@ -26,7 +29,7 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from ttyplayer import control, favorites, history, player, youtube
+from ttyplayer import control, favorites, history, player, playlists, youtube
 from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
@@ -34,10 +37,16 @@ HISTORY_LIMIT = 50
 FAVORITE_MARK = " ♥"
 IDLE_TEXT = "Nothing playing — press / to search"
 LONG_SEEK_SECONDS = 30
+VIDEO_COLUMNS = ("Title", "Uploader", "Length")
+PLAYLIST_COLUMNS = ("Name", "Tracks", "Length")
+NEW_PLAYLIST = "New playlist…"  # … is not allowed in a name, so it can never be a playlist's
+shuffler = random.Random()  # s on an open playlist; tests swap in a seeded one
 
 # The command palette's entries and the help modal's Commands section: (name, app action, help).
 COMMANDS = [
     ("Search…", "focus_search", "Focus the search box"),
+    ("Playlists", "playlists", "Show your playlists"),
+    ("Save queue as playlist…", "save_queue", "Save the queue as a playlist"),
     ("Next theme", "next_theme", "Switch to the next color theme"),
     ("Settings…", "settings", "Show and change the settings"),
     ("Help", "help", "Every key and command"),
@@ -68,6 +77,20 @@ def video_cells(video, number, playing=False, favorite=False):
 
 def tab_label(title, count):
     return f"{title} ({count})" if count else title
+
+
+def total_length(videos):
+    """The sum of the known durations."""
+    return sum(video.duration for video in videos if video.duration is not None)
+
+
+def saved_playlists():
+    """(name, videos) of every playlist; a file whose name is not a playlist name is left out."""
+    listed = []
+    for name in playlists.names():
+        with contextlib.suppress(playlists.PlaylistError):
+            listed.append((name, playlists.load(name)))
+    return listed
 
 
 def queue_text(status):
@@ -145,14 +168,24 @@ class VideoTable(DataTable):
         Binding("plus", f"app.change_volume({player.VOLUME_STEP})", f"Volume +{player.VOLUME_STEP}", show=False),
         Binding("M", "app.toggle_mute", "Mute", show=False),
         Binding("f", "app.favorite", "Fav"),
+        Binding("A", "app.add_to_playlist", "To playlist"),
     ]
 
     def __init__(self, **kwargs):
         super().__init__(zebra_stripes=True, cursor_type="row", **kwargs)
+        self.labels = None
 
     def on_mount(self):
+        self.set_columns(VIDEO_COLUMNS)
+
+    def set_columns(self, labels):
+        """The # column, then labels; the table is rebuilt only when they change."""
+        if labels == self.labels:
+            return
+        self.labels = labels
+        self.clear(columns=True)
         self.add_column("#", key="number")
-        self.add_columns("Title", "Uploader", "Length")
+        self.add_columns(*labels)
 
     def fill(self, rows):
         """Replace every row with rows (cells in column order), the cursor kept in place."""
@@ -163,13 +196,8 @@ class VideoTable(DataTable):
         self.move_cursor(row=min(row, self.row_count - 1))
 
 
-class PickTable(VideoTable):
-    """Videos to pick from (Search, History, Favorites): videos holds them in row order."""
-
-    BINDINGS = [
-        Binding("enter", "select_cursor", "Play from here", show=False),
-        Binding("a", "app.append", "Add"),
-    ]
+class VideoList(VideoTable):
+    """A table whose rows are videos: videos holds them in row order, picked() is the cursor's."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -185,6 +213,15 @@ class PickTable(VideoTable):
 
     def picked(self):
         return self.videos[self.cursor_row] if self.videos else None
+
+
+class PickTable(VideoList):
+    """Videos to pick from (Search, History, Favorites)."""
+
+    BINDINGS = [
+        Binding("enter", "select_cursor", "Play from here", show=False),
+        Binding("a", "app.append", "Add"),
+    ]
 
 
 class ResultsTable(PickTable):
@@ -207,6 +244,40 @@ class QueueTable(VideoTable):
         Binding("J,shift+down", "app.move_in_queue(1)", "Move down"),
         Binding("c", "app.clear_queue", "Clear"),
     ]
+
+
+class PlaylistTable(VideoList):
+    """Tab 5: every playlist (names), or the tracks of the one opened, in the same table."""
+
+    BINDINGS = [
+        Binding("enter", "select_cursor", "Open / play from here", show=False),
+        Binding("a", "app.append", "Add"),
+        Binding("d", "app.remove_from_playlist", "Remove"),
+        Binding("K,shift+up", "app.move_in_playlist(-1)", "Move up"),
+        Binding("J,shift+down", "app.move_in_playlist(1)", "Move down"),
+        Binding("s", "app.shuffle_playlist", "Shuffle"),
+        Binding("escape,backspace", "app.close_playlist", "Back to the playlists", show=False),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.opened = None
+        self.names = []
+
+    def show_names(self, listed):
+        """One row per (name, videos): #, Name, Tracks, Length."""
+        self.opened, self.videos = None, []
+        self.names = [name for name, _ in listed]
+        self.set_columns(PLAYLIST_COLUMNS)
+        self.fill(
+            (number_cell(number, False), Text(name), str(len(videos)), format_time(total_length(videos)))
+            for number, (name, videos) in enumerate(listed, start=1)
+        )
+
+    def show_tracks(self, name, videos, playing, favorite_ids):
+        self.opened, self.names = name, []
+        self.set_columns(VIDEO_COLUMNS)
+        self.show(videos, playing, favorite_ids)
 
 
 class TtyplayerCommands(Provider):
@@ -249,6 +320,72 @@ class HelpScreen(ModalScreen):
             yield Static("Commands (Ctrl-P)", classes="help-heading")
             for name, _, help in COMMANDS:
                 yield Static(f"{name}  {help}", markup=False)
+
+
+class NameScreen(ModalScreen):
+    """Asks for a playlist name: Enter runs save(name), whose PlaylistError stays on screen until a name works."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Cancel", show=False)]
+
+    def __init__(self, title, name, save):
+        super().__init__()
+        self.title_text = title
+        self.prefill = name
+        self.save = save
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog") as box:
+            box.border_title = self.title_text
+            yield Input(value=self.prefill, placeholder=playlists.NAME_RULE)
+            yield Static(id="name-error", markup=False)
+
+    @on(Input.Submitted)
+    def submit(self, event: Input.Submitted):
+        event.stop()  # not a search
+        name = event.value.strip()
+        try:
+            self.save(name)
+        except playlists.PlaylistError as error:
+            self.query_one("#name-error", Static).update(str(error))
+            return
+        self.dismiss(name)
+
+
+class PlaylistPicker(ModalScreen):
+    """Which playlist: one option per playlist, then New playlist…; Enter picks it, Esc cancels."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Cancel", show=False)]
+
+    def __init__(self, names):
+        super().__init__()
+        self.choices = [*names, NEW_PLAYLIST]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog") as box:
+            box.border_title = "Add to playlist"
+            yield OptionList(*(Text(choice) for choice in self.choices))
+
+    @on(OptionList.OptionSelected)
+    def pick(self, event: OptionList.OptionSelected):
+        self.dismiss(self.choices[event.option_index])
+
+
+class ConfirmScreen(ModalScreen):
+    """A yes / no question: y or Enter answers True, Esc False."""
+
+    BINDINGS = [
+        Binding("y,enter", "dismiss(True)", "Yes", show=False),
+        Binding("escape", "dismiss(False)", "No", show=False),
+    ]
+
+    def __init__(self, question):
+        super().__init__()
+        self.question = question
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static(self.question, markup=False)
+            yield Static("y or Enter: yes · Esc: no", classes="dialog-hint")
 
 
 class SettingsScreen(ModalScreen):
@@ -301,6 +438,8 @@ class TtyplayerApp(App):
         Binding("2", "show_tab('queue')", "Queue tab", show=False),
         Binding("3", "show_tab('history')", "History tab", show=False),
         Binding("4", "show_tab('favorites')", "Favorites tab", show=False),
+        Binding("5", "playlists", "Playlists tab", show=False),
+        Binding("P", "save_queue", "Save queue"),
         Binding("t", "next_theme", "Next theme", show=False),
         Binding("S", "settings", "Settings"),
         # Not a priority binding: the search box must be able to take a typed q.
@@ -336,6 +475,8 @@ class TtyplayerApp(App):
                 yield HistoryTable()
             with TabPane("Favorites", id="favorites"):
                 yield FavoritesTable()
+            with TabPane("Playlists", id="playlists"):
+                yield PlaylistTable()
         yield NowPlaying()
         yield Footer()
 
@@ -345,6 +486,7 @@ class TtyplayerApp(App):
         self.set_searching(False)
         self.show_favorites()  # first: the other tables read favorite_ids for their ♥
         self.show_history()
+        self.show_playlists()
         self.query_one(SearchBox).focus()
 
     def on_unmount(self):
@@ -409,19 +551,23 @@ class TtyplayerApp(App):
 
     @on(DataTable.RowSelected, "PickTable")
     def play_from_row(self, event: DataTable.RowSelected):
+        self.play_queue(event.data_table.videos[event.cursor_row :])
+
+    def play_queue(self, videos, start=0):
+        """The queue becomes videos, playing videos[start]."""
         client = self.ensure_client()
         if client is None:
             return
         client.queue.clear()
-        client.index = 0
-        for video in event.data_table.videos[event.cursor_row :]:
+        for video in videos:
             client.add(video)
+        client.index = start
         client.play_current()
 
     def picked(self):
-        """The video under the cursor of the focused Search/History/Favorites table, or None."""
+        """The video under the cursor of the focused Search/History/Favorites/playlist table, or None."""
         table = self.focused
-        return table.picked() if isinstance(table, PickTable) else None
+        return table.picked() if isinstance(table, VideoList) else None
 
     def action_append(self):
         video = self.picked()
@@ -497,7 +643,7 @@ class TtyplayerApp(App):
     def mark_playing(self):
         """▸ in the # cell of the Search/History/Favorites row being played, a blank everywhere else."""
         playing = self.playing_video()
-        for table in self.query(PickTable):
+        for table in self.query(VideoList):
             for number, (row_key, video) in enumerate(zip(table.rows, table.videos), start=1):
                 table.update_cell(row_key, "number", number_cell(number, video == playing))
 
@@ -509,6 +655,8 @@ class TtyplayerApp(App):
             self.show_history()
         elif event.pane.id == "favorites":
             self.show_favorites()
+        elif event.pane.id == "playlists":
+            self.show_playlists()
 
     def show_library(self, table_type, pane, title, videos):
         self.query_one(table_type).show(videos, self.playing_video(), self.favorite_ids)
@@ -551,6 +699,7 @@ class TtyplayerApp(App):
             table.show(table.videos, playing, self.favorite_ids)
         self.queue_shown = None  # the Queue tab redraws its titles too
         self.show_queue()
+        self.show_playlists()
 
     # --- queue --------------------------------------------------------
 
@@ -559,11 +708,7 @@ class TtyplayerApp(App):
 
         Skipped when neither changed: on_state also fires for every time-pos tick.
         """
-        videos, current = [], None
-        if self.client is not None:
-            with self.client.queue_lock:
-                videos = list(self.client.queue)
-                current = None if self.client.idle else self.client.index
+        videos, current = self.queue_snapshot()
         if (videos, current) == self.queue_shown:
             return
         self.queue_shown = (videos, current)
@@ -572,6 +717,13 @@ class TtyplayerApp(App):
             for index, video in enumerate(videos)
         )
         self.query_one(TabbedContent).get_tab("queue").label = tab_label("Queue", len(videos))
+
+    def queue_snapshot(self):
+        """(a copy of client.queue, the current index or None when idle); ([], None) before a player."""
+        if self.client is None:
+            return [], None
+        with self.client.queue_lock:
+            return list(self.client.queue), None if self.client.idle else self.client.index
 
     def action_jump(self):
         if self.client:
@@ -590,6 +742,136 @@ class TtyplayerApp(App):
     def action_clear_queue(self):
         if self.client and self.client.clear_others():
             self.toast("Queue cleared", severity="information")
+
+    # --- playlists ------------------------------------------------------
+
+    def show_playlists(self):
+        """Tab 5 from the files: the open playlist's tracks, or every playlist with its count and length."""
+        table = self.query_one(PlaylistTable)
+        if table.opened is not None:
+            try:
+                videos = playlists.load(table.opened)
+            except playlists.PlaylistError:  # deleted from another terminal
+                table.opened = None
+            else:
+                table.show_tracks(table.opened, videos, self.playing_video(), self.favorite_ids)
+                label = tab_label(f"Playlists › {table.opened}", len(videos))
+        if table.opened is None:
+            listed = saved_playlists()
+            table.show_names(listed)
+            label = tab_label("Playlists", len(listed))
+        self.query_one(TabbedContent).get_tab("playlists").label = label
+
+    def change_playlist(self, done, change, *args):
+        """Run a playlists.* change, toast done(its result) unless done is None, redraw tab 5.
+
+        True when it worked; a PlaylistError (say, the playlist was deleted from another terminal) is an error toast.
+        """
+        try:
+            result = change(*args)
+        except playlists.PlaylistError as error:
+            self.toast(str(error), severity="error")
+            return False
+        finally:
+            self.show_playlists()
+        if done is not None:
+            self.toast(done(result), severity="information")
+        return True
+
+    @on(DataTable.RowSelected, "PlaylistTable")
+    def open_or_play(self, event: DataTable.RowSelected):
+        """Enter on a playlist opens it; on a track, the whole playlist plays from there."""
+        table = event.data_table
+        if table.videos:
+            self.play_queue(table.videos, event.cursor_row)
+        elif table.names:
+            self.open_playlist(table.names[event.cursor_row])
+
+    def open_playlist(self, name):
+        table = self.query_one(PlaylistTable)
+        table.opened = name
+        self.show_playlists()
+        table.move_cursor(row=0)
+
+    def action_close_playlist(self):
+        table = self.query_one(PlaylistTable)
+        name = table.opened
+        if name is None:
+            return
+        table.opened = None
+        self.show_playlists()
+        if name in table.names:
+            table.move_cursor(row=table.names.index(name))
+
+    def action_remove_from_playlist(self):
+        """d: the track under the cursor leaves the open playlist; on the list, the playlist is deleted after a yes."""
+        table = self.query_one(PlaylistTable)
+        row = table.cursor_row
+        name = table.opened
+        if table.videos:
+            self.change_playlist(lambda removed: f"Removed from {name}: {removed.title}", playlists.remove, name, row + 1)
+        elif table.names:
+            name = table.names[row]
+            self.push_screen(ConfirmScreen(f"Delete playlist {name}?"), lambda yes: yes and self.delete_playlist(name))
+
+    def delete_playlist(self, name):
+        self.change_playlist(lambda _: f"Deleted playlist {name}", playlists.delete, name)
+
+    def action_move_in_playlist(self, step):
+        table = self.query_one(PlaylistTable)
+        row = table.cursor_row
+        if not 0 <= row + step < len(table.videos):
+            return
+        if self.change_playlist(None, playlists.move, table.opened, row + 1, row + 1 + step):
+            table.move_cursor(row=row + step)
+
+    def action_shuffle_playlist(self):
+        videos = list(self.query_one(PlaylistTable).videos)
+        if videos:
+            shuffler.shuffle(videos)
+            self.play_queue(videos)
+
+    def action_playlists(self):
+        self.action_show_tab("playlists")
+
+    def action_save_queue(self):
+        """P: the queue saved under a name the user confirms, replacing a playlist of that name."""
+        if self.screen is not self.screen_stack[0]:
+            return
+        videos, current = self.queue_snapshot()
+        if current is None:  # no player, or idle: a queue played to its end is not saved
+            self.toast("Nothing to save", severity="warning")
+            return
+        name = playlists.sanitize(videos[0].title) if len(videos) == 1 else f"Queue {datetime.date.today()}"
+
+        def saved(name):
+            if name is not None:
+                self.toast(f"Saved {len(videos)} tracks to {name}", severity="information")
+                self.show_playlists()
+
+        self.push_screen(NameScreen("Save queue as playlist", name, lambda name: playlists.replace(name, videos)), saved)
+
+    def row_video(self):
+        """The video under the cursor of the focused table, the Queue tab's included; None without one."""
+        table = self.focused
+        if isinstance(table, QueueTable):
+            videos = self.queue_shown[0]
+            return videos[table.cursor_row] if videos else None
+        return self.picked()
+
+    def action_add_to_playlist(self):
+        """A: the row's video appended to a playlist picked from a list, or to a new one."""
+        video = self.row_video()
+        if video is None:
+            return
+
+        def picked(name):
+            if name == NEW_PLAYLIST:
+                self.push_screen(NameScreen("New playlist", "", playlists.create), picked)
+            elif name is not None:
+                self.change_playlist(lambda _: f"Added to {name}", playlists.add, name, [video])
+
+        self.push_screen(PlaylistPicker(playlists.names()), picked)
 
     # --- keys -----------------------------------------------------------
 
@@ -676,6 +958,7 @@ class TtyplayerApp(App):
                     ("Search table", ResultsTable.BINDINGS),
                     ("Queue table", QueueTable.BINDINGS),
                     ("Favorites table", FavoritesTable.BINDINGS),
+                    ("Playlists table", PlaylistTable.BINDINGS),
                 ]
             )
         )

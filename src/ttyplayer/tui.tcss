@@ -145,3 +145,30 @@ SettingsScreen {
     margin-top: 1;
     text-style: dim;
 }
+
+NameScreen, PlaylistPicker, ConfirmScreen {
+    align: center middle;
+}
+
+.dialog {
+    width: 60;
+    height: auto;
+    border: round $primary;
+    border-title-color: $accent;
+    background: $panel;
+    padding: 1 2;
+}
+
+.dialog OptionList {
+    height: auto;
+    max-height: 20;
+}
+
+#name-error {
+    color: $error;
+}
+
+.dialog-hint {
+    margin-top: 1;
+    text-style: dim;
+}

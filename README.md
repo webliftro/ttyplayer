@@ -76,17 +76,18 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
 
 | Where | Key | Action |
 |---|---|---|
 | table | `↑` / `↓` | move through the list (volume is `-` / `+`) |
 | anywhere | `/` | focus the search box (`esc` returns to the table) |
 | anywhere | `?` | help: every key and command (`esc` closes) |
-| anywhere | `1` `2` `3` `4` | Search / Queue / History / Favorites tab |
+| anywhere | `1` `2` `3` `4` `5` | Search / Queue / History / Favorites / Playlists tab |
 | anywhere | Ctrl-C | quit and stop mpv |
 | anywhere | Ctrl-P | command palette |
 | anywhere | `t` | next theme (remembered for next time) |
+| table | `P` | save the queue as a playlist (asks for a name; an existing playlist of that name is replaced) |
 | table | `S` | settings: Enter flips a true / false one, `esc` closes |
 | table | `q` | quit and stop mpv (in the search box it is just a letter) |
 | table | `space` | pause / resume |
@@ -98,12 +99,20 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 | table | `f` | favorite / unfavorite this row (the track playing when there is no row) |
 | Search · History · Favorites row | Enter | play this one, then the rows after it |
 | Search · History · Favorites row | `a` | add to the queue |
+| Search · History · Favorites · Queue row | `A` | add to a playlist (pick one, or New playlist…) |
 | Search | `m` | more results |
 | Queue row | Enter | jump to this item |
 | Queue row | `d` | remove from the queue |
 | Queue row | `K` / `J` (or `shift+↑` / `shift+↓`) | move up / down |
 | Queue | `c` | clear the queue (keeps the current track playing) |
 | Favorites row | `d` | remove from favorites |
+| Playlists | Enter | open the playlist (`esc` or Backspace goes back to the list) |
+| Playlists | `d` | delete the playlist (asks first: `y` or Enter deletes, `esc` keeps it) |
+| playlist track | Enter | play the whole playlist from this track |
+| playlist track | `a` | add to the queue |
+| playlist track | `d` | remove from the playlist |
+| playlist track | `K` / `J` (or `shift+↑` / `shift+↓`) | move up / down in the playlist |
+| open playlist | `s` | shuffle-play the playlist |
 
 In the search box, letters, digits, `/` and `?` are typed as text; `esc` leaves it for the table.
 

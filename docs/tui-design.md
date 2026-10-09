@@ -15,7 +15,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 ```
 ┌─ ttyplayer ──────────────────────────────────────────────────────── 14:02 ─┐  Header (clock)
 │ 🔍 Search YouTube or paste a link…                                 ◐     │  search bar + spinner
-│ ┌ Search ──┬ Queue ──┬ History ──┬ Favorites ──┐                        │  TabbedContent (1–4)
+│ ┌ Search ──┬ Queue ──┬ History ──┬ Favorites ──┬ Playlists ──┐          │  TabbedContent (1–5)
 │ │  #  Title                          Uploader          Length           │  DataTable, zebra,
 │ │ ▸1  lofi hip hop radio             Lofi Girl          --:--           │  row cursor
 │ │  2  Never Gonna Give You Up        Rick Astley        3:33            │
@@ -31,9 +31,15 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 ```
 
 - The search bar is always visible; `/` focuses it from anywhere, Esc leaves it for the table.
-- Tabs: **Search** (results), **Queue** (what will play, reorderable), **History**, **Favorites**.
-  Digits `1`–`4` switch tabs. Every tab is a `DataTable` with the same columns so the eye never
+- Tabs: **Search** (results), **Queue** (what will play, reorderable), **History**, **Favorites**,
+  **Playlists**. Digits `1`–`5` switch tabs. Every tab is a `DataTable` with the same columns so the eye never
   re-learns the screen: `#`, `Title`, `Uploader`, `Length`. The row being played shows `▸` in `#`.
+- **Playlists** lists the playlists (`#`, `Name`, `Tracks`, `Length` = the sum of the known
+  durations), tab title `Playlists (n)`. Enter opens one in the same table: its tracks in the
+  columns above, tab title `Playlists › <name> (n)`; Esc or Backspace goes back to the list. The tab
+  is read from the `playlists` files each time it is shown and after every change.
+- Small centered modals: the playlist name (`P`, New playlist…; a bad name is shown under the box
+  until a good one is typed), the playlist picker (`A`), and the yes / no before deleting a playlist.
 - **Now playing** is docked above the Footer, three lines, always present. Idle it reads
   `Nothing playing — press / to search` (dim). It is built only from `MpvClient.status()`:
   `title`, `uploader`, `position`, `duration`, `paused`, `index`, `total`, `up_next`, `volume`,
@@ -54,10 +60,11 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 |---|---|---|
 | anywhere | `/` | focus the search box |
 | anywhere | `?` | help modal (Esc closes) |
-| anywhere | `1` `2` `3` `4` | Search / Queue / History / Favorites tab |
+| anywhere | `1` `2` `3` `4` `5` | Search / Queue / History / Favorites / Playlists tab |
 | anywhere | Ctrl-C | quit |
 | anywhere | Ctrl-P | command palette (Textual built-in: search, theme, help, quit) |
 | anywhere | `t` | next theme (cycles `App.available_themes`, saved to the settings file) |
+| table | `P` | save the queue as a playlist: a name modal (one track: its title; else `Queue <date>`), a playlist of that name is replaced; `Nothing to save` with no queue |
 | table | `S` | Settings modal: Enter flips a true / false setting, Esc closes |
 | table | `q` | quit (in the search box `q` is a letter) |
 | table | space | pause / resume |
@@ -68,6 +75,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 | table | `M` | mute / unmute |
 | Search · History · Favorites row | Enter | play this one (the queue becomes this row and the rows after it in that table) |
 | Search · History · Favorites row | `a` | add to the queue (starts playing if the queue was empty) |
+| Search · History · Favorites · Queue row | `A` | add to a playlist: a picker of the playlists plus `New playlist…` (then the name modal) |
 | Search · History · Favorites row | `f` | favorite / unfavorite this row |
 | Search | `m` | more results (the next batch, same dedupe as the CLI's `m`) |
 | Queue row | Enter | jump to this item |
@@ -75,6 +83,14 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 | Queue row | `K` / `J` | move up / down |
 | Queue | `c` | clear the queue (keeps the current track playing) |
 | Favorites row | `d` | remove from favorites |
+| Playlists row | Enter | open the playlist |
+| Playlists row | `d` | delete the playlist after a confirm (`y` / Enter deletes, Esc keeps) |
+| open playlist | Esc / Backspace | back to the list of playlists |
+| playlist track | Enter | play the whole playlist from this track (the queue becomes the playlist) |
+| playlist track | `a` | add to the queue |
+| playlist track | `d` | remove from the playlist |
+| playlist track | `K` / `J` | move up / down in the playlist |
+| open playlist | `s` | shuffle-play the playlist |
 
 Playback keys do nothing (no error) before a player exists.
 

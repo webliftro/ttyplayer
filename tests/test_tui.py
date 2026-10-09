@@ -1,7 +1,9 @@
 import asyncio
+import datetime
 import functools
 import importlib.resources
 import pathlib
+import random
 import re
 import sys
 import threading
@@ -15,12 +17,13 @@ from textual.widgets import (
     Header,
     Input,
     LoadingIndicator,
+    OptionList,
     ProgressBar,
     Static,
     TabbedContent,
 )
 
-from ttyplayer import control, favorites, history, player, settings, tui, youtube
+from ttyplayer import control, favorites, history, player, playlists, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -98,6 +101,14 @@ def library(monkeypatch, tmp_path):
     monkeypatch.setattr(history, "history_path", lambda: paths["history"])
     monkeypatch.setattr(favorites, "favorites_path", lambda: paths["favorites"])
     return paths
+
+
+@pytest.fixture(autouse=True)
+def playlists_dir(monkeypatch, tmp_path):
+    """Playlists in tmp_path too: tab 5, P and A write them."""
+    path = tmp_path / "playlists"
+    monkeypatch.setattr(playlists, "playlists_dir", lambda: path)
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -218,7 +229,7 @@ async def test_layout_header_search_tabs_panel_footer(clients, served):
         assert search_box.parent is app.query_one(LoadingIndicator).parent
         tabs = app.query_one(TabbedContent)
         assert [str(tabs.get_tab(pane).label) for pane in tabs.query("TabPane")] == [
-            "Search", "Queue", "History", "Favorites"
+            "Search", "Queue", "History", "Favorites", "Playlists"
         ]
         assert tabs.active == "search"
         assert tabs.get_pane("queue").query_one(tui.QueueTable)
@@ -604,7 +615,7 @@ async def test_help_lists_every_binding_and_closes(clients, served):
             lines = [str(s.render()) for s in app.screen.query(Static)]
             tables = [
                 *tui.VideoTable.BINDINGS, *tui.PickTable.BINDINGS, *tui.ResultsTable.BINDINGS,
-                *tui.QueueTable.BINDINGS, *tui.FavoritesTable.BINDINGS,
+                *tui.QueueTable.BINDINGS, *tui.FavoritesTable.BINDINGS, *tui.PlaylistTable.BINDINGS,
             ]
             for binding in [*tui.TtyplayerApp.BINDINGS, *tui.SearchBox.BINDINGS, *tables]:
                 assert f"{app.get_key_display(binding):>8}  {binding.description}" in lines
@@ -1442,7 +1453,7 @@ async def test_palette_provider_offers_every_command_and_runs_its_action(clients
         provider = tui.TtyplayerCommands(app.screen)
         hits = [hit async for hit in provider.discover()]
         assert [hit.text for hit in hits] == [
-            "Search…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute"
+            "Search…", "Playlists", "Save queue as playlist…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute"
         ]
         ran = []
         for _, action, _ in tui.COMMANDS:
@@ -1491,7 +1502,7 @@ def readme_tui_section():
 async def test_readme_documents_every_key_the_footer_shows(clients, served):
     owners = [
         tui.TtyplayerApp, tui.SearchBox, tui.VideoTable, tui.PickTable,
-        tui.ResultsTable, tui.FavoritesTable, tui.QueueTable,
+        tui.ResultsTable, tui.FavoritesTable, tui.QueueTable, tui.PlaylistTable,
     ]
     app = make_app(clients)
     async with run(app):
@@ -1652,3 +1663,360 @@ async def test_s_in_the_search_box_is_a_letter(clients, served):
         await pilot.pause()
         assert app.query_one(Input).value == "S"
         assert not isinstance(app.screen, tui.SettingsScreen)
+
+
+# --- the Playlists tab, P and A (tui-playlists) --------------------------------
+
+
+def make_playlist(name, videos):
+    playlists.create(name)
+    playlists.add(name, videos)
+
+
+def playlist_rows(app):
+    return rows(app, tui.PlaylistTable)
+
+
+def playlist_ids(name):
+    return [video.id for video in playlists.load(name)]
+
+
+async def open_playlists(pilot):
+    await on_tab(pilot, "5")
+    assert pilot.app.focused is pilot.app.query_one(tui.PlaylistTable)
+
+
+async def open_playlist(pilot, *keys):
+    """Tab 5, keys to reach a playlist's row, Enter to open it."""
+    await open_playlists(pilot)
+    await pilot.press(*keys, "enter")
+    await pilot.pause()
+
+
+@drive
+async def test_playlists_tab_lists_every_playlist_with_its_count_and_length(clients, served):
+    make_playlist("mix", [VIDEOS[0], VIDEOS[1], VIDEOS[0]])
+    playlists.create("empty")
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await pilot.pause()
+        assert tab_title(app, "playlists") == "Playlists (2)"
+        await open_playlists(pilot)
+        table = app.query_one(tui.PlaylistTable)
+        assert [str(column.label) for column in table.columns.values()] == ["#", "Name", "Tracks", "Length"]
+        assert playlist_rows(app) == [[" 1", "empty", "0", "0:00"], [" 2", "mix", "3", "2:02"]]
+        make_playlist("new", [VIDEOS[2]])  # from another terminal: shown the next time the tab is
+        await on_tab(pilot, "1")
+        await on_tab(pilot, "5")
+        assert [row[1] for row in playlist_rows(app)] == ["empty", "mix", "new"]
+        assert tab_title(app, "playlists") == "Playlists (3)"
+
+
+@drive
+async def test_playlists_tab_without_playlists(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlists(pilot)
+        assert tab_title(app, "playlists") == "Playlists"
+        assert playlist_rows(app) == []
+        await pilot.press("enter", "d", "s", "a", "K", "J", "escape")
+        await pilot.pause()
+        assert clients.made == [] and toasts(app) == [] and len(app.screen_stack) == 1
+
+
+@drive
+async def test_enter_opens_a_playlist_and_escape_or_backspace_goes_back(clients, served):
+    make_playlist("a list", [VIDEOS[0]])
+    make_playlist("mix", [VIDEOS[2], VIDEOS[1]])
+    favorites.add(VIDEOS[1])
+    app = make_app(clients)
+    async with run(app) as pilot:
+        for back in ("escape", "backspace"):
+            await open_playlist(pilot, "down")
+            table = app.query_one(tui.PlaylistTable)
+            assert [str(column.label) for column in table.columns.values()] == ["#", "Title", "Uploader", "Length"]
+            assert playlist_rows(app) == [[" 1", "Gamma", "Gus", "60:00"], [" 2", "Beta ♥", "Bob", "--:--"]]
+            assert tab_title(app, "playlists") == "Playlists › mix (2)"
+            await pilot.press(back)
+            await pilot.pause()
+            assert [row[1] for row in playlist_rows(app)] == ["a list", "mix"]
+            assert tab_title(app, "playlists") == "Playlists (2)"
+            assert table.cursor_row == 1  # back on the playlist it came from
+
+
+@drive
+async def test_enter_on_a_track_plays_the_whole_playlist_from_it_and_marks_it(clients, served):
+    make_playlist("mix", [VIDEOS[0], VIDEOS[1], VIDEOS[2], VIDEOS[0]])
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlist(pilot)
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        client = clients.made[0]
+        assert [video.id for video in client.queue] == ["a", "b", "c", "a"]
+        assert client.index == 1 and client.calls == [("play_current", "b")]
+        assert [row[0] for row in playlist_rows(app)] == [" 1", "▸2", " 3", " 4"]
+        assert queue_title(app) == "Queue (4)"
+
+
+@drive
+async def test_a_on_a_track_appends_it_to_the_queue(clients, served):
+    make_playlist("mix", VIDEOS)
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlist(pilot)
+        await pilot.press("down", "a", "down", "a")
+        await pilot.pause()
+        client = clients.made[0]
+        assert [video.id for video in client.queue] == ["b", "c"]
+        assert client.calls == [("play_current", "b")]
+
+
+@drive
+async def test_s_shuffle_plays_the_playlist(clients, served, monkeypatch):
+    make_playlist("mix", VIDEOS)
+    monkeypatch.setattr(tui, "shuffler", random.Random(4))
+    expected = list(VIDEOS)
+    random.Random(4).shuffle(expected)
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlist(pilot)
+        await pilot.press("s")
+        await pilot.pause()
+        client = clients.made[0]
+        assert client.queue == expected and client.index == 0
+        assert client.calls == [("play_current", expected[0].id)]
+        assert playlist_ids("mix") == ["a", "b", "c"]  # the file keeps its order
+
+
+@drive
+async def test_d_k_and_j_inside_a_playlist_edit_the_file(clients, served):
+    make_playlist("mix", VIDEOS)
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlist(pilot)
+        table = app.query_one(tui.PlaylistTable)
+        await pilot.press("J")
+        await pilot.pause()
+        assert playlist_ids("mix") == ["b", "a", "c"] and table.cursor_row == 1
+        await pilot.press("J", "J")  # already last: stays
+        await pilot.pause()
+        assert playlist_ids("mix") == ["b", "c", "a"] and table.cursor_row == 2
+        await pilot.press("K")
+        await pilot.pause()
+        assert playlist_ids("mix") == ["b", "a", "c"] and table.cursor_row == 1
+        assert [row[1] for row in playlist_rows(app)] == ["Beta", "Alpha", "Gamma"]
+        await pilot.press("d")
+        await pilot.pause()
+        assert playlist_ids("mix") == ["b", "c"]
+        assert toasts(app) == [("Removed from mix: Alpha", "information")]
+        assert [row[1] for row in playlist_rows(app)] == ["Beta", "Gamma"]
+        assert tab_title(app, "playlists") == "Playlists › mix (2)"
+
+
+@drive
+async def test_an_open_playlist_deleted_from_another_terminal_goes_back_to_the_list(clients, served):
+    make_playlist("mix", VIDEOS)
+    make_playlist("other", VIDEOS)
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlist(pilot)
+        playlists.delete("mix")
+        await pilot.press("d")
+        await pilot.pause()
+        assert toasts(app) == [("No playlist named mix", "error")]
+        assert [row[1] for row in playlist_rows(app)] == ["other"]
+
+
+@pytest.mark.parametrize("answer, kept", [("y", False), ("enter", False), ("escape", True)])
+@drive
+async def test_d_on_a_playlist_deletes_it_after_a_confirm(answer, kept, clients, served):
+    make_playlist("mix", VIDEOS)
+    make_playlist("other", VIDEOS)
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_playlists(pilot)
+        await pilot.press("d")
+        await pilot.pause()
+        assert isinstance(app.screen, tui.ConfirmScreen)
+        assert str(app.screen.query(Static).first().render()) == "Delete playlist mix?"
+        await pilot.press(answer)
+        await pilot.pause()
+        assert not isinstance(app.screen, tui.ConfirmScreen)
+        assert ("mix" in playlists.names()) is kept
+        assert len(playlist_rows(app)) == (2 if kept else 1)
+        assert toasts(app) == ([] if kept else [("Deleted playlist mix", "information")])
+
+
+async def name_dialog(pilot, name):
+    """Type name over the name modal's prefill and press Enter."""
+    assert isinstance(pilot.app.screen, tui.NameScreen)
+    pilot.app.screen.query_one(Input).value = name
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+@drive
+async def test_p_with_nothing_queued_says_so(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await pilot.press("escape", "P")
+        await pilot.pause()
+        assert toasts(app) == [("Nothing to save", "warning")]
+        assert len(app.screen_stack) == 1 and playlists.names() == []
+
+
+@drive
+async def test_p_after_the_queue_played_to_its_end_says_nothing_to_save(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        client = await queued(pilot, "enter")
+        for _ in range(3):
+            client.handle_message({"event": "end-file", "reason": "eof"})
+        await pilot.pause()
+        assert client.idle and len(client.queue) == 3
+        await pilot.press("P")
+        await pilot.pause()
+        assert toasts(app) == [("Nothing to save", "warning")]
+        assert len(app.screen_stack) == 1 and playlists.names() == []
+
+
+@drive
+async def test_p_saves_the_queue_under_a_valid_name(clients, served):
+    resolve = recording_resolver(VIDEOS)
+    app = make_app(clients, resolve=resolve)
+    async with run(app) as pilot:
+        await queued(pilot, "enter")
+        await pilot.press("P")
+        await pilot.pause()
+        assert app.screen.query_one(Input).value == f"Queue {datetime.date.today()}"
+        await name_dialog(pilot, "bad/name")
+        error = str(app.screen.query_one("#name-error", Static).render())
+        assert error == f"Bad playlist name 'bad/name': use {playlists.NAME_RULE}"
+        assert playlists.names() == []
+        await name_dialog(pilot, "road trip")
+        assert not isinstance(app.screen, tui.NameScreen)
+        assert playlist_ids("road trip") == ["a", "b", "c"]
+        assert toasts(app) == [("Saved 3 tracks to road trip", "information")]
+        assert tab_title(app, "playlists") == "Playlists (1)"
+        await app.workers.wait_for_complete()
+        assert resolve.asked == [("lofi", SEARCH_LIMIT)]  # Enter in the modal is not a search
+
+
+@drive
+async def test_p_with_one_track_suggests_its_title_and_replaces_a_playlist_of_that_name(clients, served):
+    make_playlist("Gamma", VIDEOS)
+    app = make_app(clients, resolve=lambda text, limit: [Video(id="c", title="Gamma: live!", uploader="Gus", duration=1)])
+    async with run(app) as pilot:
+        await queued(pilot, "enter")
+        await pilot.press("P")
+        await pilot.pause()
+        assert app.screen.query_one(Input).value == "Gamma live"
+        await name_dialog(pilot, "Gamma")
+        assert playlist_ids("Gamma") == ["c"]
+
+
+@drive
+async def test_escape_cancels_the_name_modal(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await queued(pilot, "enter")
+        await pilot.press("P")
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1 and playlists.names() == [] and toasts(app) == []
+
+
+def picker_options(app):
+    options = app.screen.query_one(OptionList)
+    return [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+
+
+@drive
+async def test_a_capital_adds_a_search_row_to_an_existing_playlist(clients, served):
+    make_playlist("mix", [VIDEOS[0]])
+    playlists.create("chill")
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("down", "A")
+        await pilot.pause()
+        assert isinstance(app.screen, tui.PlaylistPicker)
+        assert picker_options(app) == ["chill", "mix", "New playlist…"]
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert playlist_ids("mix") == ["a", "b"]
+        assert toasts(app) == [("Added to mix", "information")]
+        assert [row[:3] for row in playlist_rows(app)] == [[" 1", "chill", "0"], [" 2", "mix", "2"]]
+
+
+@drive
+async def test_a_capital_to_a_new_playlist_from_history_favorites_and_the_queue(clients, served):
+    history.record(VIDEOS[1])
+    favorites.add(VIDEOS[2])
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await queued(pilot, "enter")
+        await pilot.press("A")
+        await pilot.pause()
+        assert picker_options(app) == ["New playlist…"]
+        await pilot.press("enter")
+        await pilot.pause()
+        await name_dialog(pilot, "")
+        assert str(app.screen.query_one("#name-error", Static).render()).startswith("Bad playlist name ''")
+        await name_dialog(pilot, "picks")
+        assert playlist_ids("picks") == ["a"]
+        assert toasts(app) == [("Added to picks", "information")]
+        for tab in ("3", "4"):
+            await on_tab(pilot, tab)
+            await pilot.press("A", "enter")
+            await pilot.pause()
+        assert playlist_ids("picks") == ["a", "b", "c"]
+        await on_tab(pilot, "4")
+        await pilot.press("A", "end", "enter")  # New playlist… with a name taken
+        await pilot.pause()
+        await name_dialog(pilot, "picks")
+        assert str(app.screen.query_one("#name-error", Static).render()) == "A playlist named picks already exists"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1 and playlist_ids("picks") == ["a", "b", "c"]
+
+
+@drive
+async def test_a_capital_with_no_row_does_nothing(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        for tab in ("1", "2", "3", "4", "5"):
+            await on_tab(pilot, tab)
+            await pilot.press("A")
+            await pilot.pause()
+        assert len(app.screen_stack) == 1
+
+
+@drive
+async def test_playlist_keys_are_in_the_palette_footer_and_help(clients, served):
+    make_playlist("mix", VIDEOS)
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await pilot.press("escape", "ctrl+p")
+        await pilot.pause()
+        await pilot.press(*"playlists")
+        await pilot.pause(0.5)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert app.query_one(TabbedContent).active == "playlists"
+        assert app.focused is app.query_one(tui.PlaylistTable)
+        shown = {(key.key, key.description) for key in app.query("FooterKey") if key.description}
+        assert shown >= {("d", "Remove"), ("s", "Shuffle"), ("A", "To playlist"), ("P", "Save queue")}
+        await pilot.press("question_mark")
+        await pilot.pause()
+        lines = [str(s.render()) for s in app.screen.query(Static)]
+        assert "Playlists table" in lines
+
+
+def test_the_design_doc_lists_the_playlist_keys():
+    design = (pathlib.Path(__file__).parent.parent / "docs" / "tui-design.md").read_text(encoding="utf-8")
+    for key in ("`5`", "`P`", "`A`", "`s`", "Backspace"):
+        assert key in design.split("## Keys", 1)[1].split("\n## ", 1)[0]
