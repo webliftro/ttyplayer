@@ -242,6 +242,23 @@ def test_the_queue_index_and_idle_mirror_the_server(served, connect):
     assert client.states[-1]["title"] == "Song 2"
 
 
+def test_the_servers_levels_reach_the_status(served, connect):
+    client = connected(connect(served.url))
+    assert client.status()["levels"] is None
+    with served.player.queue_lock:
+        served.player.queue[:] = VIDEOS
+    served.player.jump(0)
+    served.player.show_levels = True
+    served.player._set_levels([-6.0, -9.0])  # as a levels reply would, on the player's reader thread
+    until(lambda: client.status()["levels"] == [-6.0, -9.0])
+
+
+def test_set_levels_leaves_the_server_alone(served, connect):
+    client = connected(connect(served.url))
+    client.set_levels(False)
+    assert served.posts() == [] and served.player.sent == []
+
+
 def test_a_track_the_server_could_not_play_reaches_the_status_and_the_queue_moves_on(served, connect):
     client = connected(connect(served.url))
     with served.player.queue_lock:

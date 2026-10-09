@@ -455,6 +455,24 @@ def test_status_carries_the_players_error(fake):
 # --- the socket ----------------------------------------------------------
 
 
+def test_status_and_socket_carry_the_levels(fake):
+    hub = server.Broadcaster()
+    fake.status = lambda: {"idle": False, "index": 1, "levels": [-12.5, -90.0]}
+
+    async def test(http):
+        reply = await http.get("/api/status", headers=AUTH)
+        ws = await http.ws_connect(f"/ws?token={TOKEN}")
+        first = await ws.receive_json(timeout=2)
+        hub({**fake.status(), "levels": None})
+        second = await ws.receive_json(timeout=2)
+        await ws.close()
+        return await reply.json(), first, second
+
+    polled, first, second = with_http(server.make_app(fake, current(), hub), test)
+    assert polled["levels"] == first["levels"] == [-12.5, -90.0]
+    assert second["levels"] is None
+
+
 def test_socket_carries_the_players_error(fake):
     hub = server.Broadcaster()
     fake.error = "Could not play Song 0: unavailable"

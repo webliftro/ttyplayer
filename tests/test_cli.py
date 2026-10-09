@@ -102,9 +102,10 @@ class FakeClient:
 
     instances = []
 
-    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False):
+    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False, levels=True):
         self.video = video
         self.headless_pcm = headless_pcm
+        self.levels = levels
         self.on_play = on_play
         self.on_state = on_state
         self.queue = []
@@ -120,6 +121,15 @@ class FakeClient:
 
     def run(self):
         self.ran = True
+
+
+@pytest.mark.parametrize("saved, levels", [(None, True), ("false", False)])
+def test_start_mpv_follows_the_show_levels_setting(saved, levels, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    if saved:
+        settings.update("show_levels", saved)
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    assert cli.start_mpv(False).levels is levels
 
 
 def test_play_queues_the_picks_in_order_and_records_history(monkeypatch, tmp_path):
@@ -609,10 +619,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):

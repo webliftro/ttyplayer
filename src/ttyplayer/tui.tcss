@@ -23,7 +23,7 @@ ResultsTable {
 }
 
 NowPlaying {
-    height: 5;
+    height: 7;
     border: round $primary;
     border-title-color: $accent;
     background: $surface;
@@ -45,6 +45,19 @@ NowPlaying.-idle .np-line {
 
 .np-line {
     height: 1;
+}
+
+NowPlaying.-no-levels {
+    height: 5;
+}
+
+NowPlaying.-no-levels .np-level {
+    display: none;
+}
+
+.np-level {
+    height: 1;
+    color: $accent;
 }
 
 #np-state {

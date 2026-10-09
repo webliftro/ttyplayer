@@ -25,6 +25,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 │ │ ▶  Never Gonna Give You Up · Rick Astley                        [2/5] │  title bold accent
 │ │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  1:23 / 3:33 │  ProgressBar
 │ │ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%    Up next: lofi hip hop radio       started in 2.4s │  volume · queue · timing
+│ │ L ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │  level meter (show_levels)
+│ │ R ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │
 │ └───────────────────────────────────────────────────────────────────────┘
 │ space Pause  n Next  p Prev  a Add  f Fav  / Search  ? Help  q Quit      │  Footer (from BINDINGS)
 └──────────────────────────────────────────────────────────────────────────┘
@@ -40,10 +42,17 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   is read from the `playlists` files each time it is shown and after every change.
 - Small centered modals: the playlist name (`P`, New playlist…; a bad name is shown under the box
   until a good one is typed), the playlist picker (`A`), and the yes / no before deleting a playlist.
-- **Now playing** is docked above the Footer, three lines, always present. Idle it reads
+- **Now playing** is docked above the Footer, five lines (three with `show_levels` off), always
+  present. Idle it reads
   `Nothing playing — press / to search` (dim). It is built only from `MpvClient.status()`:
   `title`, `uploader`, `position`, `duration`, `paused`, `index`, `total`, `up_next`, `volume`,
-  `started_in` (the last one only when `player.timing()`).
+  `started_in` (the last one only when `player.timing()`), `levels`.
+- The last two lines are the level meter: `L` and `R` bars of the volume meter's cells
+  (`player.level_meter()`), as wide as the panel, empty at −60 dBFS, full at 0 dBFS, in `$accent`.
+  `levels` is `None` while paused (and before mpv has measured): the bars are empty, not hidden, so
+  the panel never jumps. They update with each status, about every `LEVELS_INTERVAL` (0.1 s) while
+  playing. `show_levels = false` hides both lines (the panel shrinks to three) and, in a running TUI,
+  takes the filter out of mpv at once (`af remove`).
 - The Footer is Textual's own, fed by `BINDINGS` — key hints are never typed by hand twice. `?`
   opens a help modal that lists every binding with its description, generated from the same
   `BINDINGS`.

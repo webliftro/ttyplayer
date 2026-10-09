@@ -664,7 +664,13 @@ def start_playback(videos, with_video):
 def start_mpv(with_video, on_state=None, headless_pcm=False):
     """An MpvClient that keeps history, or a one-line message and exit 1 when mpv cannot start."""
     try:
-        return player.MpvClient(with_video, on_play=history.record, on_state=on_state, headless_pcm=headless_pcm)
+        return player.MpvClient(
+            with_video,
+            on_play=history.record,
+            on_state=on_state,
+            headless_pcm=headless_pcm,
+            levels=load_settings().show_levels,
+        )
     except FileNotFoundError:
         fail(f"mpv is not installed. {mpv_install_hint()}")
     except RuntimeError as error:

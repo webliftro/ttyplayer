@@ -1,5 +1,6 @@
 import _thread
 import json
+import math
 import os
 import queue
 import secrets
@@ -31,6 +32,14 @@ VOLUME_SOURCES = {"system-volume": "system", "ao-volume": "device", "volume": "p
 SYSTEM_VOLUME_TIMEOUT = 1  # seconds osascript may take
 CONNECT_ATTEMPTS = 30  # x 0.1s = 3s for mpv to create its socket
 KEY_POLL_SECONDS = 0.1  # how often the Windows key reader looks for a key, or a remote stop
+# The level meter: a labeled astats filter writes each channel's peak (dBFS) into af-metadata/levels.
+LEVELS_LABEL = "levels"
+LEVELS_FILTER = f"@{LEVELS_LABEL}:lavfi=[astats=metadata=1:reset=1:measure_overall=none:measure_perchannel=Peak_level]"
+LEVELS_PROPERTY = f"af-metadata/{LEVELS_LABEL}"
+LEVEL_KEY = "lavfi.astats.{}.Peak_level"  # {} is the channel, from 1
+LEVELS_INTERVAL = 0.1  # seconds between level reads while a track plays
+LEVEL_SILENCE = -90.0  # dBFS stored for astats' -inf
+LEVEL_FLOOR = -60.0  # dBFS at which a level bar is empty; 0 dBFS fills it
 
 # What each key does, by the key's name: the character typed, or the arrow's direction.
 KEYS = {
@@ -51,13 +60,18 @@ TERMINAL_ARROWS = {"[D": "left", "[C": "right", "[A": "up", "[B": "down"}  # aft
 CONSOLE_ARROWS = {"K": "left", "M": "right", "H": "up", "P": "down"}  # after \xe0 or \x00
 
 
-def build_argv(video, socket_path, headless_pcm=False):
-    """mpv's command line; headless_pcm writes the sound to its stdout for ttyplayer serve --stream, not to speakers."""
+def build_argv(video, socket_path, headless_pcm=False, levels=True):
+    """mpv's command line; headless_pcm writes the sound to its stdout for ttyplayer serve --stream, not to speakers.
+
+    levels adds the level meter's filter, except under headless_pcm.
+    """
     argv = ["mpv", "--idle", "--no-terminal", f"--input-ipc-server={socket_path}"]
     if headless_pcm:
         from ttyplayer.stream import MPV_PCM_OPTIONS  # asyncio loads only for serve --stream
 
         argv += MPV_PCM_OPTIONS
+    elif levels:
+        argv.append(f"--af={LEVELS_FILTER}")
     if not video:
         # Audio only: also tell yt-dlp not to pick (and buffer) a video stream,
         # which shortens the wait before sound starts.
@@ -70,13 +84,43 @@ def timing():
     return os.environ.get("TTYPLAYER_TIMING") == "1"
 
 
+def meter_cells(fraction, cells):
+    """cells meter cells, the first fraction (0 to 1) of them filled."""
+    filled = max(0, min(cells, round(fraction * cells)))
+    return "▮" * filled + "▯" * (cells - filled)
+
+
 def volume_meter(volume, muted=False):
     """🔊 (🔇 when muted) and ten cells filled to the volume, then the number; -- while mpv has not said."""
     icon = "🔇" if muted else "🔊"
     if volume is None:
-        return f"{icon} {'▯' * VOLUME_CELLS} --"
-    filled = max(0, min(VOLUME_CELLS, round(volume / 100 * VOLUME_CELLS)))
-    return f"{icon} {'▮' * filled}{'▯' * (VOLUME_CELLS - filled)} {round(volume)}%"
+        return f"{icon} {meter_cells(0, VOLUME_CELLS)} --"
+    return f"{icon} {meter_cells(volume / 100, VOLUME_CELLS)} {round(volume)}%"
+
+
+def level_meter(label, level, width):
+    """label, a space, then cells to fill width, filled from LEVEL_FLOOR to 0 dBFS; empty for a None level."""
+    fraction = 0 if level is None else (level - LEVEL_FLOOR) / -LEVEL_FLOOR
+    return f"{label} {meter_cells(fraction, max(0, width - len(label) - 1))}"
+
+
+def parse_levels(metadata):
+    """[left, right] peak dBFS from af-metadata/levels (mono: the one channel twice); None when it has no level."""
+    try:
+        channels = [parse_level(metadata[LEVEL_KEY.format(1)])]
+        if LEVEL_KEY.format(2) in metadata:
+            channels.append(parse_level(metadata[LEVEL_KEY.format(2)]))
+    except (TypeError, KeyError, ValueError):
+        return None
+    return [channels[0], channels[-1]]
+
+
+def parse_level(text):
+    """A dBFS string as astats writes it; -inf (silence) is LEVEL_SILENCE."""
+    level = float(text)
+    if math.isnan(level) or level == math.inf:
+        raise ValueError(text)
+    return max(level, LEVEL_SILENCE)
 
 
 def macos():
@@ -241,8 +285,10 @@ class MpvClient:
     poller = None
     volume_writer = None  # macOS only
     headless_pcm = False  # no local sound: process.stdout carries it as PCM for serve --stream (see stream.py)
+    show_levels = False  # whether mpv runs the level filter (never under headless_pcm)
+    levels = None  # [left, right] peak dBFS while a track plays with show_levels, else None
 
-    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False):
+    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False, levels=True):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
         self.on_play = on_play
@@ -250,11 +296,12 @@ class MpvClient:
         # the terminal itself.
         self.on_state = on_state
         self.headless_pcm = headless_pcm
+        self.show_levels = levels and not headless_pcm
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
             self.process = subprocess.Popen(
-                build_argv(video, self.socket_path, headless_pcm), stdout=subprocess.PIPE if headless_pcm else None
+                build_argv(video, self.socket_path, headless_pcm, levels), stdout=subprocess.PIPE if headless_pcm else None
             )
         except FileNotFoundError:
             self._remove_socket_dir()
@@ -278,7 +325,7 @@ class MpvClient:
         for number, name in enumerate(["time-pos", "duration", "pause", "media-title", "volume", "mute", "ao-volume"], start=1):
             self.send(["observe_property", number, name])
         self.stop_polling = threading.Event()
-        self.poller = threading.Thread(target=self.poll_volume, daemon=True)
+        self.poller = threading.Thread(target=self.poll, daemon=True)
         self.poller.start()
         if macos():
             self.start_volume_writer()
@@ -346,18 +393,55 @@ class MpvClient:
             self.error = None
             return True
 
+    def poll(self):
+        """Read the levels every LEVELS_INTERVAL while show_levels, the volumes every VOLUME_POLL_SECONDS, until quit()."""
+        waited = 0
+        while not self.stop_polling.wait(interval := LEVELS_INTERVAL if self.show_levels else VOLUME_POLL_SECONDS):
+            if self.show_levels:
+                self.poll_levels()
+            waited = round(waited + interval, 6)  # ten 0.1s waits make 1.0, not 0.9999999999999999
+            if waited >= VOLUME_POLL_SECONDS:
+                waited = 0
+                self.poll_volume()
+
+    def poll_levels(self):
+        """Ask mpv for the levels while a track plays; paused or idle, there are none."""
+        if self.playing():
+            self.get_property(LEVELS_PROPERTY, self._levels_read)
+        else:
+            self._set_levels(None)
+
+    def _levels_read(self, metadata):
+        self._set_levels(parse_levels(metadata) if self.show_levels and self.playing() else None)
+
+    def _set_levels(self, levels):
+        if levels != self.levels:
+            self.levels = levels
+            self.notify()
+
+    def set_levels(self, enabled):
+        """Add or remove the level filter in the running mpv; under headless_pcm there is none."""
+        if self.headless_pcm or enabled == self.show_levels:
+            return
+        self.show_levels = enabled
+        self.send(["af", "add", LEVELS_FILTER] if enabled else ["af", "remove", f"@{LEVELS_LABEL}"])
+        if not enabled:
+            self._set_levels(None)
+
+    def playing(self):
+        return not self.idle and not self.state.get("pause")
+
     def poll_volume(self):
-        """Refresh the volumes every VOLUME_POLL_SECONDS while a track is loaded, until quit().
+        """Refresh the volumes while a track is loaded.
 
         mpv sends no property-change for ao-volume when the OS changes it (the app's
         stream volume on PulseAudio/PipeWire), so it is read. On macOS mpv can't see the
         system volume at all, so osascript reads it here, never at once with write_volumes().
         """
-        while not self.stop_polling.wait(VOLUME_POLL_SECONDS):
-            if not self.idle:
-                if macos():
-                    self._system_volume(lambda: self._commit_volume("system-volume", read_system_volume()))
-                self.get_property("ao-volume", self._ao_volume_read)
+        if not self.idle:
+            if macos():
+                self._system_volume(lambda: self._commit_volume("system-volume", read_system_volume()))
+            self.get_property("ao-volume", self._ao_volume_read)
 
     def start_volume_writer(self):
         """Start the thread that sets the system volume, so a key never waits on osascript."""
@@ -664,6 +748,7 @@ class MpvClient:
             "idle": self.idle,
             "error": self.error,
             "stream": self.headless_pcm,
+            "levels": self.levels,
         }
 
     def notify(self):

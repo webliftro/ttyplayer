@@ -183,7 +183,9 @@ Messages are newline-delimited JSON:
 - reply: `{"request_id": 0, "error": "success"}`
 - event: `{"event": "property-change", "id": 1, "name": "time-pos", "data": 12.3}`
 
-mpv only reports property changes you subscribe to, so `__init__` sends `observe_property` for `time-pos`, `duration`, `pause`, `media-title`, `volume`, `mute` and `ao-volume`. Commands used: `loadfile`, `cycle pause`, `seek`, `add volume` / `add ao-volume`, `cycle mute`, `get_property`, `quit`.
+mpv only reports property changes you subscribe to, so `__init__` sends `observe_property` for `time-pos`, `duration`, `pause`, `media-title`, `volume`, `mute` and `ao-volume`. Commands used: `loadfile`, `cycle pause`, `seek`, `add volume` / `add ao-volume`, `cycle mute`, `get_property`, `af add` / `af remove`, `quit`.
+
+mpv exposes no raw audio over IPC, but a labeled lavfi filter in its `--af` chain publishes its metadata: `build_argv()` adds `LEVELS_FILTER` (`@levels`, an `astats` filter writing each channel's `Peak_level`) unless `show_levels` is off or under `headless_pcm`, and while a track plays (not paused, not idle) the poller reads `af-metadata/levels` every `LEVELS_INTERVAL` (0.1 s, the volumes then every 20th tick); `parse_levels()` turns it into `status()["levels"]`, `[left, right]` dBFS (`-inf` is `-90.0`, mono is one channel twice, anything else `None`), notifying only on a change; `set_levels()` adds or removes the filter in a running mpv.
 
 `send()` tags every command with an increasing `request_id`. `get_property(name, callback)` registers the callback for that id before sending; `handle_message` hands a reply's `data` to it (`None` on an error) and drops replies nobody registered (`observe_property`, `loadfile`, ...).
 

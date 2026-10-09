@@ -104,6 +104,8 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 `ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
 
+Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
+
 | Where | Key | Action |
 |---|---|---|
 | table | `↑` / `↓` | move through the list (volume is `-` / `+`) |
@@ -157,6 +159,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `remote_url` | *none* | the server `ttyplayer tui` drives instead of playing itself, e.g. `http://host:7700` |
 | `stream_enabled` | `false` | `ttyplayer serve` streams the sound to the web remote instead of playing it, as `--stream` does |
 | `spotify_client_id` | *none* | the Client ID of your own Spotify app, which `ttyplayer spotify login` needs (see Spotify above) |
+| `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
@@ -165,7 +168,7 @@ ttyplayer config set <key> <value>   change it: ttyplayer config set show_clock 
 ttyplayer config path                where the file is
 ```
 
-In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock shows or hides at once); the others are set with `ttyplayer config set`.
+In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock and the level meter show or hide at once); the others are set with `ttyplayer config set`.
 
 ## Server
 

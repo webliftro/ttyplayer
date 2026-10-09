@@ -14,6 +14,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.command import DiscoveryHit, Hit, Provider
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     DataTable,
@@ -107,8 +108,21 @@ def timing_text(status):
     return ""
 
 
+class LevelMeter(Static):
+    """One channel's level bar, as wide as the widget: player.level_meter() of level (dBFS, or None for empty)."""
+
+    level = reactive(None)
+
+    def __init__(self, label, **kwargs):
+        super().__init__(**kwargs)
+        self.label = label
+
+    def render(self):
+        return player.level_meter(self.label, self.level, self.size.width)
+
+
 class NowPlaying(Vertical):
-    """Three lines built from MpvClient.status(); show() is the only writer."""
+    """Three lines built from MpvClient.status(), then the level meter's two; show() is the only writer."""
 
     BORDER_TITLE = "Now playing"
 
@@ -126,6 +140,8 @@ class NowPlaying(Vertical):
             yield Static(id="np-volume")
             yield Static(id="np-next", markup=False)
             yield Static(id="np-timing")
+        yield LevelMeter("L", id="np-level-left", classes="np-level")
+        yield LevelMeter("R", id="np-level-right", classes="np-level")
 
     def on_mount(self):
         self.show(None)
@@ -133,6 +149,9 @@ class NowPlaying(Vertical):
     def show(self, status):
         idle = status is None or status["idle"]
         self.set_class(idle, "-idle")
+        left, right = (not idle and status.get("levels")) or (None, None)
+        self.query_one("#np-level-left", LevelMeter).level = left
+        self.query_one("#np-level-right", LevelMeter).level = right
         if idle:
             return
         self.query_one("#np-state", Static).update("⏸" if status["paused"] else "▶")
@@ -147,6 +166,9 @@ class NowPlaying(Vertical):
         self.query_one("#np-volume", Static).update(player.volume_meter(status["volume"], status["muted"]))
         self.query_one("#np-next", Static).update(queue_text(status))
         self.query_one("#np-timing", Static).update(timing_text(status))
+
+    def show_levels(self, shown):
+        self.set_class(not shown, "-no-levels")
 
 
 class SearchBox(Input):
@@ -488,6 +510,7 @@ class TtyplayerApp(App):
         self.show_favorites()  # first: the other tables read favorite_ids for their ♥
         self.show_history()
         self.show_playlists()
+        self.query_one(NowPlaying).show_levels(self.settings.show_levels)
         self.query_one(SearchBox).focus()
 
     def on_unmount(self):
@@ -589,7 +612,9 @@ class TtyplayerApp(App):
         if self.client is not None:
             return self.client
         try:
-            self.client = self.client_factory(self.video, on_play=self.on_play, on_state=self.on_player_state)
+            self.client = self.client_factory(
+                self.video, on_play=self.on_play, on_state=self.on_player_state, levels=self.settings.show_levels
+            )
         except FileNotFoundError:
             self.toast("mpv is not installed. Install it with: brew install mpv", severity="error")
             return None
@@ -923,7 +948,7 @@ class TtyplayerApp(App):
         self.toast(unknown, severity="warning")
 
     def change_setting(self, key, value):
-        """Set key to value for this app and in the file; the clock shows or hides at once."""
+        """Set key to value for this app and in the file; the clock and the level meter show or hide at once."""
         self.settings = dataclasses.replace(self.settings, **{key: value})
         try:
             config.change(key, value)
@@ -931,12 +956,20 @@ class TtyplayerApp(App):
             self.toast(f"Could not save settings: {error}", severity="error")
         if key == "show_clock":
             self.show_clock()
+        if key == "show_levels":
+            self.show_levels()
 
     def show_clock(self):
         """Header's show_clock is fixed when it is built, so a new Header replaces the old one."""
         main = self.screen_stack[0]
         main.query_one(Header).remove()
         main.mount(Header(show_clock=self.settings.show_clock), before=0)
+
+    def show_levels(self):
+        """The panel's two bars, and mpv's filter for them, follow show_levels."""
+        self.screen_stack[0].query_one(NowPlaying).show_levels(self.settings.show_levels)
+        if self.client:
+            self.client.set_levels(self.settings.show_levels)
 
     def action_settings(self):
         if not isinstance(self.screen, SettingsScreen):

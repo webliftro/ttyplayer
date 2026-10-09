@@ -57,6 +57,62 @@ def test_build_argv_with_video():
     assert not any(a.startswith("--ytdl-format") for a in argv)
 
 
+LEVELS_ARG = "--af=@levels:lavfi=[astats=metadata=1:reset=1:measure_overall=none:measure_perchannel=Peak_level]"
+
+
+def test_build_argv_adds_the_level_filter_unless_levels_is_off():
+    with_levels = player.build_argv(video=False, socket_path="/tmp/x.sock")
+    without = player.build_argv(video=False, socket_path="/tmp/x.sock", levels=False)
+    assert LEVELS_ARG in with_levels
+    assert [arg for arg in with_levels if arg != LEVELS_ARG] == without
+    assert not [arg for arg in without if arg.startswith("--af")]
+
+
+def test_build_argv_headless_pcm_has_no_level_filter():
+    assert player.build_argv(False, "/tmp/x.sock", headless_pcm=True) == player.build_argv(
+        False, "/tmp/x.sock", headless_pcm=True, levels=False
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata, levels",
+    [
+        ({"lavfi.astats.1.Peak_level": "-12.500000", "lavfi.astats.2.Peak_level": "-3.25"}, [-12.5, -3.25]),
+        ({"lavfi.astats.1.Peak_level": "-6.0"}, [-6.0, -6.0]),  # mono
+        ({"lavfi.astats.1.Peak_level": "-inf", "lavfi.astats.2.Peak_level": "-inf"}, [-90.0, -90.0]),
+        ({"lavfi.astats.1.Peak_level": "-120.0", "lavfi.astats.2.Peak_level": "0.000000"}, [-90.0, 0.0]),
+        ({}, None),  # the filter has not run yet
+        (None, None),  # the property is unavailable: the reply's error
+        ({"lavfi.astats.1.Peak_level": "loud"}, None),
+        ({"lavfi.astats.1.Peak_level": "nan"}, None),
+        ({"lavfi.astats.1.Peak_level": "-1.0", "lavfi.astats.2.Peak_level": None}, None),
+        ("not a dict", None),
+    ],
+)
+def test_parse_levels_reads_each_channels_peak(metadata, levels):
+    assert player.parse_levels(metadata) == levels
+
+
+@pytest.mark.parametrize(
+    "level, bar",
+    [
+        (None, "L ▯▯▯▯▯▯▯▯▯▯"),
+        (-90.0, "L ▯▯▯▯▯▯▯▯▯▯"),
+        (-60.0, "L ▯▯▯▯▯▯▯▯▯▯"),
+        (-30.0, "L ▮▮▮▮▮▯▯▯▯▯"),
+        (-6.0, "L ▮▮▮▮▮▮▮▮▮▯"),
+        (0.0, "L ▮▮▮▮▮▮▮▮▮▮"),
+        (3.0, "L ▮▮▮▮▮▮▮▮▮▮"),  # a clipped peak stays full
+    ],
+)
+def test_level_meter_fills_from_minus_sixty_to_zero_dbfs(level, bar):
+    assert player.level_meter("L", level, width=12) == bar
+
+
+def test_level_meter_narrower_than_its_label_has_no_cells():
+    assert player.level_meter("L", 0.0, width=1) == "L "
+
+
 def make_client(videos):
     """A MpvClient with no mpv behind it: queue only, load() just records urls."""
     client = player.MpvClient.__new__(player.MpvClient)
@@ -183,6 +239,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "idle": True,
         "error": None,
         "stream": False,
+        "levels": None,
     }
 
 
@@ -983,7 +1040,7 @@ def test_replies_reach_the_callback_registered_for_their_id():
     first, second = [], []
     client.get_property("ao-volume", first.append)
     client.get_property("volume", second.append)
-    client.handle_message({"request_id": 2, "error": "success", "data": 80.0})
+    client.handle_message({"request_id": client.request_id, "error": "success", "data": 80.0})
     client.handle_message({"request_id": 1, "error": "success", "data": 30.0})
     assert (first, second) == ([30.0], [80.0])
 
@@ -1026,7 +1083,7 @@ class OneTick:
 
 def poll(client, ticks=1):
     client.stop_polling = OneTick(ticks)
-    client.poll_volume()
+    client.poll()
     return client.stop_polling.waited
 
 
@@ -1072,10 +1129,126 @@ def test_a_polled_error_falls_back_to_the_player_volume():
     assert (client.notified[-1]["volume"], client.notified[-1]["volume_source"]) == (100.0, "player")
 
 
+def levels_client():
+    """wired_client playing A with the level filter on."""
+    client = wired_client([A])
+    client.show_levels = True
+    client.play_current()
+    client.ipc.requests.clear()
+    return client
+
+
+STEREO = {"lavfi.astats.1.Peak_level": "-20.000000", "lavfi.astats.2.Peak_level": "-inf"}
+
+
+def test_the_poll_asks_for_the_levels_every_tenth_of_a_second_while_playing():
+    client = levels_client()
+    assert poll(client, ticks=3) == [player.LEVELS_INTERVAL] * 4
+    assert [r["command"] for r in client.ipc.requests] == [["get_property", "af-metadata/levels"]] * 3
+
+
+def test_with_levels_shown_the_volume_is_still_polled_every_two_seconds():
+    client = levels_client()
+    poll(client, ticks=40)
+    commands = [r["command"] for r in client.ipc.requests]
+    assert commands.count(["get_property", "ao-volume"]) == 2
+    assert commands.index(["get_property", "ao-volume"]) == 20  # after the 20th levels read
+
+
+def test_a_levels_reply_is_kept_shown_in_status_and_notified():
+    client = levels_client()
+    poll(client)
+    client.handle_message({"request_id": client.request_id, "error": "success", "data": STEREO})
+    assert client.levels == [-20.0, -90.0]
+    assert client.notified[-1]["levels"] == [-20.0, -90.0]
+    assert json.loads(json.dumps(client.status()))["levels"] == [-20.0, -90.0]
+
+
+def test_an_unchanged_levels_reply_does_not_notify():
+    client = levels_client()
+    client.levels = [-20.0, -90.0]
+    notified = len(client.notified)
+    poll(client)
+    client.handle_message({"request_id": client.request_id, "error": "success", "data": STEREO})
+    assert len(client.notified) == notified
+
+
+@pytest.mark.parametrize("reply", [{"error": "property unavailable"}, {"error": "success", "data": {}}])
+def test_missing_levels_are_none_and_the_poll_keeps_going(reply):
+    client = levels_client()
+    client.levels = [-20.0, -20.0]
+    poll(client)
+    client.handle_message({"request_id": client.request_id, **reply})
+    assert client.levels is None
+    poll(client)
+    assert [r["command"] for r in client.ipc.requests] == [["get_property", "af-metadata/levels"]] * 2
+
+
+def test_paused_there_are_no_levels_and_none_are_asked_for():
+    client = levels_client()
+    client.levels = [-20.0, -20.0]
+    client.handle_message({"event": "property-change", "name": "pause", "data": True})
+    poll(client)
+    assert client.ipc.requests == []
+    assert client.levels is None
+    assert client.notified[-1]["levels"] is None
+
+
+def test_a_reply_that_lands_after_pausing_is_dropped():
+    client = levels_client()
+    poll(client)
+    client.handle_message({"event": "property-change", "name": "pause", "data": True})
+    client.handle_message({"request_id": client.request_id, "error": "success", "data": STEREO})
+    assert client.levels is None
+
+
+def test_idle_there_are_no_levels():
+    client = wired_client([A])
+    client.show_levels = True
+    client.levels = [-20.0, -20.0]
+    poll(client)
+    assert client.ipc.requests == []
+    assert client.status()["levels"] is None
+
+
+def test_without_levels_the_poll_never_asks_for_them():
+    client = wired_client([A])
+    client.play_current()
+    poll(client, ticks=2)
+    assert ["get_property", "af-metadata/levels"] not in [r["command"] for r in client.ipc.requests]
+
+
+def test_set_levels_removes_and_adds_the_filter_in_the_running_mpv():
+    client = levels_client()
+    client.levels = [-20.0, -20.0]
+    client.set_levels(False)
+    assert client.levels is None and client.notified[-1]["levels"] is None
+    client.set_levels(False)  # already off: nothing sent
+    client.set_levels(True)
+    assert [r["command"] for r in client.ipc.requests] == [
+        ["af", "remove", "@levels"],
+        ["af", "add", LEVELS_ARG.removeprefix("--af=")],
+    ]
+    assert client.show_levels
+
+
+def test_set_levels_does_nothing_under_headless_pcm():
+    client = wired_client([A])
+    client.headless_pcm = True
+    client.set_levels(True)
+    assert client.ipc.requests == [] and not client.show_levels
+
+
+def test_handle_control_status_carries_the_levels(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    client.levels = [-1.5, -2.5]
+    assert client.handle_control("status")["levels"] == [-1.5, -2.5]
+
+
 def test_quit_stops_the_poll_before_closing_the_socket():
     client = wired_client()
     client.stop_polling = threading.Event()
-    client.poller = threading.Thread(target=client.poll_volume, daemon=True)
+    client.poller = threading.Thread(target=client.poll, daemon=True)
     client.poller.start()
     client.process = type("Process", (), {"wait": lambda self, timeout: None})()
     client.ipc.close = lambda: client.ipc.requests.append("closed")
@@ -1568,6 +1741,16 @@ def piped_client(monkeypatch):
     process = type("Process", (), {"wait": lambda self, timeout: None})()
     monkeypatch.setattr(player.subprocess, "Popen", lambda argv, stdout=None: argvs.append(argv) or process)
     return player.MpvClient(), argvs
+
+
+def test_mpv_client_starts_mpv_with_the_level_filter_unless_levels_is_off(monkeypatch):
+    client, argvs = piped_client(monkeypatch)
+    client.quit()
+    assert LEVELS_ARG in argvs[0] and client.show_levels
+    monkeypatch.setattr(player.subprocess, "Popen", lambda argv, stdout=None: argvs.append(argv) or client.process)
+    quiet = player.MpvClient(levels=False)
+    quiet.quit()
+    assert LEVELS_ARG not in argvs[1] and not quiet.show_levels
 
 
 def test_mpv_client_on_windows_talks_over_a_named_pipe(monkeypatch):

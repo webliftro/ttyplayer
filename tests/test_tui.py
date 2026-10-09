@@ -36,8 +36,9 @@ VIDEOS = [
 class FakeClient(player.MpvClient):
     """Stands in for MpvClient: the real queue edits and status(), never mpv; records the calls."""
 
-    def __init__(self, video=False, on_play=None, on_state=None):
+    def __init__(self, video=False, on_play=None, on_state=None, levels=True):
         self.video = video
+        self.show_levels = levels
         self.on_play = on_play
         self.on_state = on_state
         self.queue_lock = threading.RLock()
@@ -131,8 +132,8 @@ def served(monkeypatch):
 def clients():
     made = []
 
-    def factory(video=False, on_play=None, on_state=None):
-        made.append(FakeClient(video, on_play, on_state))
+    def factory(video=False, on_play=None, on_state=None, levels=True):
+        made.append(FakeClient(video, on_play, on_state, levels))
         return made[-1]
 
     factory.made = made
@@ -1463,6 +1464,97 @@ async def test_panel_meter_follows_the_device_volume(clients, served):
         assert text(app, "#np-volume") == "🔊 ▮▮▮▮▮▮▮▮▯▯ 75%"
 
 
+def level_bars(app):
+    return [text(app, "#np-level-left"), text(app, "#np-level-right")]
+
+
+@drive
+async def test_panel_shows_the_levels_as_two_bars_under_the_volume(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        app.on_player_state(status(levels=[-30.0, 0.0]))
+        await pilot.pause()
+        left, right = level_bars(app)
+        cells = app.query_one("#np-level-left").size.width - 2
+        assert cells == 96 - 2  # the panel's inner width: 100 columns less border and padding
+        assert left == "L " + "▮" * (cells // 2) + "▯" * (cells // 2)
+        assert right == "R " + "▮" * cells
+        assert app.query_one("#np-level-left").region.y == app.query_one("#np-volume").region.y + 1
+        assert app.query_one("#np-level-right").region.y == app.query_one("#np-volume").region.y + 2
+
+
+@drive
+async def test_panel_level_bars_are_empty_not_hidden_without_levels(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        app.on_player_state(status(levels=[-30.0, 0.0]))
+        await pilot.pause()
+        panel_height = app.query_one(tui.NowPlaying).region.height
+        app.on_player_state(status(paused=True, levels=None))
+        await pilot.pause()
+        cells = app.query_one("#np-level-left").size.width - 2
+        assert level_bars(app) == ["L " + "▯" * cells, "R " + "▯" * cells]
+        assert app.query_one(tui.NowPlaying).region.height == panel_height == 7
+        app.on_player_state(status())  # a status without the key at all, as an older server sends
+        await pilot.pause()
+        assert level_bars(app) == ["L " + "▯" * cells, "R " + "▯" * cells]
+
+
+@drive
+async def test_idle_the_level_bars_stay_shown_and_empty(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await pilot.pause()
+        bars = [app.query_one("#np-level-left"), app.query_one("#np-level-right")]
+        cells = bars[0].size.width - 2
+        empty = ["L " + "▯" * cells, "R " + "▯" * cells]
+        assert all(bar.display and bar.region.height == 1 for bar in bars)
+        assert level_bars(app) == empty
+        app.on_player_state(status(levels=[-30.0, 0.0]))
+        await pilot.pause()
+        app.on_player_state(status(idle=True, levels=[-30.0, 0.0]))
+        await pilot.pause()
+        assert all(bar.display and bar.region.height == 1 for bar in bars)
+        assert level_bars(app) == empty
+        assert app.query_one(tui.NowPlaying).region.height == 7
+
+
+@drive
+async def test_with_show_levels_false_the_bars_are_hidden_and_mpv_starts_without_them(clients, served):
+    app = make_app_with(clients, settings.Settings(show_levels=False))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert clients.made[0].show_levels is False
+        assert not app.query_one("#np-level-left").display and not app.query_one("#np-level-right").display
+        assert app.query_one(tui.NowPlaying).region.height == 5
+
+
+@drive
+async def test_enter_on_show_levels_flips_it_the_bars_and_mpvs_filter_follow(clients, served):
+    app = make_app_with(clients, settings.Settings())
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        client = clients.made[0]
+        assert client.show_levels is True
+        await pilot.press("S")
+        await pilot.pause()
+        await pilot.press(*["down"] * settings.KEYS.index("show_levels"), "enter")
+        await pilot.pause()
+        main = app.screen_stack[0]
+        assert settings.load().show_levels is False
+        assert not main.query_one("#np-level-left").display
+        assert client.calls[-1] == ("send", "af", "remove", "@levels")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert settings.load().show_levels is True
+        assert main.query_one("#np-level-left").display
+        assert client.calls[-1] == ("send", "af", "add", player.LEVELS_FILTER)
+
+
 @drive
 async def test_palette_provider_offers_every_command_and_runs_its_action(clients, served, monkeypatch):
     app = make_app(clients)
@@ -1621,6 +1713,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["remote_url", "", "(default )"],
             ["stream_enabled", "false", "(default false)"],
             ["spotify_client_id", "", "(default )"],
+            ["show_levels", "true", "(default true)"],
         ]
         await pilot.press("escape")
         await pilot.pause()
