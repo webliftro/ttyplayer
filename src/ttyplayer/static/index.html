@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ttyplayer</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+  pre { padding: 1rem; border: 1px solid #8884; border-radius: 0.5rem; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>ttyplayer</h1>
+<p>This ttyplayer is serving. The web remote arrives in the next release.</p>
+<p id="connection">Connecting…</p>
+<pre id="status"></pre>
+<script>
+  // The token comes in the URL once; keep it for this tab and take it out of the address bar.
+  const params = new URLSearchParams(location.search);
+  if (params.has("token")) {
+    sessionStorage.setItem("ttyplayer-token", params.get("token"));
+    history.replaceState(null, "", location.pathname);
+  }
+  const token = sessionStorage.getItem("ttyplayer-token");
+  const connection = document.getElementById("connection");
+  const status = document.getElementById("status");
+
+  function connect() {
+    if (!token) {
+      connection.textContent = "No token: open the address ttyplayer serve printed.";
+      return;
+    }
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${scheme}//${location.host}/ws?token=${encodeURIComponent(token)}`);
+    socket.onopen = () => { connection.textContent = "Connected"; };
+    socket.onmessage = (event) => {
+      status.textContent = JSON.stringify(JSON.parse(event.data), null, 2);
+    };
+    socket.onclose = () => {
+      connection.textContent = "Disconnected; retrying…";
+      setTimeout(connect, 2000);
+    };
+  }
+  connect();
+</script>
+</body>
+</html>

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import zipfile
 from importlib import metadata
 from pathlib import Path
 
@@ -99,9 +100,10 @@ class FakeClient:
 
     instances = []
 
-    def __init__(self, video=False, on_play=None):
+    def __init__(self, video=False, on_play=None, on_state=None):
         self.video = video
         self.on_play = on_play
+        self.on_state = on_state
         self.queue = []
         self.ran = False
         FakeClient.instances.append(self)
@@ -542,7 +544,7 @@ def test_config_lists_every_setting_marking_the_defaults(monkeypatch, settings_f
     settings.save(settings.Settings(show_clock=False))
     result = runner.invoke(app, ["config"])
     assert result.exit_code == 0, result.output
-    assert result.output == "show_clock = false\ntheme = textual-dark  (default)\nsearch_limit = 10  (default)\n"
+    assert result.output.splitlines()[:3] == ["show_clock = false", "theme = textual-dark  (default)", "search_limit = 10  (default)"]
 
 
 def test_config_without_a_file_lists_the_defaults(settings_file):
@@ -574,10 +576,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
@@ -1130,3 +1132,107 @@ def test_playlist_save_queue_with_a_bad_name_asks_no_player(data_home, monkeypat
     assert result.exit_code == 1
     assert result.stderr.startswith("Bad playlist name 'a/b'")
     assert send.names == []
+
+
+class FakeServeClient(FakeClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.handle_control = lambda name: control.ok()
+
+    def quit(self):
+        serve_log.append("client.quit")
+
+
+class FakeRemote:
+    def stop(self):
+        serve_log.append("remote.stop")
+
+
+class FakeServerThread:
+    def __init__(self, app, host, port):
+        serve_log.append(("server.start", host, port))
+        self.app = app
+
+    def stop(self):
+        serve_log.append("server.stop")
+
+
+serve_log = []
+
+
+@pytest.fixture
+def serve_fakes(monkeypatch, settings_file):
+    from ttyplayer import server
+
+    serve_log.clear()
+    FakeClient.instances = []
+    monkeypatch.setattr(player, "MpvClient", FakeServeClient)
+    monkeypatch.setattr(control, "serve", lambda handler: serve_log.append("remote.serve") or FakeRemote())
+    monkeypatch.setattr(server, "ServerThread", FakeServerThread)
+
+    def interrupted(seconds):
+        serve_log.append("waiting")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    return server
+
+
+def test_serve_wires_the_player_remote_control_and_server_then_stops_them_in_order(serve_fakes, settings_file):
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 0, result.output
+    token = settings.load().server_token
+    assert token
+    assert result.output.startswith(f"Serving ttyplayer at http://127.0.0.1:7700/?token={token}\n")
+    assert "█" in result.output or "▀" in result.output  # the QR code
+    [client] = FakeClient.instances
+    assert client.video is False
+    assert client.on_play is history.record
+    assert isinstance(client.on_state, serve_fakes.Broadcaster)
+    assert serve_log == [
+        "remote.serve", ("server.start", "127.0.0.1", 7700), "waiting", "server.stop", "remote.stop", "client.quit"
+    ]
+
+
+def test_serve_takes_host_and_port_from_the_flags_then_the_settings(serve_fakes, settings_file):
+    settings.save(settings.Settings(server_host="0.0.0.0", server_port=8800, server_token="kept"))
+    assert runner.invoke(app, ["serve"]).exit_code == 0
+    assert serve_log[1] == ("server.start", "0.0.0.0", 8800)
+    serve_log.clear()
+    result = runner.invoke(app, ["serve", "--host", "127.0.0.2", "--port", "9900"])
+    assert serve_log[1] == ("server.start", "127.0.0.2", 9900)
+    assert "http://127.0.0.2:9900/?token=kept" in result.output
+    assert settings.load().server_token == "kept"
+
+
+def test_serve_reports_missing_mpv(monkeypatch, serve_fakes):
+    def no_mpv(*args, **kwargs):
+        raise FileNotFoundError("mpv")
+
+    monkeypatch.setattr(player, "MpvClient", no_mpv)
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 1
+    assert result.stderr.startswith("mpv is not installed.")
+    assert result.stderr.count("\n") == 1
+    assert serve_log == []
+
+
+def test_serve_on_a_port_in_use_stops_the_rest_and_says_so(monkeypatch, serve_fakes):
+    def in_use(app, host, port):
+        raise OSError(98, "Address already in use")
+
+    monkeypatch.setattr(serve_fakes, "ServerThread", in_use)
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 1
+    assert result.stderr == "Cannot serve on 127.0.0.1:7700: Address already in use\n"
+    assert serve_log == ["remote.serve", "remote.stop", "client.quit"]
+
+
+def test_wheel_ships_the_server_page(tmp_path):
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not installed")
+    subprocess.run([uv, "build", "--wheel", "--out-dir", str(tmp_path), str(ROOT)], check=True, capture_output=True)
+    [wheel] = tmp_path.glob("*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        assert "ttyplayer/static/index.html" in archive.namelist()

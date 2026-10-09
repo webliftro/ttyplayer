@@ -22,6 +22,7 @@ ttyplayer favorites --remove 2       drop the second favorite as listed
 ttyplayer favorites --clear          forget all favorites
 ttyplayer playlist ...               your own named playlists (see Playlists below)
 ttyplayer tui [--video]              full-screen: search box, results list, now-playing bar
+ttyplayer serve [--host] [--port]    play headless, driven over HTTP from any device (see Server below)
 ttyplayer config                     list the settings (see Settings below)
 ttyplayer doctor                     check Python, yt-dlp, mpv and ttyplayer's folders
 ttyplayer version
@@ -125,6 +126,9 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `show_clock` | `true` | the clock in the TUI's header |
 | `theme` | `textual-dark` | the TUI's color theme; `t` in the TUI picks the next one and saves it |
 | `search_limit` | `10` | how many results a TUI search fetches, and `m` adds (1–50) |
+| `server_host` | `127.0.0.1` | the address `ttyplayer serve` listens on; `0.0.0.0` opens it to the network |
+| `server_port` | `7700` | the port `ttyplayer serve` listens on (1–65535) |
+| `server_token` | *generated* | the token every API request needs; `ttyplayer serve` makes one on first use |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
@@ -134,6 +138,47 @@ ttyplayer config path                where the file is
 ```
 
 In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock shows or hides at once); the others are set with `ttyplayer config set`.
+
+## Server
+
+`ttyplayer serve` runs the player headless on the machine with the speakers (no keyboard, no TUI) and lets any device on the network drive it through a small HTTP + WebSocket API. The other terminals' `ttyplayer pause`, `next`, `status` and `stop` keep working too.
+
+```
+ttyplayer serve                      listen on 127.0.0.1:7700 (this machine only)
+ttyplayer serve --host 0.0.0.0       listen on every address, so a phone on the LAN can reach it
+ttyplayer serve --port 8000          another port
+```
+
+It prints the address to open, with the token, and a QR code of it for a phone:
+
+```
+Serving ttyplayer at http://192.168.1.20:7700/?token=…
+```
+
+The page at that address shows the live status for now; the full web remote comes in the next release. Ctrl-C (or `ttyplayer stop`, or a `stop` command) stops the server and the player.
+
+Every `/api/…` request and the socket need the token, as `Authorization: Bearer <token>` or `?token=<token>`; without it the reply is `401 {"error": "unauthorized"}`. Replies are JSON; errors are `{"error": "…"}`.
+
+```
+curl -H "Authorization: Bearer $TOKEN" http://host:7700/api/status
+curl -H "Authorization: Bearer $TOKEN" -d '{"query": "lofi beats"}' http://host:7700/api/play
+curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http://host:7700/api/command
+```
+
+| Method | Path | Body / reply |
+|---|---|---|
+| GET | `/api/status` | the player's status, plus `queue` (the videos) and `index` (1-based) |
+| POST | `/api/play` | `{"url": "…"}` or `{"query": "…"}`: the link's videos, or the first search result, replace the queue and play |
+| POST | `/api/queue` | `{"url": "…"}` or `{"query": "…"}`: appended to the queue (played at once when nothing plays) |
+| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"seek"\|"volume", "value"?}`; `seek` and `volume` take a number of seconds / steps → the new status |
+| GET | `/api/search?q=…` | the search results (`search_limit` of them) |
+| GET | `/api/playlists` | `[{"name": …, "count": …}]` |
+| POST | `/api/playlists/<name>/play` | that playlist becomes the queue |
+| GET, PATCH | `/api/settings` | every setting but the token; PATCH `{"key": value}` changes and saves them, checked like `config set` |
+| WS | `/ws?token=…` | sends the status on connect and on every change; takes the same `{"name", "value"?}` commands as `/api/command` and answers each with the status |
+| GET | `/` | the page (needs no token itself; it reads the token from its address) |
+
+Security: the token is the only gate, and plain HTTP carries it in clear text. That is fine on a home network you trust; it is why `serve` listens on 127.0.0.1 unless told otherwise. To reach it beyond your LAN (a VPS, say), put it behind a reverse proxy with HTTPS. Anyone with the token can control the player, including stopping it; change the token with `ttyplayer config set server_token <new>` and restart.
 
 ## Install
 

@@ -12,9 +12,10 @@ from ttyplayer.settings import Settings, SettingsError
 
 def test_settings_fields_and_defaults():
     assert [(field.name, field.default) for field in dataclasses.fields(Settings)] == [
-        ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10)
+        ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10),
+        ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
     ]
-    assert settings.KEYS == ["show_clock", "theme", "search_limit"]
+    assert settings.KEYS == ["show_clock", "theme", "search_limit", "server_host", "server_port", "server_token"]
 
 
 def test_load_without_a_file_is_the_defaults(tmp_path):
@@ -64,7 +65,7 @@ def test_update_coerces_text_saves_and_keeps_the_other_keys(tmp_path):
 
 
 def test_update_with_an_unknown_key_names_the_valid_keys(tmp_path):
-    with pytest.raises(SettingsError, match="Unknown setting 'clock'; valid keys: show_clock, theme, search_limit"):
+    with pytest.raises(SettingsError, match="Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token"):
         settings.update("clock", "true", tmp_path / "settings.toml")
     assert not (tmp_path / "settings.toml").exists()
 
@@ -72,10 +73,12 @@ def test_update_with_an_unknown_key_names_the_valid_keys(tmp_path):
 @pytest.mark.parametrize(
     "key, value, message",
     [
-        ("show_clock", "yes", "show_clock must be true or false, not 'yes'; valid keys: show_clock, theme, search_limit"),
-        ("search_limit", "ten", "search_limit must be a whole number, not 'ten'; valid keys: show_clock, theme, search_limit"),
+        ("show_clock", "yes", "show_clock must be true or false, not 'yes'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token"),
+        ("search_limit", "ten", "search_limit must be a whole number, not 'ten'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token"),
         ("search_limit", "0", "search_limit must be between 1 and 50, not 0"),
         ("search_limit", "51", "search_limit must be between 1 and 50, not 51"),
+        ("server_port", "0", "server_port must be between 1 and 65535, not 0"),
+        ("server_port", "65536", "server_port must be between 1 and 65535, not 65536"),
     ],
 )
 def test_update_rejects_a_bad_value_and_saves_nothing(tmp_path, key, value, message):
@@ -133,4 +136,5 @@ def test_readme_names_every_setting_with_its_default():
     readme = (pathlib.Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
     section = readme.split("## Settings\n", 1)[1].split("\n## ", 1)[0]
     for key in settings.KEYS:
-        assert f"| `{key}` | `{settings.display(getattr(settings.DEFAULTS, key))}` |" in section
+        default = settings.display(getattr(settings.DEFAULTS, key))
+        assert f"| `{key}` | {f'`{default}`' if default else '*generated*'} |" in section

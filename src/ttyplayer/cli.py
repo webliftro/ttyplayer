@@ -1,6 +1,7 @@
 import os
 import random
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -204,6 +205,59 @@ def tui(video: bool = False):
     screen.TtyplayerApp(
         client_factory=player.MpvClient, resolve=screen.resolve, video=video, settings=load_settings()
     ).run()
+
+
+@app.command()
+def serve(host: str | None = None, port: int | None = None):
+    """Play headless and take commands over HTTP and WebSocket, gated by a token.
+
+    Prints the address to open (with its token) and a QR code of it; Ctrl-C stops.
+    """
+    from ttyplayer import server  # aiohttp loads only for this command
+
+    try:
+        current = server.ensure_token(load_settings())
+    except settings.SettingsError as error:
+        fail(str(error))
+    host = host or current.server_host
+    port = port or current.server_port
+    hub = server.Broadcaster()
+    client = start_mpv(False, on_state=hub)
+    remote = control.serve(client.handle_control)
+    try:
+        web = server.ServerThread(server.make_app(client, current, hub), host, port)
+    except OSError as error:
+        stop_serving(None, remote, client)
+        fail(f"Cannot serve on {host}:{port}: {error.strerror or error}")
+    address = server.url(host, port, current.server_token)
+    typer.echo(f"Serving ttyplayer at {address}")
+    print_qr(address)
+    old_handler = signal.signal(signal.SIGTERM, signal.default_int_handler)  # a kill stops it like Ctrl-C
+    try:
+        while True:
+            time.sleep(3600)  # Ctrl-C, SIGTERM and `stop` all land here as KeyboardInterrupt
+    except KeyboardInterrupt:
+        pass
+    finally:
+        signal.signal(signal.SIGTERM, old_handler)
+        stop_serving(web, remote, client)
+
+
+def stop_serving(web, remote, client):
+    """Stop the HTTP server (None if it never started), then remote control, then mpv."""
+    if web:
+        web.stop()
+    if remote:
+        remote.stop()
+    client.quit()
+
+
+def print_qr(text):
+    import qrcode
+
+    code = qrcode.QRCode(border=1)
+    code.add_data(text)
+    code.print_ascii()
 
 
 @config_app.callback(invoke_without_command=True)
@@ -454,16 +508,21 @@ def show_more(videos, more):
 
 def start_playback(videos, with_video):
     exit_if_empty(videos)
-    try:
-        client = player.MpvClient(with_video, on_play=history.record)
-    except FileNotFoundError:
-        fail(f"mpv is not installed. {mpv_install_hint()}")
-    except RuntimeError as error:
-        fail(str(error))
+    client = start_mpv(with_video)
     for video in videos:
         client.add(video)
     client.play_current()
     client.run()
+
+
+def start_mpv(with_video, on_state=None):
+    """An MpvClient that keeps history, or a one-line message and exit 1 when mpv cannot start."""
+    try:
+        return player.MpvClient(with_video, on_play=history.record, on_state=on_state)
+    except FileNotFoundError:
+        fail(f"mpv is not installed. {mpv_install_hint()}")
+    except RuntimeError as error:
+        fail(str(error))
 
 
 def print_videos(videos, start=1):

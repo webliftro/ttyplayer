@@ -24,7 +24,7 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
         (loopback token)           └─ /stream (opus) ◄─┘  (step 2, via ffmpeg)
 ```
 
-- `ttyplayer serve [--host 0.0.0.0] [--port 7700] [--token …]`: starts `MpvClient` with
+- `ttyplayer serve [--host 0.0.0.0] [--port 7700]` (the token lives in settings `server_token`): starts `MpvClient` with
   `on_state` → broadcast, `control.serve` (so the local CLI still works), and the HTTP server.
 - Transport: Python stdlib `http.server` + `wsgiref`? No — WebSockets need a real library. Use
   **`aiohttp`** (one dependency, asyncio, HTTP + WS + static files in one), run in its own thread

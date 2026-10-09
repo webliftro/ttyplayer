@@ -13,11 +13,14 @@ ttyplayer itself never decodes audio or talks to YouTube's HTML directly.
 
 ```
 src/ttyplayer/
-  cli.py       Typer app: play, search, history, favorite, favorites, playlist, tui, config, version,
-               pause, next, prev, stop, status. Glue only.
+  cli.py       Typer app: play, search, history, favorite, favorites, playlist, tui, serve, config,
+               version, pause, next, prev, stop, status. Glue only.
   tui.py       TtyplayerApp (Textual): header, search bar, Search/Queue/History/Favorites tables,
                now-playing panel, help and settings modals, command palette, themes, toasts over MpvClient;
                styles in tui.tcss (see docs/tui-design.md).
+  server.py    ttyplayer serve: make_app(client, settings) builds the aiohttp app (token middleware,
+               /api/*, /ws, the page under static/); Broadcaster is the player's on_state;
+               ServerThread runs the app on its own thread and event loop; ensure_token.
   youtube.py   is_url, search, fetch -> list[Video], fetch_playlist -> (title, list[Video]).
                Wraps yt-dlp errors in YouTubeError.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
@@ -29,7 +32,8 @@ src/ttyplayer/
   playlists.py One JSON lines file per named playlist under data_path("playlists"), in the user's
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
-  settings.py  Settings dataclass (show_clock, theme, search_limit), settings_path, load, save,
+  settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
+               server_token), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   models.py    Video dataclass: id, title, uploader, duration; url derived from id.
   utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks;
@@ -39,14 +43,16 @@ src/ttyplayer/
 Dependencies point one way:
 
 ```
-cli  ->  youtube, player, history, favorites, playlists, control, settings, tui (imported only by the tui command)
+cli  ->  youtube, player, history, favorites, playlists, control, settings, tui (imported only by the tui command),
+         server (imported only by the serve command)
+server  ->  player, youtube, playlists, settings, control, history (through the client and callbacks cli wires)
 tui  ->  youtube, player, history, favorites, control, settings, utils, models
 settings  ->  utils
 player  ->  control
 youtube, player, history, favorites, playlists  ->  models, utils
 ```
 
-`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli` and `tui` imports `settings.py`. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
+`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli`, `tui` and `server` imports `settings.py`. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
 
 ## Data flow
 
@@ -118,6 +124,25 @@ q, Ctrl-C, ttyplayer stop -> app exits -> on_unmount: remote.stop(), then client
 The screen and keys are specified in `docs/tui-design.md`. `NowPlaying.show(status)` is the only writer of the now-playing panel, and it reads nothing but `MpvClient.status()`. Every message is a toast (`App.notify`, markup off so titles and yt-dlp errors print as they are); the panel never shows messages and the table keeps its rows on an error. The Queue tab is a view of `client.queue` / `client.index`, never a second list: every edit is an `MpvClient` method, and its `notify()` rebuilds the table (only when the queue or index changed, so time-pos ticks leave it alone), the tab title `Queue (n)` and the panel's `[i/n]` / `Up next`. The History and Favorites tabs read the files the CLI writes, through `history.load()` / `favorites.load()` / `favorites.ids()` only; each `PickTable` (Search, History, Favorites) keeps its own `videos` list in row order, and `m` uses the CLI's `utils.unseen`. `on_play` runs under the player's `queue_lock`, so it records and flags the History tab, which reloads on the `on_state` that follows instead of waiting for the app thread. Keys are defined once in the `BINDINGS` lists of the app, `SearchBox`, `VideoTable` (the playback keys and `f` every table shares), `PickTable` (Enter, `a`), `ResultsTable` (`m`), `FavoritesTable` (`d`) and `QueueTable`: the Footer shows the ones with `show=True`, and the `?` help modal lists all of them from the same lists. The command palette (Ctrl-P) keeps Textual's own provider (theme picker, keys, quit) and adds `TtyplayerCommands`, built from the one `COMMANDS` list of (name, action, help): each entry runs `app.run_action(action)`, the same `action_*` its key runs, and the help modal lists the same `COMMANDS` under "Commands". `t` cycles `App.theme` through `sorted(available_themes)`; nothing about the theme is stored between runs. Styles live in `src/ttyplayer/tui.tcss` (theme variables only), loaded through `CSS_PATH` and shipped in the wheel.
 
 `ttyplayer stop` sends SIGINT as before; under Textual's asyncio loop that cancels the app, which unmounts normally. `q`, `/`, `?` and `1`–`4` are ordinary app bindings: the focused search box consumes them as letters, a table does not, so they act from a table (Esc first from the box); Ctrl-C is a priority binding and quits from anywhere. If remote control cannot start, its stderr warning is captured and shown as a warning toast.
+
+## Server
+
+`ttyplayer serve [--host] [--port]` (defaults: settings `server_host` 127.0.0.1, `server_port` 7700) plays headless: no keyboard loop, no TUI. `cli.serve` wires it and `server.py` holds everything else; the design and the API table are in `docs/server-design.md`.
+
+```
+cli.serve -> settings.load, server.ensure_token (a token_urlsafe saved on first serve)
+          -> hub = server.Broadcaster()
+          -> player.MpvClient(video=False, on_play=history.record, on_state=hub)    (no run())
+          -> control.serve(client.handle_control)                                   (the CLI still works)
+          -> server.ServerThread(server.make_app(client, settings, hub), host, port)
+          -> prints the URL with ?token= and its QR code, sleeps until KeyboardInterrupt
+Ctrl-C, SIGTERM, `stop` (CLI, /api/command, /ws) -> KeyboardInterrupt in the main thread
+          -> ServerThread.stop(), remote.stop(), client.quit()   (in that order)
+```
+
+Threads: the main thread only sleeps. The aiohttp thread runs its own event loop and is the only place requests and sockets live; it calls `MpvClient`'s thread-safe methods (`handle_control`, `seek`, `change_volume`, `status`, `queue_listing`, `play_current`, `jump`, `notify`, and the queue under `queue_lock`). `youtube.*` runs in the loop's executor, never on the loop. The player's listener and poller threads reach the sockets only through `Broadcaster.__call__` → `loop.call_soon_threadsafe` → one send per open socket; a closed or broken socket is dropped without touching the others.
+
+Every `/api/*` request and `/ws` passes the `require_token` middleware (`Authorization: Bearer <token>` or `?token=`, compared with `hmac.compare_digest`); `GET /` and `/static/*` do not. Errors are JSON `{"error": "<one line>"}` through the `errors_as_json` middleware. `/api/command` and the socket's text messages share `run_command`: `pause|next|prev|stop|mute` go to `handle_control`, `seek|volume` to `seek` / `change_volume` with a numeric `value`. Replies and a new socket's first message are `full_status`: `status()` plus `queue` (the `queue_listing` videos); broadcasts are each `on_state` status as the player sends it.
 
 ## mpv IPC
 

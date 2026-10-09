@@ -1598,6 +1598,9 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["show_clock", "true", "(default true)"],
             ["theme", "textual-dark", "(default textual-dark)"],
             ["search_limit", "20", "(default 10)"],
+            ["server_host", "127.0.0.1", "(default 127.0.0.1)"],
+            ["server_port", "7700", "(default 7700)"],
+            ["server_token", "", "(default )"],
         ]
         await pilot.press("escape")
         await pilot.pause()

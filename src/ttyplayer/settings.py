@@ -9,6 +9,7 @@ from pathlib import Path
 from ttyplayer.utils import APP_NAME, WINDOWS
 
 SEARCH_LIMIT_RANGE = range(1, 51)
+SERVER_PORT_RANGE = range(1, 65536)
 
 
 class SettingsError(Exception):
@@ -20,6 +21,9 @@ class Settings:
     show_clock: bool = True
     theme: str = "textual-dark"
     search_limit: int = 10
+    server_host: str = "127.0.0.1"
+    server_port: int = 7700
+    server_token: str = ""  # ttyplayer serve generates it on first use
 
 
 DEFAULTS = Settings()
@@ -111,6 +115,10 @@ def check(key, value):
     if key == "search_limit" and value not in SEARCH_LIMIT_RANGE:
         raise SettingsError(
             f"search_limit must be between {SEARCH_LIMIT_RANGE.start} and {SEARCH_LIMIT_RANGE.stop - 1}, not {value}"
+        )
+    if key == "server_port" and value not in SERVER_PORT_RANGE:
+        raise SettingsError(
+            f"server_port must be between {SERVER_PORT_RANGE.start} and {SERVER_PORT_RANGE.stop - 1}, not {value}"
         )
 
 
