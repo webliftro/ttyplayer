@@ -5,6 +5,7 @@ import http.client
 import io
 import json
 import re
+import sys
 import threading
 import time
 import urllib.error
@@ -145,6 +146,10 @@ def test_listen_on_a_busy_port_is_one_line():
     with spotify.listen(0) as busy:
         with pytest.raises(SpotifyError, match=r"^Cannot listen on 127.0.0.1:\d+ for the login: "):
             spotify.listen(busy.server_address[1])
+
+
+def test_the_callback_listener_reuses_addresses_only_off_windows():
+    assert spotify.CallbackServer.allow_reuse_address is (sys.platform != "win32")
 
 
 def test_login_exchanges_the_code_with_the_verifier_and_stores_the_tokens(homes, fake, monkeypatch):

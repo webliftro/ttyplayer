@@ -12,6 +12,7 @@ import os
 import re
 import math
 import secrets
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -116,6 +117,8 @@ def login(client_id, echo) -> str:
 
 
 class CallbackServer(HTTPServer):
+    # Windows SO_REUSEADDR lets a second socket bind a port that is already listening; POSIX needs it for TIME_WAIT
+    allow_reuse_address = sys.platform != "win32"
     params = None  # the /callback query, once the browser came back
     timed_out = False
 
