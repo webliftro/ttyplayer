@@ -25,6 +25,7 @@ class Settings:
     server_port: int = 7700
     server_token: str = ""  # ttyplayer serve generates it on first use
     remote_url: str = ""  # the server tui drives instead of its own player, e.g. http://host:7700
+    stream_enabled: bool = False  # serve streams the sound to the web remote instead of playing it
 
 
 DEFAULTS = Settings()

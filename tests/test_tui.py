@@ -1619,6 +1619,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["server_port", "7700", "(default 7700)"],
             ["server_token", "", "(default )"],
             ["remote_url", "", "(default )"],
+            ["stream_enabled", "false", "(default false)"],
         ]
         await pilot.press("escape")
         await pilot.pause()

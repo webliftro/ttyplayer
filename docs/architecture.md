@@ -21,6 +21,8 @@ src/ttyplayer/
   server.py    ttyplayer serve: make_app(client, settings) builds the aiohttp app (token middleware,
                /api/*, /ws, the page under static/); Broadcaster is the player's on_state;
                ServerThread runs the app on its own thread and event loop; ensure_token.
+  stream.py    ttyplayer serve --stream: Streamer paces mpv's PCM (MpvClient(headless_pcm=True)) into
+               ffmpeg (Ogg Opus) and fans its pages out to each /stream Listener; MPV_PCM_OPTIONS.
   remote.py    ttyplayer tui --remote: RemoteClient answers TtyplayerApp's MpvClient calls over the
                server's /api/* (urllib) and mirrors /ws (aiohttp, own thread); RemoteApp is the TUI
                with it as the player and no control socket.

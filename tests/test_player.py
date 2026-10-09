@@ -182,6 +182,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "started_in": None,
         "idle": True,
         "error": None,
+        "stream": False,
     }
 
 
@@ -870,7 +871,7 @@ class FakeMpv:
 @posix_only
 def test_mute_is_observed_after_the_other_properties(monkeypatch):
     made = []
-    monkeypatch.setattr(player.subprocess, "Popen", lambda argv: made.append(FakeMpv(argv)) or made[-1])
+    monkeypatch.setattr(player.subprocess, "Popen", lambda argv, stdout=None: made.append(FakeMpv(argv)) or made[-1])
     client = player.MpvClient()
     client.stop_polling.set()
     client.ipc.sock.shutdown(socket.SHUT_RDWR)  # EOF for both ends; the listener stops
@@ -1565,7 +1566,7 @@ def piped_client(monkeypatch):
     FakePipe.made.clear()
     argvs = []
     process = type("Process", (), {"wait": lambda self, timeout: None})()
-    monkeypatch.setattr(player.subprocess, "Popen", lambda argv: argvs.append(argv) or process)
+    monkeypatch.setattr(player.subprocess, "Popen", lambda argv, stdout=None: argvs.append(argv) or process)
     return player.MpvClient(), argvs
 
 

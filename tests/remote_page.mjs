@@ -1,7 +1,9 @@
 // Runs the web remote's script on a stub DOM for tests/test_server.py: node remote_page.mjs <remote.js>.
-// stdin: a JSON list of messages the server sends over /ws, or "dismiss" for a click on the banner's ×.
-// stdout: after each, {queue, banner}: the queue rows the page shows, each its title with a leading "▸"
-// when marked as playing, and the banner's text (null while it is hidden).
+// stdin: a JSON list of messages the server sends over /ws, or "dismiss" for a click on the banner's ×,
+// "listen" for a click on Listen here, "stream-error" for the <audio> failing.
+// stdout: after each, {queue, banner, listen}: the queue rows the page shows, each its title with a leading "▸"
+// when marked as playing, the banner's text (null while it is hidden), and the Listen here button
+// ({shown, label, src, playing}).
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -14,7 +16,30 @@ class Element {
     this.dataset = {};
     this.style = { setProperty() {} };
     this.textContent = "";
+    this.paused = true; // as an <audio>
   }
+  getAttribute(name) {
+    return this.attributes[name] ?? null;
+  }
+  removeAttribute(name) {
+    delete this.attributes[name];
+  }
+  set src(url) {
+    this.attributes.src = url;
+  }
+  get src() {
+    return this.attributes.src ?? "";
+  }
+  play() {
+    this.paused = false;
+    this.listeners.play?.();
+    return Promise.resolve();
+  }
+  pause() {
+    this.paused = true;
+    this.listeners.pause?.();
+  }
+  load() {}
   set className(names) {
     this.classes = new Set(names.split(" "));
   }
@@ -74,11 +99,19 @@ const settle = () => new Promise((resolve) => setImmediate(resolve));
 const shown = [];
 for (const message of JSON.parse(readFileSync(0, "utf-8"))) {
   if (message === "dismiss") elements["banner-close"].listeners.click();
+  else if (message === "listen") elements["listen"].listeners.click();
+  else if (message === "stream-error") elements["listen-audio"].listeners.error();
   else socket.listeners.message({ data: JSON.stringify(message) });
   await settle();
   shown.push({
     queue: elements["queue-list"].children.map((row) => (row.classes.has("current") ? "▸" : "") + row.children[0].children[0].textContent),
     banner: elements["banner"].hidden ? null : elements["banner-text"].textContent,
+    listen: {
+      shown: !elements["listen-row"].hidden,
+      label: elements["listen"].textContent,
+      src: elements["listen-audio"].getAttribute("src"),
+      playing: !elements["listen-audio"].paused,
+    },
   });
 }
 process.stdout.write(JSON.stringify(shown));

@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+import types
 import zipfile
 from importlib import metadata
 from pathlib import Path
@@ -100,8 +101,9 @@ class FakeClient:
 
     instances = []
 
-    def __init__(self, video=False, on_play=None, on_state=None):
+    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False):
         self.video = video
+        self.headless_pcm = headless_pcm
         self.on_play = on_play
         self.on_state = on_state
         self.queue = []
@@ -606,10 +608,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
@@ -662,7 +664,7 @@ def test_doctor_runs_without_yt_dlp(tmp_path):
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, encoding="utf-8", env=env)
     assert result.returncode == 1, result.stderr
     lines = result.stdout.splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 7
     assert lines[2].startswith("✗ yt-dlp")
 
 
@@ -690,13 +692,27 @@ def test_lookup_prints_nothing_without_timing(monkeypatch):
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSIONS = {
+    "mpv": "mpv v0.39.0 Copyright © 2000-2024 mpv/MPlayer/mplayer2 projects",
+    "ffmpeg": "ffmpeg version 7.0.2 Copyright (c) 2000-2024 the FFmpeg developers",
+}
+VERSION_FLAGS = {"mpv": "--version", "ffmpeg": "-version"}  # real ffmpeg exits 8 on --version
+
+
+def answer_version(argv, **kwargs):
+    """A fake subprocess.run for mpv and ffmpeg that, like the real ones, only knows its own version flag."""
+    path, flag = argv
+    name = os.path.basename(path)
+    if flag != VERSION_FLAGS[name]:
+        raise subprocess.CalledProcessError(8, argv)
+    return subprocess.CompletedProcess(argv, 0, stdout=VERSIONS[name] + "\nbuilt with gcc\n")
 
 
 def healthy(monkeypatch, tmp_path):
     """A machine where every doctor check passes, without touching the real one."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: f"/opt/bin/{name}")
-    monkeypatch.setattr(cli, "mpv_version", lambda path: "mpv v0.39.0 Copyright © 2000-2024 mpv/MPlayer/mplayer2 projects")
+    monkeypatch.setattr(subprocess, "run", answer_version)
     monkeypatch.setattr(control, "private_dir", lambda directory: None)
 
 
@@ -705,12 +721,35 @@ def test_doctor_all_green(monkeypatch, tmp_path):
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert len(lines) == 6
+    assert len(lines) == 7
     assert all(line.startswith("✓ ") for line in lines)
     assert f"✓ ttyplayer {metadata.version('ttyplayer')}" in lines
     assert any(line.startswith("✓ yt-dlp 20") for line in lines)
-    assert "✓ mpv v0.39.0 Copyright © 2000-2024 mpv/MPlayer/mplayer2 projects" in lines
+    assert f"✓ {VERSIONS['mpv']}" in lines
+    assert f"✓ {VERSIONS['ffmpeg']}" in lines
     assert f"✓ data dir {tmp_path / 'ttyplayer'}" in lines
+
+
+def test_doctor_without_ffmpeg_shows_a_dash_row_and_passes(monkeypatch, tmp_path):
+    healthy(monkeypatch, tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "ffmpeg" else f"/opt/bin/{name}")
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert f"- ffmpeg not found on PATH; only serve --stream needs it. {cli.ffmpeg_install_hint()}" in result.output.splitlines()
+
+
+def test_doctor_reports_an_ffmpeg_that_does_not_answer(monkeypatch, tmp_path):
+    healthy(monkeypatch, tmp_path)
+
+    def run(argv, **kwargs):
+        if argv[0].endswith("ffmpeg"):
+            raise OSError("Exec format error")
+        return answer_version(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "✗ ffmpeg at /opt/bin/ffmpeg did not answer -version: Exec format error" in result.output.splitlines()
 
 
 def test_doctor_without_mpv_prints_the_install_hint_and_fails(monkeypatch, tmp_path):
@@ -769,6 +808,29 @@ def test_doctor_reports_an_unwritable_data_dir(monkeypatch, tmp_path):
 )
 def test_mpv_install_hint_per_platform(platform, hint):
     assert cli.mpv_install_hint(platform) == hint
+
+
+@pytest.mark.parametrize(
+    "platform, hint",
+    [
+        ("darwin", "Install it with: brew install ffmpeg"),
+        (
+            "linux",
+            "Install it with: sudo apt-get install -y ffmpeg (or: sudo dnf install -y ffmpeg-free, "
+            "sudo pacman -S --noconfirm ffmpeg, sudo apk add ffmpeg)",
+        ),
+        ("win32", "Install it from https://ffmpeg.org/download.html"),
+    ],
+)
+def test_ffmpeg_install_hint_per_platform(platform, hint):
+    assert cli.ffmpeg_install_hint(platform) == hint
+
+
+def test_readme_shows_every_ffmpeg_install_command():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for commands in cli.FFMPEG_INSTALL.values():
+        for command in commands:
+            assert command in readme
 
 
 def test_readme_shows_every_mpv_install_command():
@@ -1256,6 +1318,77 @@ def test_serve_on_a_port_in_use_stops_the_rest_and_says_so(monkeypatch, serve_fa
     assert result.exit_code == 1
     assert result.stderr == "Cannot serve on 127.0.0.1:7700: Address already in use\n"
     assert serve_log == ["remote.serve", "remote.stop", "client.quit"]
+
+
+class FakeStreamer:
+    def __init__(self, pcm, ffmpeg):
+        serve_log.append(("streamer.start", pcm, ffmpeg))
+
+    def stop(self):
+        serve_log.append("streamer.stop")
+
+
+@pytest.fixture
+def stream_fakes(monkeypatch, serve_fakes):
+    from ttyplayer import stream
+
+    monkeypatch.setattr(stream, "Streamer", FakeStreamer)
+    monkeypatch.setattr(stream, "find_ffmpeg", lambda: "/opt/bin/ffmpeg")
+    monkeypatch.setattr(FakeServeClient, "process", types.SimpleNamespace(stdout="mpv-stdout"), raising=False)
+    return stream
+
+
+def test_serve_stream_pipes_mpv_into_ffmpeg_and_stops_mpv_before_ffmpeg(stream_fakes, serve_fakes):
+    result = runner.invoke(app, ["serve", "--stream"])
+    assert result.exit_code == 0, result.output
+    assert "Streaming: no sound plays here" in result.output
+    [client] = FakeClient.instances
+    assert client.headless_pcm is True
+    assert serve_log == [
+        ("streamer.start", "mpv-stdout", "/opt/bin/ffmpeg"), "remote.serve", ("server.start", "127.0.0.1", 7700),
+        "waiting", "server.stop", "remote.stop", "client.quit", "streamer.stop",
+    ]  # fmt: skip
+
+
+def test_serve_streams_when_stream_enabled_is_set(stream_fakes, serve_fakes):
+    settings.save(settings.Settings(stream_enabled=True, server_token="kept"))
+    assert runner.invoke(app, ["serve"]).exit_code == 0
+    assert FakeClient.instances[0].headless_pcm is True
+    assert "streamer.stop" in serve_log
+
+
+def test_serve_without_stream_changes_nothing(stream_fakes, serve_fakes):
+    result = runner.invoke(app, ["serve"])
+    assert FakeClient.instances[0].headless_pcm is False
+    assert "Streaming" not in result.output
+    assert not [entry for entry in serve_log if "streamer" in str(entry)]
+
+
+def test_serve_stream_without_ffmpeg_says_how_to_install_it_and_starts_nothing(monkeypatch, stream_fakes, serve_fakes):
+    monkeypatch.setattr(stream_fakes, "find_ffmpeg", lambda: None)
+    result = runner.invoke(app, ["serve", "--stream"])
+    assert result.exit_code == 1
+    assert result.stderr == f"serve --stream needs ffmpeg, which is not on PATH. {cli.ffmpeg_install_hint()}\n"
+    assert FakeClient.instances == [] and serve_log == []
+
+
+def test_serve_stream_on_windows_refuses(monkeypatch, stream_fakes, serve_fakes):
+    monkeypatch.setattr(cli, "WINDOWS", True)
+    result = runner.invoke(app, ["serve", "--stream"])
+    assert result.exit_code == 1
+    assert result.stderr.startswith("serve --stream needs macOS or Linux")
+    assert FakeClient.instances == []
+
+
+def test_serve_stream_when_ffmpeg_cannot_start_stops_mpv(monkeypatch, stream_fakes, serve_fakes):
+    def broken(pcm, ffmpeg):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(stream_fakes, "Streamer", broken)
+    result = runner.invoke(app, ["serve", "--stream"])
+    assert result.exit_code == 1
+    assert result.stderr == "Cannot start ffmpeg at /opt/bin/ffmpeg: Permission denied\n"
+    assert serve_log == ["client.quit"]
 
 
 def test_wheel_ships_the_server_page(tmp_path):

@@ -17,9 +17,11 @@ def test_settings_fields_and_defaults():
     assert [(field.name, field.default) for field in dataclasses.fields(Settings)] == [
         ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10),
         ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
-        ("remote_url", ""),
+        ("remote_url", ""), ("stream_enabled", False),
     ]
-    assert settings.KEYS == ["show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url"]
+    assert settings.KEYS == [
+        "show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url", "stream_enabled"
+    ]
 
 
 def test_load_without_a_file_is_the_defaults(tmp_path):

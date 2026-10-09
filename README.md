@@ -23,8 +23,9 @@ ttyplayer favorites --clear          forget all favorites
 ttyplayer playlist ...               your own named playlists (see Playlists below)
 ttyplayer tui [--video]              full-screen: search box, results list, now-playing bar
 ttyplayer serve [--host] [--port]    play headless, driven over HTTP from any device (see Server below)
+ttyplayer serve --stream             the same, but the sound goes to the web remote, not the speakers
 ttyplayer config                     list the settings (see Settings below)
-ttyplayer doctor                     check Python, yt-dlp, mpv and ttyplayer's folders
+ttyplayer doctor                     check Python, yt-dlp, mpv, ffmpeg (optional) and ttyplayer's folders
 ttyplayer version
 ```
 
@@ -132,6 +133,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `server_port` | `7700` | the port `ttyplayer serve` listens on (1–65535) |
 | `server_token` | *generated* | the token every API request needs; `ttyplayer serve` makes one on first use |
 | `remote_url` | *none* | the server `ttyplayer tui` drives instead of playing itself, e.g. `http://host:7700` |
+| `stream_enabled` | `false` | `ttyplayer serve` streams the sound to the web remote instead of playing it, as `--stream` does |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
@@ -150,6 +152,7 @@ In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true /
 ttyplayer serve                      listen on 127.0.0.1:7700 (this machine only)
 ttyplayer serve --host 0.0.0.0       listen on every address, so a phone on the LAN can reach it
 ttyplayer serve --port 8000          another port
+ttyplayer serve --stream             no sound here: Listen here on the web remote plays it (see below)
 ```
 
 It prints the address to open, with the token, and a QR code of it for a phone:
@@ -182,7 +185,28 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | POST | `/api/playlists/<name>/play` | that playlist becomes the queue |
 | GET, PATCH | `/api/settings` | every setting but the token; PATCH `{"key": value}` changes and saves them, checked like `config set` |
 | WS | `/ws?token=…` | sends the status on connect and on every change; takes the same `{"name", "value"?}` commands as `/api/command` and answers each with the status |
+| GET | `/stream` | with `serve --stream`: the sound as an `audio/ogg` (Opus) stream, for as long as the client listens; 404 otherwise |
 | GET | `/` | the web remote (needs no token itself; it reads the token from its address); its files are under `/static/`, plus `/manifest.webmanifest` |
+
+### Listen on another device
+
+`ttyplayer serve --stream` is the "music box on a server" mode, for a machine with no speakers of its own (a Raspberry Pi, a VPS, a closet PC): nothing plays on the server; the web remote gets a **Listen here** button that plays what the server plays, in that browser, on any device. Press it again (**Stop listening**) to stop. Several devices can listen at once; one on a bad connection skips, the others do not. Pausing and changing tracks keep the stream open (you hear silence in between). What you hear runs a little behind the remote's controls: the server adds about half a second, the browser its own buffer. `ttyplayer config set stream_enabled true` makes it the default for `serve`.
+
+```
+ttyplayer serve --stream --host 0.0.0.0
+```
+
+It needs ffmpeg, which nothing else in ttyplayer does (`ttyplayer doctor` shows whether it is there), and runs on macOS and Linux, not Windows:
+
+| System | Install ffmpeg |
+|---|---|
+| macOS | `brew install ffmpeg` |
+| Debian, Ubuntu, Raspberry Pi OS | `sudo apt-get install -y ffmpeg` |
+| Fedora | `sudo dnf install -y ffmpeg-free` |
+| Arch | `sudo pacman -S --noconfirm ffmpeg` |
+| Alpine | `sudo apk add ffmpeg` |
+
+The stream is gated by the same token as the API and is plain HTTP; the security notes below apply to it too.
 
 ### The TUI as a remote
 

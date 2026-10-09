@@ -11,7 +11,7 @@ from importlib import metadata
 import typer
 
 from ttyplayer import control, favorites, history, player, playlists, settings
-from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen, video_from_info
+from ttyplayer.utils import APP_NAME, WINDOWS, data_path, format_time, parse_picks, unseen, video_from_info
 
 app = typer.Typer()
 config_app = typer.Typer()
@@ -34,6 +34,16 @@ MPV_INSTALL = {
     ],
     "win32": ["winget install -e --id shinchiro.mpv", "scoop install mpv", "choco install mpv"],
 }
+# The same for ffmpeg, which only serve --stream needs (and which streams on macOS and Linux only).
+FFMPEG_INSTALL = {
+    "darwin": ["brew install ffmpeg"],
+    "linux": [
+        "sudo apt-get install -y ffmpeg",
+        "sudo dnf install -y ffmpeg-free",
+        "sudo pacman -S --noconfirm ffmpeg",
+        "sudo apk add ffmpeg",
+    ],
+}
 
 
 @app.callback()
@@ -52,10 +62,13 @@ def doctor():
     """Check that ttyplayer has everything it needs to play"""
     passed = True
     for ok, text in doctor_checks():
-        typer.echo(f"{'✓' if ok else '✗'} {text}")
-        passed = passed and ok
+        typer.echo(f"{DOCTOR_MARKS[ok]} {text}")
+        passed = passed and ok is not False
     if not passed:
         raise typer.Exit(code=1)
+
+
+DOCTOR_MARKS = {True: "✓", False: "✗", None: "-"}  # None: an optional part is missing, which is no failure
 
 
 def doctor_checks():
@@ -65,6 +78,7 @@ def doctor_checks():
     yield True, f"{APP_NAME} {metadata.version(APP_NAME)}"
     yield check_yt_dlp()
     yield check_mpv()
+    yield check_ffmpeg()
     yield check_data_dir()
     yield check_control_dir()
 
@@ -81,25 +95,46 @@ def check_mpv():
     path = shutil.which("mpv")
     if path is None:
         return False, f"mpv not found on PATH. {mpv_install_hint()}"
+    return check_version("mpv", path)
+
+
+def check_ffmpeg():
+    """ffmpeg is optional: missing, it is a "-" row that does not fail the doctor."""
+    path = shutil.which("ffmpeg")
+    if path is None:
+        return None, f"ffmpeg not found on PATH; only serve --stream needs it. {ffmpeg_install_hint()}"
+    return check_version("ffmpeg", path, flag="-version")
+
+
+def check_version(name, path, flag="--version"):
     try:
-        return True, mpv_version(path)
+        return True, tool_version(path, flag)
     except (OSError, subprocess.SubprocessError, IndexError) as error:
-        return False, f"mpv at {path} did not answer --version: {error}"
+        return False, f"{name} at {path} did not answer {flag}: {error}"
 
 
-def mpv_version(path):
-    """The first line `mpv --version` prints, e.g. mpv v0.39.0 Copyright ..."""
-    result = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5, check=True)
+def tool_version(path, flag):
+    """The first line `<path> <flag>` prints, e.g. mpv v0.39.0 Copyright ... (ffmpeg's flag is -version)"""
+    result = subprocess.run([path, flag], capture_output=True, text=True, timeout=5, check=True)
     return result.stdout.splitlines()[0]
 
 
 def mpv_install_hint(platform=sys.platform):
     """One line telling the user how to install mpv on this platform."""
-    for prefix, (command, *others) in MPV_INSTALL.items():
+    return install_hint(MPV_INSTALL, "https://mpv.io/installation/", platform)
+
+
+def ffmpeg_install_hint(platform=sys.platform):
+    return install_hint(FFMPEG_INSTALL, "https://ffmpeg.org/download.html", platform)
+
+
+def install_hint(commands, page, platform):
+    """One line telling the user how to install a tool on this platform: the commands' first, or page."""
+    for prefix, (command, *others) in commands.items():
         if platform.startswith(prefix):
             alternatives = f" (or: {', '.join(others)})" if others else ""
             return f"Install it with: {command}{alternatives}"
-    return "Install it from https://mpv.io/installation/"
+    return f"Install it from {page}"
 
 
 def check_data_dir():
@@ -220,10 +255,15 @@ def tui(
 
 
 @app.command()
-def serve(host: str | None = None, port: int | None = None):
+def serve(
+    host: str | None = None,
+    port: int | None = None,
+    stream: bool = typer.Option(False, "--stream", help="No sound here: stream it to the web remote (default: stream_enabled)"),
+):
     """Play headless and take commands over HTTP and WebSocket, gated by a token.
 
     Prints the address to open (with its token) and a QR code of it; Ctrl-C stops.
+    With --stream nothing plays on this machine: the web remote's Listen here plays it (needs ffmpeg).
     """
     from ttyplayer import server  # aiohttp loads only for this command
 
@@ -233,16 +273,20 @@ def serve(host: str | None = None, port: int | None = None):
         fail(str(error))
     host = host or current.server_host
     port = port or current.server_port
+    ffmpeg = stream_ffmpeg() if stream or current.stream_enabled else None
     hub = server.Broadcaster()
-    client = start_mpv(False, on_state=hub)
+    client = start_mpv(False, on_state=hub, headless_pcm=bool(ffmpeg))
+    streamer = start_streamer(client, ffmpeg) if ffmpeg else None
     remote = control.serve(client.handle_control)
     try:
-        web = server.ServerThread(server.make_app(client, current, hub), host, port)
+        web = server.ServerThread(server.make_app(client, current, hub, streamer), host, port)
     except OSError as error:
-        stop_serving(None, remote, client)
+        stop_serving(None, remote, client, streamer)
         fail(f"Cannot serve on {host}:{port}: {error.strerror or error}")
     address = server.url(host, port, current.server_token)
     typer.echo(f"Serving ttyplayer at {address}")
+    if streamer:
+        typer.echo("Streaming: no sound plays here; press Listen here on the web remote")
     print_qr(address)
     old_handler = signal.signal(signal.SIGTERM, signal.default_int_handler)  # a kill stops it like Ctrl-C
     try:
@@ -252,16 +296,44 @@ def serve(host: str | None = None, port: int | None = None):
         pass
     finally:
         signal.signal(signal.SIGTERM, old_handler)
-        stop_serving(web, remote, client)
+        stop_serving(web, remote, client, streamer)
 
 
-def stop_serving(web, remote, client):
-    """Stop the HTTP server (None if it never started), then remote control, then mpv."""
+def stream_ffmpeg():
+    """The ffmpeg serve --stream encodes with, or a one-line message and exit 1 when it cannot stream."""
+    from ttyplayer import stream  # asyncio loads only for this mode
+
+    if WINDOWS:
+        fail("serve --stream needs macOS or Linux: mpv cannot hand its sound to ffmpeg on Windows")
+    ffmpeg = stream.find_ffmpeg()
+    if ffmpeg is None:
+        fail(f"serve --stream needs ffmpeg, which is not on PATH. {ffmpeg_install_hint()}")
+    return ffmpeg
+
+
+def start_streamer(client, ffmpeg):
+    """The Streamer encoding client's sound, or a one-line message and exit 1 (mpv stopped) when ffmpeg fails."""
+    from ttyplayer import stream
+
+    try:
+        return stream.Streamer(client.process.stdout, ffmpeg)
+    except OSError as error:
+        client.quit()
+        fail(f"Cannot start ffmpeg at {ffmpeg}: {error.strerror or error}")
+
+
+def stop_serving(web, remote, client, streamer=None):
+    """Stop the HTTP server (None if it never started), then remote control, then mpv, then ffmpeg.
+
+    mpv goes before ffmpeg so that its pipe ends rather than breaks.
+    """
     if web:
         web.stop()
     if remote:
         remote.stop()
     client.quit()
+    if streamer:
+        streamer.stop()
 
 
 def print_qr(text):
@@ -527,10 +599,10 @@ def start_playback(videos, with_video):
     client.run()
 
 
-def start_mpv(with_video, on_state=None):
+def start_mpv(with_video, on_state=None, headless_pcm=False):
     """An MpvClient that keeps history, or a one-line message and exit 1 when mpv cannot start."""
     try:
-        return player.MpvClient(with_video, on_play=history.record, on_state=on_state)
+        return player.MpvClient(with_video, on_play=history.record, on_state=on_state, headless_pcm=headless_pcm)
     except FileNotFoundError:
         fail(f"mpv is not installed. {mpv_install_hint()}")
     except RuntimeError as error:

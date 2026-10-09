@@ -51,8 +51,13 @@ TERMINAL_ARROWS = {"[D": "left", "[C": "right", "[A": "up", "[B": "down"}  # aft
 CONSOLE_ARROWS = {"K": "left", "M": "right", "H": "up", "P": "down"}  # after \xe0 or \x00
 
 
-def build_argv(video, socket_path):
+def build_argv(video, socket_path, headless_pcm=False):
+    """mpv's command line; headless_pcm writes the sound to its stdout for ttyplayer serve --stream, not to speakers."""
     argv = ["mpv", "--idle", "--no-terminal", f"--input-ipc-server={socket_path}"]
+    if headless_pcm:
+        from ttyplayer.stream import MPV_PCM_OPTIONS  # asyncio loads only for serve --stream
+
+        argv += MPV_PCM_OPTIONS
     if not video:
         # Audio only: also tell yt-dlp not to pick (and buffer) a video stream,
         # which shortens the wait before sound starts.
@@ -235,18 +240,22 @@ class MpvClient:
     request_id = 0  # of the last command sent
     poller = None
     volume_writer = None  # macOS only
+    headless_pcm = False  # no local sound: process.stdout carries it as PCM for serve --stream (see stream.py)
 
-    def __init__(self, video=False, on_play=None, on_state=None):
+    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
         self.on_play = on_play
         # on_state(status) replaces the printed status line, for a UI that owns
         # the terminal itself.
         self.on_state = on_state
+        self.headless_pcm = headless_pcm
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
-            self.process = subprocess.Popen(build_argv(video, self.socket_path))
+            self.process = subprocess.Popen(
+                build_argv(video, self.socket_path, headless_pcm), stdout=subprocess.PIPE if headless_pcm else None
+            )
         except FileNotFoundError:
             self._remove_socket_dir()
             raise
@@ -654,6 +663,7 @@ class MpvClient:
             "started_in": self.started_in,
             "idle": self.idle,
             "error": self.error,
+            "stream": self.headless_pcm,
         }
 
     def notify(self):

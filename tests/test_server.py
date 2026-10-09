@@ -17,7 +17,7 @@ import aiohttp
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
-from ttyplayer import control, favorites, playlists, server, settings, youtube
+from ttyplayer import control, favorites, playlists, server, settings, stream, youtube
 from ttyplayer.models import Video
 
 TOKEN = "secret-token"
@@ -131,6 +131,8 @@ def api(fake, method, path, settings_=None, **kwargs):
         ("/api/status?token=wrong", {}),
         ("/api/settings", {}),
         ("/ws", {}),
+        ("/stream", {}),
+        ("/stream?token=wrong", {}),
         ("/api/nothing-here", {}),
     ],
 )
@@ -749,9 +751,9 @@ def run_page(messages, shown="queue"):
     return [step[shown] for step in json.loads(result.stdout)]
 
 
-def status(queue, index, idle=False, error=None):
+def status(queue, index, idle=False, error=None, **more):
     """A status as the server broadcasts it; queue=None leaves the queue out."""
-    message = {"title": VIDEOS[index - 1].title, "index": index, "total": 2, "idle": idle, "error": error}
+    message = {"title": VIDEOS[index - 1].title, "index": index, "total": 2, "idle": idle, "error": error, **more}
     if queue is not None:
         message["queue"] = [asdict(video) for video in queue]
     return message
@@ -783,6 +785,29 @@ def test_the_page_shows_a_failed_commands_error_in_the_banner():
     assert run_page([status(VIDEOS[:2], 1), {"error": "no such row"}], shown="banner") == [None, "no such row"]
 
 
+def test_listen_here_shows_only_when_the_server_streams():
+    shown = run_page([status(VIDEOS[:2], 1), status(VIDEOS[:2], 1, stream=False)], shown="listen")
+    assert [step["shown"] for step in shown] == [False, False]
+    assert run_page([status(VIDEOS[:2], 1, stream=True)], shown="listen")[0]["shown"] is True
+
+
+def test_listen_here_plays_the_stream_with_the_token_and_track_changes_keep_it():
+    shown = run_page(
+        [status(VIDEOS[:2], 1, stream=True), "listen", status(None, 2), status(None, 2, idle=True), status(None, 1)],
+        shown="listen",
+    )
+    assert shown[0] == {"shown": True, "label": "Listen here", "src": None, "playing": False}
+    playing = {"shown": True, "label": "Stop listening", "src": "/stream?token=t", "playing": True}
+    assert shown[1:] == [playing] * 4
+
+
+def test_stop_listening_closes_the_stream_and_a_broken_one_says_so():
+    shown = run_page([status(VIDEOS[:2], 1, stream=True), "listen", "listen"], shown="listen")
+    assert shown[2] == {"shown": True, "label": "Listen here", "src": None, "playing": False}
+    steps = run_page([status(VIDEOS[:2], 1, stream=True), "listen", "stream-error"], shown="banner")
+    assert steps[2] == "The stream stopped. Press Listen here to try again."
+
+
 def test_the_manifest_makes_an_installable_app():
     manifest = json.loads((server.STATIC_DIR / "manifest.webmanifest").read_text(encoding="utf-8"))
     assert manifest["display"] == "standalone"
@@ -798,3 +823,47 @@ def test_the_style_takes_its_colors_from_variables_and_fills_the_screen():
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", rules_outside_root)
     assert "prefers-color-scheme: dark" in css
     assert "100dvh" in css
+
+
+# --- /stream ----------------------------------------------------------------------
+
+
+class FakeStreamer:
+    """Stands in for stream.Streamer: each listener gets pages, then the end."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.listening = set()
+        self.ended = 0
+
+    def listen(self, loop):
+        listener = stream.Listener(loop)
+        for page in [*self.pages, None]:
+            listener.offer(page)
+        self.listening.add(listener)
+        return listener
+
+    def unlisten(self, listener):
+        self.listening.discard(listener)
+
+    def end_listeners(self):
+        self.ended += 1
+
+
+def test_stream_sends_the_pages_as_ogg_with_the_token_in_the_query(fake):
+    streamer = FakeStreamer([b"OggS-head", b"OggS-audio"])
+
+    async def test(http):
+        response = await http.get(f"/stream?token={TOKEN}")
+        return response.status, response.headers["Content-Type"], await response.read()
+
+    app = server.make_app(fake, current(), streamer=streamer)
+    assert with_http(app, test) == (200, "audio/ogg", b"OggS-headOggS-audio")
+    assert streamer.listening == set()  # the finished listener left
+    assert streamer.ended == 1  # the server's shutdown ended the rest
+
+
+def test_stream_without_serve_stream_is_404(fake):
+    status, body = api(fake, "GET", "/stream")
+    assert status == 404
+    assert "serve --stream" in body["error"]

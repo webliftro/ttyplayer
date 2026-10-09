@@ -197,6 +197,7 @@ function renderNowPlaying() {
   $("volume-value").textContent = hasVolume ? Math.round(state.volume) : "";
   $("mute").textContent = state.muted ? "🔇" : "🔊";
   $("mute").setAttribute("aria-pressed", String(Boolean(state.muted)));
+  $("listen-row").hidden = !state.stream;
   renderProgress();
 }
 
@@ -339,6 +340,42 @@ async function search(event) {
   renderList("search-results", (videos || []).map((video) => videoRow(video, playOrQueueButtons(video))), "No results.");
 }
 
+// --- listening here (serve --stream) ---------------------------------------
+
+// The server's sound in this tab. Track changes leave the stream alone: the server sends silence
+// between tracks, so it stays open until Stop listening closes it.
+function toggleListening() {
+  const audio = $("listen-audio");
+  if (audio.paused) {
+    audio.src = `/stream?token=${encodeURIComponent(token)}`;
+    audio.play().catch(() => showBanner("This browser would not play the stream."));
+  } else {
+    stopListening();
+  }
+  renderListening();
+}
+
+function stopListening() {
+  const audio = $("listen-audio");
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load(); // drops the connection
+}
+
+function renderListening() {
+  const listening = !$("listen-audio").paused;
+  $("listen").textContent = listening ? "Stop listening" : "Listen here";
+  $("listen").setAttribute("aria-pressed", String(listening));
+}
+
+// The stream broke (the server stopped, say): say so, and offer Listen here again.
+function streamFailed() {
+  if (!$("listen-audio").getAttribute("src")) return; // stopListening() emptied it on purpose
+  stopListening();
+  renderListening();
+  showBanner("The stream stopped. Press Listen here to try again.");
+}
+
 // --- the banner -----------------------------------------------------------
 
 function showBanner(text) {
@@ -385,6 +422,11 @@ function wire() {
   });
   $("volume").addEventListener("change", changeVolume);
   $("search-form").addEventListener("submit", search);
+  $("listen").addEventListener("click", toggleListening);
+  $("listen-audio").addEventListener("play", renderListening);
+  $("listen-audio").addEventListener("pause", renderListening);
+  $("listen-audio").addEventListener("error", streamFailed);
+  renderListening();
   $("queue-clear").addEventListener("click", (event) => {
     event.preventDefault(); // a button in a <summary> would also fold the section
     command("clear_others");

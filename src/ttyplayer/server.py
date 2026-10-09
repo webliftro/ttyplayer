@@ -91,6 +91,7 @@ class Broadcaster:
 CLIENT = web.AppKey("client", object)
 SETTINGS = web.AppKey("settings", dict)  # {"current": Settings}: PATCH replaces what it holds
 HUB = web.AppKey("hub", Broadcaster)
+STREAMER = web.AppKey("streamer", object)  # a stream.Streamer under serve --stream, else None
 
 
 def ensure_token(current, path=None):
@@ -142,7 +143,7 @@ async def errors_as_json(request, handler):
 
 @web.middleware
 async def require_token(request, handler):
-    if (request.path.startswith("/api/") or request.path == "/ws") and not authorized(request):
+    if (request.path.startswith("/api/") or request.path in ("/ws", "/stream")) and not authorized(request):
         raise ApiError(401, "unauthorized")
     return await handler(request)
 
@@ -388,6 +389,25 @@ async def websocket(request):
     return ws
 
 
+@routes.get("/stream")
+async def audio_stream(request):
+    """What the player plays, as Ogg Opus, until the client leaves or the server stops."""
+    streamer = request.app[STREAMER]
+    if streamer is None:
+        raise ApiError(404, "this server does not stream; start it with ttyplayer serve --stream")
+    listener = streamer.listen(asyncio.get_running_loop())
+    response = web.StreamResponse(headers={"Content-Type": "audio/ogg", "Cache-Control": "no-store"})
+    try:
+        await response.prepare(request)
+        while (page := await listener.next()) is not None:
+            await response.write(page)
+    except ConnectionError:
+        pass  # the client left
+    finally:
+        streamer.unlisten(listener)
+    return response
+
+
 def socket_command(client, text):
     """The reply to one command a socket sent: the new status, or {"error": …}."""
     try:
@@ -404,17 +424,18 @@ def socket_command(client, text):
 # --- the app and its thread ---------------------------------------------
 
 
-def make_app(client, current, hub=None):
-    """The aiohttp app driving client; current holds server_token and search_limit."""
+def make_app(client, current, hub=None, streamer=None):
+    """The aiohttp app driving client; current holds server_token and search_limit; streamer serves /stream."""
     app = web.Application(middlewares=[errors_as_json, require_token])
     app[CLIENT] = client
     app[SETTINGS] = {"current": current}
     app[HUB] = hub or Broadcaster()
     app[HUB].client = client
+    app[STREAMER] = streamer
     app.add_routes(routes)
     app.router.add_static("/static", STATIC_DIR)
     app.on_startup.append(attach_hub)
-    app.on_shutdown.append(close_sockets)
+    app.on_shutdown.append(close_clients)
     return app
 
 
@@ -422,11 +443,13 @@ async def attach_hub(app):
     app[HUB].loop = asyncio.get_running_loop()
 
 
-async def close_sockets(app):
+async def close_clients(app):
     hub = app[HUB]
     hub.loop = None  # the player's later statuses go nowhere
     for ws in list(hub.sockets):
         await ws.close(code=WSCloseCode.GOING_AWAY, message=b"ttyplayer stopped")
+    if app[STREAMER]:
+        app[STREAMER].end_listeners()
 
 
 class ServerThread:
