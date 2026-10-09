@@ -140,10 +140,11 @@ function reconnect() {
 // Merge a status into state and redraw. A status carries the queue only when it changed; the playing
 // mark also moves with the index, and goes away when the player goes idle.
 function setState(status) {
-  if (status.error) {
-    showBanner(status.error);
+  if (!("idle" in status)) {
+    showBanner(status.error); // a failed command's reply: {"error": …} alone
     return;
   }
+  if (status.error && status.error !== state.error) showBanner(status.error); // a track the player could not play
   const markMoved = status.index !== state.index || status.idle !== state.idle;
   state = { ...state, ...status };
   stateAt = performance.now();

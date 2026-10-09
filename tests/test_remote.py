@@ -242,6 +242,16 @@ def test_the_queue_index_and_idle_mirror_the_server(served, connect):
     assert client.states[-1]["title"] == "Song 2"
 
 
+def test_a_track_the_server_could_not_play_reaches_the_status_and_the_queue_moves_on(served, connect):
+    client = connected(connect(served.url))
+    with served.player.queue_lock:
+        served.player.queue[:] = VIDEOS
+    served.player.jump(0)
+    served.player.handle_message({"event": "end-file", "reason": "error", "file_error": "loading failed"})
+    until(lambda: client.index == 1)
+    assert client.status()["error"] == "Could not play Song 0: loading failed"
+
+
 def test_it_reconnects_after_the_server_drops_the_socket(connect):
     first = Served()
     client = connected(connect(first.url))

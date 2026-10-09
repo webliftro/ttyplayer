@@ -25,7 +25,8 @@ src/ttyplayer/
                server's /api/* (urllib) and mirrors /ws (aiohttp, own thread); RemoteApp is the TUI
                with it as the player and no control socket.
   youtube.py   is_url, search, fetch -> list[Video], fetch_playlist -> (title, list[Video]).
-               Wraps yt-dlp errors in YouTubeError.
+               Wraps yt-dlp errors in YouTubeError. Every entry list goes through
+               utils.handle_many_entries, so only videos come back (see utils.is_video).
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
                handle_control for the control socket.
   control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
@@ -39,7 +40,7 @@ src/ttyplayer/
                server_token, remote_url), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   models.py    Video dataclass: id, title, uploader, duration; url derived from id.
-  utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks;
+  utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                video_entry, read_entries, append_entries, write_entries for the JSON lines files.
 ```
 
@@ -85,6 +86,8 @@ key loop (main thread)         listener thread
   toggle_pause -> send()           property-change -> state, notify()
                                    playback-restart -> started_in (first one after loadfile)
                                    end-file eof    -> next(), or notify() at the end
+                                   end-file error  -> error = "Could not play <title>: <file_error>",
+                                                      then as eof
                                  notify(): on_state(status()) if set, else render()
 ```
 
@@ -146,7 +149,7 @@ Ctrl-C, SIGTERM, `stop` (CLI, /api/command, /ws) -> KeyboardInterrupt in the mai
 
 Threads: the main thread only sleeps. The aiohttp thread runs its own event loop and is the only place requests and sockets live; it calls `MpvClient`'s thread-safe methods (`handle_control`, `seek`, `change_volume`, `status`, `queue_listing`, `play_current`, `jump`, `notify`, and the queue under `queue_lock`). `youtube.*` runs in the loop's executor, never on the loop. The player's listener and poller threads reach the sockets only through `Broadcaster.__call__` → `loop.call_soon_threadsafe` → one send per open socket; a closed or broken socket is dropped without touching the others.
 
-Every `/api/*` request and `/ws` passes the `require_token` middleware (`Authorization: Bearer <token>` or `?token=`, compared with `hmac.compare_digest`); `GET /` and `/static/*` do not. Errors are JSON `{"error": "<one line>"}` through the `errors_as_json` middleware. `/api/command` and the socket's text messages share `run_command`: `pause|next|prev|stop|mute` go to `handle_control`, `seek|volume` to `seek` / `change_volume` with a numeric `value`. `jump|remove` take a queue row (`is_row`), `move` a `[source, target]` pair of them, `clear_others` nothing. Replies and a new socket's first message are `full_status`: `status()` plus `queue` (the `queue_listing` videos); broadcasts are each `on_state` status as the player sends it.
+Every `/api/*` request and `/ws` passes the `require_token` middleware (`Authorization: Bearer <token>` or `?token=`, compared with `hmac.compare_digest`); `GET /` and `/static/*` do not. Errors are JSON `{"error": "<one line>"}` through the `errors_as_json` middleware. `/api/command` and the socket's text messages share `run_command`: `pause|next|prev|stop|mute` go to `handle_control`, `seek|volume` to `seek` / `change_volume` with a numeric `value`. `jump|remove` take a queue row (`is_row`), `move` a `[source, target]` pair of them, `clear_others` nothing. Replies and a new socket's first message are `full_status`: `status()` plus `queue` (the `queue_listing` videos); broadcasts are each `on_state` status as the player sends it. A socket command that fails gets `{"error": …}` alone; a status also has an `error` key (the player's, usually `null`), so the page and `RemoteClient` tell them apart by `idle`, which every status has.
 
 ### The TUI as a remote
 
@@ -199,6 +202,8 @@ ttyplayer owns the queue: `MpvClient.queue` is a list of `Video`, `index` the cu
 
 `play_current()` stamps `time.monotonic()` when it sends `loadfile`; the first `playback-restart` event after it stores the difference as `started_in` in `status()` (mpv sends another restart after every seek, which is ignored). With `TTYPLAYER_TIMING=1` (read by `player.timing()`), `status_line` appends `started in <n>s` and `cli.lookup()` prints `lookup took <n>s` to stderr.
 
+When mpv cannot load a track (`end-file` with reason `error`), `_skip_failed()` stores `error = "Could not play <title>: <reason>"` (the title from the queue, the reason mpv's `file_error`, else `unavailable`) and moves on as at an `eof`; one `notify()` carries both. `status()["error"]` is that text, `None` by default, and goes back to `None` on the first `playback-restart` after a loadfile or on `play_current()`. The text is built only there; consumers show it once per change: the TUI as an error toast, the web remote in its banner, the CLI's `render()` as one stderr line above the status line. `status_line()` leaves it out, so `ttyplayer status` is unchanged.
+
 `on_play(video)` fires whenever a queued video starts. The CLI passes `history.record` (the TUI a wrapper around it); the player knows nothing about files.
 
 `on_state(status)` is for a UI that owns the terminal itself. When set, `notify()` (called on every property change, every queue change, and an `eof` at the end of the queue) hands it `status()` and nothing is printed; when `None`, `notify()` calls `render()`, which prints the status line. `status()` is the one source for `render()`, `on_state` and the control socket's `status` reply; it also carries `volume` and `muted` (the observed `mute` property), which `status_line()` and the TUI panel both draw with `player.volume_meter()`, and `up_next`, which `render()` adds after the status line. `seek()`, `change_volume()`, `toggle_mute()` and `toggle_pause()` are the only places that encode those mpv commands, so keys, remote control and a UI all go through them.
@@ -216,7 +221,8 @@ ttyplayer owns the queue: `MpvClient.queue` is a list of `Video`, `index` the cu
 
 - mpv missing or never answering: one-line message, exit 1.
 - yt-dlp failures (no network, bad link, private video) raise `YouTubeError`; the CLI prints one line and exits 1. yt-dlp's own stderr output is silenced.
-- Zero results: "No videos found", exit 1, before any prompt.
+- Zero results: "No videos found", exit 1, before any prompt. A search result is a video only: `utils.is_video(entry)` keeps an entry whose `ie_key` is `"Youtube"` (channels and playlists are `"YoutubeTab"`), or, without `ie_key`, whose id is 11 characters of `[A-Za-z0-9_-]`; `None` entries are dropped. A search of only channels and playlists finds nothing.
+- A track mpv cannot play: reported (`status()["error"]`, see Queue) and skipped; the queue moves on.
 - Bad picks: re-prompt with the valid range.
 - Ctrl-C, `q`, and `ttyplayer stop` all go through `quit` and the `finally` that restores the terminal.
 - Remote commands with no player running: "No ttyplayer is playing", exit 1.

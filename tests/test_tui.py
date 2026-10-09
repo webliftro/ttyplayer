@@ -210,7 +210,8 @@ async def search(pilot, text="lofi"):
 
 def status(**fields):
     base = {"title": "Song", "uploader": "Singer", "position": 3, "duration": 201, "paused": False,
-            "index": 1, "total": 1, "volume": 60, "volume_source": "player", "muted": False, "up_next": None, "started_in": None, "idle": False}
+            "index": 1, "total": 1, "volume": 60, "volume_source": "player", "muted": False, "up_next": None, "started_in": None, "idle": False,
+            "error": None}
     return base | fields
 
 
@@ -480,6 +481,22 @@ async def test_panel_while_playing_a_queue(clients, served):
         assert (progress.total, progress.progress) == (213, 83)
         assert progress.show_percentage is False and progress.show_eta is False
         assert app.query_one("#np-idle").display is False
+
+
+@drive
+async def test_a_track_the_player_could_not_play_is_toasted_once(clients, served):
+    app = make_app(clients)
+    failed = "Could not play Song [live]: loading failed"  # brackets: not markup
+    async with run(app) as pilot:
+        app.on_player_state(status())
+        app.on_player_state(status(error=failed))
+        app.on_player_state(status(error=failed, position=4))  # unchanged: no second toast
+        await pilot.pause()
+        assert toasts(app) == [(failed, "error")]
+        app.on_player_state(status())  # the next track started
+        app.on_player_state(status(error=failed))  # failed again: a new occurrence
+        await pilot.pause()
+        assert toasts(app) == [(failed, "error"), (failed, "error")]
 
 
 @drive

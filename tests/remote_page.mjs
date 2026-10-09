@@ -1,6 +1,7 @@
 // Runs the web remote's script on a stub DOM for tests/test_server.py: node remote_page.mjs <remote.js>.
-// stdin: a JSON list of messages the server sends over /ws. stdout: after each message, the queue
-// rows the page shows, each its title with a leading "▸" when marked as playing.
+// stdin: a JSON list of messages the server sends over /ws, or "dismiss" for a click on the banner's ×.
+// stdout: after each, {queue, banner}: the queue rows the page shows, each its title with a leading "▸"
+// when marked as playing, and the banner's text (null while it is hidden).
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -72,8 +73,12 @@ vm.runInContext(readFileSync(process.argv[2], "utf-8"), context);
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const shown = [];
 for (const message of JSON.parse(readFileSync(0, "utf-8"))) {
-  socket.listeners.message({ data: JSON.stringify(message) });
+  if (message === "dismiss") elements["banner-close"].listeners.click();
+  else socket.listeners.message({ data: JSON.stringify(message) });
   await settle();
-  shown.push(elements["queue-list"].children.map((row) => (row.classes.has("current") ? "▸" : "") + row.children[0].children[0].textContent));
+  shown.push({
+    queue: elements["queue-list"].children.map((row) => (row.classes.has("current") ? "▸" : "") + row.children[0].children[0].textContent),
+    banner: elements["banner"].hidden ? null : elements["banner-text"].textContent,
+  });
 }
 process.stdout.write(JSON.stringify(shown));

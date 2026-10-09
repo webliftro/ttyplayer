@@ -259,7 +259,7 @@ class RemoteClient:
                 async for message in ws:
                     if message.type == WSMsgType.TEXT:
                         status = json.loads(message.data)
-                        if "error" not in status:
+                        if "idle" in status:  # else a failed command's {"error": …}
                             self.mirror(status)
         except aiohttp.ClientResponseError as error:  # also a refused /ws handshake
             raise ServerError(self.failure(error.status)) from None

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from ttyplayer.models import Video
 APP_NAME = "ttyplayer"  # the product name; every path, prefix and message derives from it
 OLD_NAME = "cli" "tube"  # the name before ttyplayer, split so the old-name grep guard stays clean
 WINDOWS = sys.platform == "win32"  # the one platform test; modules import it, tests patch theirs
+VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")  # channel (UC…, 24) and playlist ids are longer
 
 
 def data_path(filename):
@@ -86,9 +88,17 @@ def write_entries(path, entries):
     path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
 
 
+def is_video(entry):
+    """Whether a yt-dlp entry is a playable video: a search also returns channels and playlists."""
+    if not entry:  # yt-dlp leaves None in place of deleted or private playlist entries
+        return False
+    if "ie_key" in entry:
+        return entry["ie_key"] == "Youtube"  # "YoutubeTab" for channels and playlists
+    return bool(VIDEO_ID.fullmatch(entry.get("id") or ""))
+
+
 def handle_many_entries(entries):
-    # yt-dlp leaves None in place of deleted or private playlist entries.
-    return [video_from_info(entry) for entry in entries if entry]
+    return [video_from_info(entry) for entry in entries if is_video(entry)]
 
 
 def unseen(videos, shown):

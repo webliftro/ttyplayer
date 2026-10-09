@@ -32,12 +32,13 @@ class FakeClient:
         self.queue = []
         self.index = 0
         self.idle = True
+        self.error = None
         self.queue_lock = threading.RLock()
         self.calls = []
 
     def status(self):
         return {"title": self.queue[self.index].title if self.queue else None, "index": self.index + 1,
-                "total": len(self.queue), "idle": self.idle}
+                "total": len(self.queue), "idle": self.idle, "error": self.error}
 
     def queue_listing(self):
         return {"videos": [asdict(video) for video in self.queue], "index": self.index + 1}
@@ -444,7 +445,30 @@ def test_patch_settings_rejects_bad_values_and_saves_nothing(fake, settings_file
     assert not settings_file.exists()
 
 
+def test_status_carries_the_players_error(fake):
+    fake.error = "Could not play Song 0: loading failed"
+    assert api(fake, "GET", "/api/status")[1]["error"] == "Could not play Song 0: loading failed"
+
+
 # --- the socket ----------------------------------------------------------
+
+
+def test_socket_carries_the_players_error(fake):
+    hub = server.Broadcaster()
+    fake.error = "Could not play Song 0: unavailable"
+
+    async def test(http):
+        ws = await http.ws_connect(f"/ws?token={TOKEN}")
+        first = await ws.receive_json(timeout=2)
+        fake.error = None
+        hub(fake.status())
+        second = await ws.receive_json(timeout=2)
+        await ws.close()
+        return first, second
+
+    first, second = with_http(server.make_app(fake, current(), hub), test)
+    assert first["error"] == "Could not play Song 0: unavailable"
+    assert second["error"] is None
 
 
 def test_socket_sends_the_status_on_connect_and_broadcasts_on_state(fake):
@@ -710,10 +734,11 @@ def test_the_page_sends_only_commands_the_server_knows():
     assert used <= set(server.COMMANDS)
 
 
-def run_page(messages):
-    """remote.js run by Node on a stub DOM, fed messages over /ws: the queue rows it shows after each.
+def run_page(messages, shown="queue"):
+    """remote.js run by Node on a stub DOM, fed messages over /ws: what it shows after each.
 
-    Each row is its title, with a leading "▸" when it is marked as playing.
+    shown="queue": the queue rows, each its title with a leading "▸" when it is marked as playing;
+    shown="banner": the banner's text, None while it is hidden. A message "dismiss" clicks the banner's ×.
     """
     node = shutil.which("node")
     if node is None:
@@ -721,12 +746,12 @@ def run_page(messages):
     harness = Path(__file__).with_name("remote_page.mjs")
     result = subprocess.run([node, str(harness), str(server.STATIC_DIR / "remote.js")], input=json.dumps(messages),
                             capture_output=True, encoding="utf-8", timeout=30, check=True)
-    return json.loads(result.stdout)
+    return [step[shown] for step in json.loads(result.stdout)]
 
 
-def status(queue, index, idle=False):
+def status(queue, index, idle=False, error=None):
     """A status as the server broadcasts it; queue=None leaves the queue out."""
-    message = {"title": VIDEOS[index - 1].title, "index": index, "total": 2, "idle": idle}
+    message = {"title": VIDEOS[index - 1].title, "index": index, "total": 2, "idle": idle, "error": error}
     if queue is not None:
         message["queue"] = [asdict(video) for video in queue]
     return message
@@ -740,6 +765,22 @@ def test_the_page_shows_a_queue_replaced_by_another_remote():
 def test_the_page_moves_and_drops_the_playing_mark_without_a_queue():
     shown = run_page([status(VIDEOS[:2], 1), status(None, 2), status(None, 2, idle=True)])
     assert shown == [["▸Song 0", "Song 1"], ["Song 0", "▸Song 1"], ["Song 0", "Song 1"]]
+
+
+def test_the_page_shows_a_track_the_player_could_not_play_in_the_banner_once():
+    failed = "Could not play Song 0: loading failed"
+    shown = run_page([status(VIDEOS[:2], 1), status(None, 2, error=failed), "dismiss", status(None, 2, error=failed)],
+                     shown="banner")
+    assert shown == [None, failed, None, None]
+
+
+def test_the_page_still_follows_a_status_that_carries_an_error():
+    shown = run_page([status(VIDEOS[:2], 1), status(None, 2, error="Could not play Song 0: unavailable")])
+    assert shown == [["▸Song 0", "Song 1"], ["Song 0", "▸Song 1"]]
+
+
+def test_the_page_shows_a_failed_commands_error_in_the_banner():
+    assert run_page([status(VIDEOS[:2], 1), {"error": "no such row"}], shown="banner") == [None, "no such row"]
 
 
 def test_the_manifest_makes_an_installable_app():

@@ -457,6 +457,7 @@ class TtyplayerApp(App):
         self.favorite_ids = set()
         self.history_stale = False
         self.queue_shown = ([], None)
+        self.player_error = None  # the player's last error, toasted once
         self.client = None
         self.remote = None
         self.closing = False
@@ -633,6 +634,12 @@ class TtyplayerApp(App):
         self.query_one(NowPlaying).show(status)
         self.mark_playing()
         self.show_queue()
+        self.toast_player_error(status and status.get("error"))
+
+    def toast_player_error(self, error):
+        if error and error != self.player_error:
+            self.toast(error, severity="error")
+        self.player_error = error
 
     def playing_video(self):
         client = self.client

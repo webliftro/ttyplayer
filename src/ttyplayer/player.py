@@ -230,6 +230,8 @@ class MpvClient:
     loaded_at = None  # monotonic time of the last loadfile, until playback restarts
     started_in = None
     idle = True  # nothing loaded: before the first track, after the queue ran out
+    shown_error = None  # the error render() printed last
+    error = None  # "Could not play <title>: <reason>" for the last track mpv failed to load, until one starts
     request_id = 0  # of the last command sent
     poller = None
     volume_writer = None  # macOS only
@@ -318,9 +320,11 @@ class MpvClient:
         elif message.get("event") == "end-file" and message.get("reason") == "eof":
             # At the end of the queue this still notifies, to tell a UI it went idle.
             self._edit(self._next_or_idle)
+        elif message.get("event") == "end-file" and message.get("reason") == "error":
+            self._edit(self._skip_failed, message.get("file_error") or "unavailable")
 
     def _mark_started(self):
-        """Store started_in on the first restart after a loadfile; later ones are seeks.
+        """Store started_in, and clear error, on the first restart after a loadfile; later ones are seeks.
 
         Under queue_lock, so a track change can't land between reading the clock and
         reading the stamp it is measured from.
@@ -330,6 +334,7 @@ class MpvClient:
                 return False
             self.started_in = round(time.monotonic() - self.loaded_at, 1)
             self.loaded_at = None
+            self.error = None
             return True
 
     def poll_volume(self):
@@ -495,6 +500,7 @@ class MpvClient:
         self.send(["loadfile", url])
 
     def play_current(self):
+        self.error = None
         self._move(0)
 
     def next(self):
@@ -554,6 +560,11 @@ class MpvClient:
         if not self._play_index(self.index + 1):
             self.idle = True
         return True
+
+    def _skip_failed(self, reason):
+        """Record why the current track failed to load, then move on as at its end."""
+        self.error = f"Could not play {self.current_title()}: {reason}"
+        return self._next_or_idle()
 
     def _remove(self, index):
         if not 0 <= index < len(self.queue):
@@ -642,6 +653,7 @@ class MpvClient:
             "up_next": self.up_next(),
             "started_in": self.started_in,
             "idle": self.idle,
+            "error": self.error,
         }
 
     def notify(self):
@@ -653,6 +665,10 @@ class MpvClient:
 
     def render(self):
         status = self.status()
+        if status["error"] and status["error"] != self.shown_error:
+            # One line of its own above the status line, which redraws below it.
+            print(f"\r{status['error']}\x1b[K", file=sys.stderr, flush=True)
+        self.shown_error = status["error"]
         line = status_line(status)
         if status["total"] > 1:
             up_next = status["up_next"]

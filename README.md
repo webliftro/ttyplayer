@@ -28,6 +28,8 @@ ttyplayer doctor                     check Python, yt-dlp, mpv and ttyplayer's f
 ttyplayer version
 ```
 
+Channels and playlists in search results are skipped; a track that cannot be played is reported and skipped.
+
 While ttyplayer plays in one terminal, any other terminal can drive it:
 
 ```

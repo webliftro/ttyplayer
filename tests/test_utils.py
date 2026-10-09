@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ttyplayer import utils
 
 
@@ -23,13 +25,13 @@ def test_parse_picks_out_of_range():
 
 def test_handle_many_entries():
     first_entry = {
-        "id": "1234",
+        "id": "aaaaaaaa123",
         "title": "Uploaded video title",
         "uploader": "Mr_uploader",
         "duration": 600,
     }
     second_entry = {
-        "id": "4321",
+        "id": "bbbbbbbb432",
         "title": "Second uploaded video title",
         "uploader": "Second uploader",
         "duration": 400,
@@ -37,8 +39,8 @@ def test_handle_many_entries():
     entries = [first_entry, second_entry]
     result = utils.handle_many_entries(entries)
     assert len(result) == 2
-    assert result[0].id == "1234"
-    assert result[1].id == "4321"
+    assert result[0].id == "aaaaaaaa123"
+    assert result[1].id == "bbbbbbbb432"
 
 
 def test_handle_many_entries_empty_input():
@@ -53,8 +55,38 @@ def test_video_from_info_tolerates_missing_uploader_and_duration():
 
 def test_video_from_info_tolerates_null_entries():
     # yt-dlp can put None entries in a playlist for deleted or private videos
-    assert utils.handle_many_entries([None, {"id": "x", "title": "t"}]) != []
-    assert [v.id for v in utils.handle_many_entries([None, {"id": "x", "title": "t"}])] == ["x"]
+    assert [v.id for v in utils.handle_many_entries([None, {"id": "dQw4w9WgXcQ", "title": "t"}])] == ["dQw4w9WgXcQ"]
+
+
+def test_handle_many_entries_keeps_only_videos():
+    video = {"ie_key": "Youtube", "_type": "url", "id": "dQw4w9WgXcQ", "title": "Song"}
+    channel = {"ie_key": "YoutubeTab", "_type": "url", "id": "UCMK037TfgXabcdefghijklm", "title": "Band"}
+    playlist = {"ie_key": "YoutubeTab", "_type": "url", "id": "PLabcdefghijklmnopqrstuvwxyz012345", "title": "Mix"}
+    assert [v.id for v in utils.handle_many_entries([video, channel, playlist, None])] == ["dQw4w9WgXcQ"]
+
+
+def test_handle_many_entries_of_no_videos_is_empty():
+    channel = {"ie_key": "YoutubeTab", "id": "UCMK037TfgXabcdefghijklm", "title": "Band"}
+    assert utils.handle_many_entries([channel, None]) == []
+
+
+@pytest.mark.parametrize(
+    "entry, video",
+    [
+        ({"id": "dQw4w9WgXcQ"}, True),  # no ie_key: an 11-character id is a video's
+        ({"id": "a-b_c-d_e-f"}, True),
+        ({"id": "UCMK037TfgXabcdefghijklm"}, False),  # a channel's
+        ({"id": "dQw4w9WgXc"}, False),
+        ({"id": "dQw4w9WgXc!"}, False),
+        ({"title": "no id"}, False),
+        ({"ie_key": "Youtube", "id": "abc"}, True),  # ie_key, when present, decides
+        ({"ie_key": "YoutubeTab", "id": "dQw4w9WgXcQ"}, False),
+        (None, False),
+        ({}, False),
+    ],
+)
+def test_is_video(entry, video):
+    assert utils.is_video(entry) is video
 
 
 def test_data_path_defaults_to_local_share_on_posix(monkeypatch, tmp_path):

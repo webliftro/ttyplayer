@@ -181,6 +181,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "up_next": None,
         "started_in": None,
         "idle": True,
+        "error": None,
     }
 
 
@@ -212,6 +213,11 @@ TIMED = {
     "volume": 70,
     "muted": False,
 }
+
+
+def test_status_line_leaves_the_error_out():
+    # ttyplayer status prints this line: a failed track does not change it.
+    assert player.status_line({**TIMED, "error": "Could not play Song: unavailable"}) == player.status_line(TIMED)
 
 
 def test_status_line_matches_the_player_shape():
@@ -411,6 +417,66 @@ def test_eof_before_the_end_plays_the_next_video(monkeypatch):
     assert client.index == 1
     assert client.loaded == [B.url]
     assert len(states) == 1
+
+
+FAILED = {"event": "end-file", "reason": "error", "file_error": "loading failed"}
+
+
+def test_a_track_mpv_could_not_load_is_reported_and_skipped(monkeypatch):
+    client = make_remote_client([A, B], monkeypatch)
+    client.play_current()
+    states = []
+    client.on_state = states.append
+    client.handle_message(FAILED)
+    assert client.index == 1
+    assert client.loaded == [A.url, B.url]
+    assert states == [client.status()]
+    assert states[0]["error"] == "Could not play First: loading failed"
+    assert client.handle_control("status")["error"] == "Could not play First: loading failed"
+
+
+def test_a_failed_load_without_file_error_is_unavailable(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    client.play_current()
+    client.handle_message({"event": "end-file", "reason": "error"})
+    assert client.status()["error"] == "Could not play First: unavailable"
+    assert client.idle is True  # the queue ran out, as at an eof
+
+
+def test_the_error_clears_when_the_next_track_starts(monkeypatch):
+    client = make_remote_client([A, B, C], monkeypatch)
+    client.play_current()
+    client.handle_message(FAILED)
+    client.handle_message({"event": "property-change", "name": "time-pos", "data": None})
+    assert client.status()["error"] == "Could not play First: loading failed"  # B is still loading
+    states = []
+    client.on_state = states.append
+    client.handle_message({"event": "playback-restart"})
+    assert client.status()["error"] is None
+    assert states == [client.status()]
+
+
+def test_play_current_clears_the_error(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    client.play_current()
+    client.handle_message(FAILED)
+    client.play_current()
+    assert client.status()["error"] is None
+
+
+def test_the_error_is_none_until_a_track_fails(monkeypatch):
+    assert make_remote_client([A], monkeypatch).status()["error"] is None
+
+
+def test_without_on_state_a_failed_track_prints_one_line_above_the_status_line(monkeypatch, capsys):
+    client = make_remote_client([A, B], monkeypatch)
+    client.play_current()
+    capsys.readouterr()
+    client.handle_message(FAILED)
+    client.handle_message({"event": "property-change", "name": "pause", "data": True})
+    out, err = capsys.readouterr()
+    assert err == "\rCould not play First: loading failed\x1b[K\n"  # once, though two lines were drawn
+    assert out.count("\r") == 2
 
 
 def fake_clock(monkeypatch, *times):

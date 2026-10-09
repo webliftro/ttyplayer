@@ -13,8 +13,11 @@ def test_is_url_is_false():
     assert is_url("nothttp") is False
 
 
-ENTRY = {"id": "abc", "title": "Song", "uploader": "Band", "duration": 200}
-OTHER = {"id": "def", "title": "Other", "uploader": "Band", "duration": 100}
+# Flat search and playlist entries, as yt-dlp gives them: ie_key says what each one is.
+ENTRY = {"ie_key": "Youtube", "id": "abc", "title": "Song", "uploader": "Band", "duration": 200}
+OTHER = {"ie_key": "Youtube", "id": "def", "title": "Other", "uploader": "Band", "duration": 100}
+CHANNEL = {"ie_key": "YoutubeTab", "_type": "url", "id": "UCMK037TfgXabcdefghijklm", "title": "Band"}
+PLAYLIST = {"ie_key": "YoutubeTab", "_type": "url", "id": "PLabcdefghijklmnopqrstuvwxyz012345", "title": "Band mix"}
 
 
 class FakeYoutubeDL:
@@ -48,6 +51,16 @@ def test_search_builds_videos_from_entries(fake_ydl):
     videos = youtube.search("song", limit=2)
     assert [v.id for v in videos] == ["abc", "def"]
     assert videos[0].title == "Song"
+
+
+def test_search_keeps_only_the_videos(fake_ydl):
+    fake_ydl.info = {"entries": [CHANNEL, ENTRY, PLAYLIST, None, OTHER]}
+    assert [v.id for v in youtube.search("band", limit=5)] == ["abc", "def"]
+
+
+def test_search_of_only_channels_and_playlists_finds_nothing(fake_ydl):
+    fake_ydl.info = {"entries": [CHANNEL, PLAYLIST]}
+    assert youtube.search("band", limit=2) == []
 
 
 def test_search_asks_for_the_requested_number_of_results(fake_ydl):
