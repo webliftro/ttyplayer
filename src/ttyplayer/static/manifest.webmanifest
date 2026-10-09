@@ -1,0 +1,14 @@
+{
+  "name": "ttyplayer remote",
+  "short_name": "ttyplayer",
+  "description": "Drive ttyplayer serve from this device",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#16161c",
+  "theme_color": "#16161c",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/static/icon.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}

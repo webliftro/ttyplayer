@@ -155,7 +155,7 @@ It prints the address to open, with the token, and a QR code of it for a phone:
 Serving ttyplayer at http://192.168.1.20:7700/?token=…
 ```
 
-The page at that address shows the live status for now; the full web remote comes in the next release. Ctrl-C (or `ttyplayer stop`, or a `stop` command) stops the server and the player.
+Open that address on a phone and it is a remote: what plays (with a moving progress bar), previous / play-pause / next, a volume slider and mute, a search box (a pasted link plays at once; each result has **Play** and **Queue**), the queue (tap a row to jump there, **×** removes it, **Clear** keeps only what plays), your favorites (the heart on any row adds or drops one) and your playlists. It follows the phone's dark or light mode, reconnects by itself when the server restarts, and "Add to Home Screen" makes it an app icon. The page keeps the token only for that browser tab; opened without one (from the home screen, say) it asks you to paste the token `serve` printed. Ctrl-C (or `ttyplayer stop`, or a `stop` command) stops the server and the player.
 
 Every `/api/…` request and the socket need the token, as `Authorization: Bearer <token>` or `?token=<token>`; without it the reply is `401 {"error": "unauthorized"}`. Replies are JSON; errors are `{"error": "…"}`.
 
@@ -170,13 +170,16 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | GET | `/api/status` | the player's status, plus `queue` (the videos) and `index` (1-based) |
 | POST | `/api/play` | `{"url": "…"}` or `{"query": "…"}`: the link's videos, or the first search result, replace the queue and play |
 | POST | `/api/queue` | `{"url": "…"}` or `{"query": "…"}`: appended to the queue (played at once when nothing plays) |
-| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"seek"\|"volume", "value"?}`; `seek` and `volume` take a number of seconds / steps → the new status |
+| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"seek"\|"volume"\|"jump"\|"remove"\|"clear_others", "value"?}`; `seek` and `volume` take a number of seconds / steps, `jump` and `remove` a 0-based queue row; `clear_others` keeps only the current track → the new status |
+| GET | `/api/commands` | the command names `/api/command` takes |
 | GET | `/api/search?q=…` | the search results (`search_limit` of them) |
+| GET | `/api/favorites` | the favorites, newest first |
+| POST | `/api/favorites/<id>` | unfavorites that video, or favorites it (the body is the video: `{"title", "uploader", "duration"}`) → the favorites |
 | GET | `/api/playlists` | `[{"name": …, "count": …}]` |
 | POST | `/api/playlists/<name>/play` | that playlist becomes the queue |
 | GET, PATCH | `/api/settings` | every setting but the token; PATCH `{"key": value}` changes and saves them, checked like `config set` |
 | WS | `/ws?token=…` | sends the status on connect and on every change; takes the same `{"name", "value"?}` commands as `/api/command` and answers each with the status |
-| GET | `/` | the page (needs no token itself; it reads the token from its address) |
+| GET | `/` | the web remote (needs no token itself; it reads the token from its address); its files are under `/static/`, plus `/manifest.webmanifest` |
 
 Security: the token is the only gate, and plain HTTP carries it in clear text. That is fine on a home network you trust; it is why `serve` listens on 127.0.0.1 unless told otherwise. To reach it beyond your LAN (a VPS, say), put it behind a reverse proxy with HTTPS. Anyone with the token can control the player, including stopping it; change the token with `ttyplayer config set server_token <new>` and restart.
 

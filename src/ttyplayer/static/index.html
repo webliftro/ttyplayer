@@ -2,47 +2,73 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f4f4f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16161c" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>ttyplayer</title>
-<style>
-  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-  body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
-  pre { padding: 1rem; border: 1px solid #8884; border-radius: 0.5rem; overflow-x: auto; }
-</style>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/remote.css">
+<script src="/static/remote.js" defer></script>
 </head>
 <body>
-<h1>ttyplayer</h1>
-<p>This ttyplayer is serving. The web remote arrives in the next release.</p>
-<p id="connection">Connecting…</p>
-<pre id="status"></pre>
-<script>
-  // The token comes in the URL once; keep it for this tab and take it out of the address bar.
-  const params = new URLSearchParams(location.search);
-  if (params.has("token")) {
-    sessionStorage.setItem("ttyplayer-token", params.get("token"));
-    history.replaceState(null, "", location.pathname);
-  }
-  const token = sessionStorage.getItem("ttyplayer-token");
-  const connection = document.getElementById("connection");
-  const status = document.getElementById("status");
+<div id="banner" class="banner" role="alert" hidden>
+  <span id="banner-text"></span>
+  <button id="banner-close" type="button" aria-label="Dismiss">×</button>
+</div>
 
-  function connect() {
-    if (!token) {
-      connection.textContent = "No token: open the address ttyplayer serve printed.";
-      return;
-    }
-    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${scheme}//${location.host}/ws?token=${encodeURIComponent(token)}`);
-    socket.onopen = () => { connection.textContent = "Connected"; };
-    socket.onmessage = (event) => {
-      status.textContent = JSON.stringify(JSON.parse(event.data), null, 2);
-    };
-    socket.onclose = () => {
-      connection.textContent = "Disconnected; retrying…";
-      setTimeout(connect, 2000);
-    };
-  }
-  connect();
-</script>
+<form id="token-form" class="token-form" hidden>
+  <label for="token-input">Paste the token printed by ttyplayer serve</label>
+  <input id="token-input" name="token" type="password" autocomplete="off" required>
+  <button type="submit">Connect</button>
+</form>
+
+<main id="app" hidden>
+  <section id="now-playing" class="now-playing" aria-label="Now playing">
+    <div class="np-head">
+      <span id="np-state" class="np-state" aria-label="Stopped">■</span>
+      <div class="np-text">
+        <div id="np-title" class="np-title">Nothing playing</div>
+        <div id="np-uploader" class="np-uploader"></div>
+      </div>
+      <span id="np-position" class="np-position"></span>
+    </div>
+    <div class="progress"><div id="np-progress" class="progress-fill"></div></div>
+    <div class="times"><span id="np-elapsed">0:00</span><span id="np-duration">0:00</span></div>
+    <div class="volume-row">
+      <button id="mute" type="button" class="icon" aria-label="Mute" aria-pressed="false">🔊</button>
+      <input id="volume" type="range" min="0" max="100" step="1" value="0" aria-label="Volume">
+      <span id="volume-value" class="volume-value"></span>
+    </div>
+    <div class="transport">
+      <button id="prev" type="button" aria-label="Previous">⏮</button>
+      <button id="play-pause" type="button" class="primary" aria-label="Play or pause">▶</button>
+      <button id="next" type="button" aria-label="Next">⏭</button>
+    </div>
+    <div id="connection" class="connection">Connecting…</div>
+  </section>
+
+  <form id="search-form" class="search" role="search">
+    <input id="search-input" type="search" placeholder="Search YouTube or paste a link" enterkeyhint="search" required>
+    <button id="search-button" type="submit">Search</button>
+  </form>
+  <ul id="search-results" class="videos"></ul>
+
+  <details id="queue" open>
+    <summary>Queue <button id="queue-clear" type="button" class="small">Clear</button></summary>
+    <ul id="queue-list" class="videos"></ul>
+  </details>
+
+  <details id="favorites">
+    <summary>Favorites</summary>
+    <ul id="favorites-list" class="videos"></ul>
+  </details>
+
+  <details id="playlists">
+    <summary>Playlists</summary>
+    <ul id="playlists-list" class="videos"></ul>
+  </details>
+</main>
 </body>
 </html>

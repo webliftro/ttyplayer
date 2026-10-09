@@ -42,12 +42,15 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
 | GET | `/api/status` | `status()` as JSON (+ `queue`: list, `index`) |
 | POST | `/api/play` | `{"query": "…"}` or `{"url": "…"}` → resolves and replaces the queue |
 | POST | `/api/queue` | `{"url"|"query"}` → appends |
-| POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"seek"|"volume", "value"?}` → `handle_control`-style reply |
+| POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"seek"|"volume"|"jump"|"remove"|"clear_others", "value"?}` → the new status; `jump`/`remove` take a 0-based queue row |
+| GET | `/api/commands` | the command table's names (the page's and the server's tests both read it) |
+| GET | `/api/favorites` | the favorites, newest first |
+| POST | `/api/favorites/{id}` | toggles: unfavorites, or favorites the video in the body → the favorites |
 | GET | `/api/search?q=` | `youtube.search` results |
 | GET/POST | `/api/playlists…` | list / play a playlist |
 | GET | `/api/settings`, PATCH | read / change settings |
-| WS | `/ws` | server → client: every `on_state` status as one JSON message; client → server: the same commands as `/api/command` |
-| GET | `/` | the web remote (one HTML file + one JS file + one CSS file, no build step) |
+| WS | `/ws` | server → client: every `on_state` status as one JSON message (with `queue` when it changed since the last one); client → server: the same commands as `/api/command` |
+| GET | `/` | the web remote (one HTML file + one JS file + one CSS file, no build step); `/static/*`, `/manifest.webmanifest` |
 | GET | `/stream` | step 2: `audio/ogg` Opus stream |
 
 All POSTs are idempotent-ish and reply with the new status.

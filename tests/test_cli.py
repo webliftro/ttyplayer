@@ -1234,5 +1234,9 @@ def test_wheel_ships_the_server_page(tmp_path):
         pytest.skip("uv is not installed")
     subprocess.run([uv, "build", "--wheel", "--out-dir", str(tmp_path), str(ROOT)], check=True, capture_output=True)
     [wheel] = tmp_path.glob("*.whl")
+    static = ROOT / "src" / "ttyplayer" / "static"
+    assert {path.name for path in static.iterdir()} >= {"index.html", "remote.js", "remote.css", "manifest.webmanifest", "icon.svg"}
     with zipfile.ZipFile(wheel) as archive:
-        assert "ttyplayer/static/index.html" in archive.namelist()
+        names = archive.namelist()
+    for path in static.iterdir():
+        assert f"ttyplayer/static/{path.name}" in names

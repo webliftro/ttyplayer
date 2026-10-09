@@ -14,18 +14,23 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlencode
 
-from aiohttp import WSMsgType, web
+from aiohttp import WSCloseCode, WSMsgType, web
 
-from ttyplayer import playlists, settings, youtube
+from ttyplayer import favorites, playlists, settings, youtube
+from ttyplayer.utils import video_from_info
 
 STATIC_DIR = Path(__file__).parent / "static"
 SECRET_KEY = "server_token"  # the one setting the API never shows nor changes
 SHUTDOWN_TIMEOUT = 1  # seconds aiohttp waits for open requests when the server stops
 TOKEN_BYTES = 24
 
-# The /api/command and /ws command names: handle_control's own, then those that take a number.
+# The /api/command and /ws command names: handle_control's own, then MpvClient methods
+# taking a number, a 0-based queue row, or nothing. COMMANDS is all of them, as /api/commands lists them.
 CONTROL_COMMANDS = {"pause", "next", "prev", "stop", "mute"}
 VALUE_COMMANDS = {"seek": "seek", "volume": "change_volume"}  # name -> MpvClient method
+ROW_COMMANDS = {"jump": "jump", "remove": "remove"}
+PLAIN_COMMANDS = {"clear_others": "clear_others"}
+COMMANDS = sorted(CONTROL_COMMANDS | VALUE_COMMANDS.keys() | ROW_COMMANDS.keys() | PLAIN_COMMANDS.keys())
 
 
 class ApiError(Exception):
@@ -37,21 +42,34 @@ class ApiError(Exception):
 
 
 class Broadcaster:
-    """The player's on_state: hands each status to the server's loop, which sends it to every socket."""
+    """The player's on_state: hands each status to the server's loop, which sends it to every socket.
+
+    A status carries the client's queue when it differs from the last one sent, so every remote
+    sees each queue edit, whoever made it, without the whole queue riding on each time-pos tick.
+    """
 
     loop = None  # the server's loop while it runs
+    client = None  # the player whose queue rides along; make_app sets it
 
     def __init__(self):
         self.sockets = set()
+        self.queue_sent = None
 
     def __call__(self, status):
         loop = self.loop
         if loop is None:
             return
+        queue = self.client.queue_listing()["videos"] if self.client else None
         try:
-            loop.call_soon_threadsafe(self.send_all, json.dumps(status))
+            loop.call_soon_threadsafe(self.send_status, status, queue)
         except RuntimeError:
             pass  # the loop closed between the check and the call
+
+    def send_status(self, status, queue):
+        if queue is not None and queue != self.queue_sent:
+            self.queue_sent = queue
+            status = {**status, "queue": queue}
+        self.send_all(json.dumps(status))
 
     def send_all(self, text):
         for ws in list(self.sockets):
@@ -153,13 +171,19 @@ def run_command(client, body):
     name = body.get("name")
     if not isinstance(name, str):
         raise ApiError(400, 'a command needs a "name"')
+    value = body.get("value")
     if name in CONTROL_COMMANDS:
         client.handle_control(name)
     elif name in VALUE_COMMANDS:
-        value = body.get("value")
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ApiError(400, f"{name} needs a numeric value")
         getattr(client, VALUE_COMMANDS[name])(value)
+    elif name in ROW_COMMANDS:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ApiError(400, f"{name} needs a queue row number")
+        getattr(client, ROW_COMMANDS[name])(value)
+    elif name in PLAIN_COMMANDS:
+        getattr(client, PLAIN_COMMANDS[name])()
     else:
         raise ApiError(400, f"unknown command {name}")
     return full_status(client)
@@ -227,6 +251,16 @@ async def index(request):
     return web.FileResponse(STATIC_DIR / "index.html")
 
 
+@routes.get("/manifest.webmanifest")
+async def manifest(request):
+    return web.FileResponse(STATIC_DIR / "manifest.webmanifest", headers={"Content-Type": "application/manifest+json"})
+
+
+@routes.get("/api/commands")
+async def get_commands(request):
+    return web.json_response(COMMANDS)
+
+
 @routes.get("/api/status")
 async def get_status(request):
     return web.json_response(full_status(request.app[CLIENT]))
@@ -280,6 +314,25 @@ def on_playlist(func, *args):
         return func(*args)
     except playlists.PlaylistError as error:
         raise ApiError(404, error) from None
+
+
+@routes.get("/api/favorites")
+async def get_favorites(request):
+    return web.json_response(favorite_listing())
+
+
+@routes.post("/api/favorites/{id}")
+async def post_favorite(request):
+    """Unfavorite the video with this id, or favorite it: the body then holds the video ({"title", …})."""
+    video_id = request.match_info["id"]
+    if not favorites.remove_id(video_id):
+        body = await json_body(request) if request.can_read_body else {}
+        favorites.add(video_from_info({**body, "id": video_id}))
+    return web.json_response(favorite_listing())
+
+
+def favorite_listing():
+    return [asdict(video) for video in favorites.load()]
 
 
 @routes.get("/api/settings")
@@ -345,6 +398,7 @@ def make_app(client, current, hub=None):
     app[CLIENT] = client
     app[SETTINGS] = {"current": current}
     app[HUB] = hub or Broadcaster()
+    app[HUB].client = client
     app.add_routes(routes)
     app.router.add_static("/static", STATIC_DIR)
     app.on_startup.append(attach_hub)
@@ -360,7 +414,7 @@ async def close_sockets(app):
     hub = app[HUB]
     hub.loop = None  # the player's later statuses go nowhere
     for ws in list(hub.sockets):
-        await ws.close(code=web.WSCloseCode.GOING_AWAY, message=b"ttyplayer stopped")
+        await ws.close(code=WSCloseCode.GOING_AWAY, message=b"ttyplayer stopped")
 
 
 class ServerThread:
