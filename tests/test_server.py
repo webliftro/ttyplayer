@@ -23,6 +23,13 @@ from ttyplayer.models import Video
 TOKEN = "secret-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 VIDEOS = [Video(id=f"v{n}", title=f"Song {n}", uploader="u", duration=60) for n in range(3)]
+TRACK = Video(id="1234567", title="Track", uploader="Artist", duration=200, source="soundcloud",
+              link="https://soundcloud.com/artist/track")
+
+
+def page_video(video):
+    """A video as /api/search and /api/favorites send it to the page."""
+    return {**asdict(video), "url": video.url}
 
 
 class FakeClient:
@@ -284,7 +291,7 @@ def test_an_unknown_api_path_is_a_json_404(fake):
 def test_play_resolves_a_query_on_a_worker_thread_and_plays_its_first_result(monkeypatch, fake):
     calls = []
 
-    def search(query, limit=5):
+    def search(query, limit=5, source="youtube"):
         calls.append((query, limit, threading.current_thread() is threading.main_thread()))
         return VIDEOS
 
@@ -319,7 +326,7 @@ def test_queue_appends_and_plays_when_idle(monkeypatch, fake):
 
 
 def test_queue_appends_a_whole_search_while_playing(monkeypatch, fake):
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: VIDEOS[1:])
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": VIDEOS[1:])
     fake.queue[:] = VIDEOS[:1]
     fake.idle = False
     assert api(fake, "POST", "/api/queue", json={"query": "more"})[0] == 200
@@ -333,7 +340,7 @@ def test_play_and_queue_need_a_url_or_a_query(fake, path):
 
 
 def test_play_with_no_results_is_404(monkeypatch, fake):
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": [])
     assert api(fake, "POST", "/api/play", json={"query": "nothing"}) == (404, {"error": "No videos found"})
     assert fake.calls == []
 
@@ -350,15 +357,18 @@ def test_youtube_errors_are_502_in_one_line(monkeypatch, fake):
 def test_search_lists_videos_with_the_search_limit(monkeypatch, fake):
     calls = []
 
-    def search(query, limit=5):
-        calls.append((query, limit))
+    def search(query, limit=5, source="youtube"):
+        calls.append((query, limit, source))
         return VIDEOS
 
     monkeypatch.setattr(youtube, "search", search)
     assert api(fake, "GET", "/api/search?q=lofi+beats", current(search_limit=3)) == (
-        200, [asdict(video) for video in VIDEOS]
+        200, [page_video(video) for video in VIDEOS]
     )
-    assert calls == [("lofi beats", 3)]
+    assert calls == [("lofi beats", 3, "youtube")]
+    calls.clear()
+    assert api(fake, "GET", "/api/search?q=lofi", current(search_source="soundcloud"))[0] == 200
+    assert calls == [("lofi", 10, "soundcloud")]
     assert api(fake, "GET", "/api/search?q=") == (400, {"error": "search needs ?q="})
 
 
@@ -399,11 +409,19 @@ def test_favorites_lists_the_newest_first(fake, favorites_file):
     assert api(fake, "GET", "/api/favorites") == (200, [])
     favorites.add(VIDEOS[0])
     favorites.add(VIDEOS[1])
-    assert api(fake, "GET", "/api/favorites") == (200, [asdict(VIDEOS[1]), asdict(VIDEOS[0])])
+    assert api(fake, "GET", "/api/favorites") == (200, [page_video(VIDEOS[1]), page_video(VIDEOS[0])])
+
+
+def test_search_and_favorites_give_each_video_the_url_of_its_site(monkeypatch, fake, favorites_file):
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": [TRACK, VIDEOS[0]])
+    favorites.add(TRACK)
+    urls = ["https://soundcloud.com/artist/track", "https://www.youtube.com/watch?v=v0"]
+    assert [video["url"] for video in api(fake, "GET", "/api/search?q=x")[1]] == urls
+    assert [video["url"] for video in api(fake, "GET", "/api/favorites")[1]] == urls[:1]
 
 
 def test_posting_a_favorite_toggles_it(fake, favorites_file):
-    video = asdict(VIDEOS[1])
+    video = page_video(VIDEOS[1])
     assert api(fake, "POST", "/api/favorites/v1", json=video) == (200, [video])
     assert favorites.load() == [VIDEOS[1]]
     assert api(fake, "POST", "/api/favorites/v1") == (200, [])  # no body needed to unfavorite
@@ -824,6 +842,19 @@ def test_stop_listening_closes_the_stream_and_a_broken_one_says_so():
     assert shown[2] == {"shown": True, "label": "Listen here", "src": None, "playing": False}
     steps = run_page([status(VIDEOS[:2], 1, stream=True), "listen", "stream-error"], shown="banner")
     assert steps[2] == "The stream stopped. Press Listen here to try again."
+
+
+@pytest.mark.parametrize("video", [TRACK, VIDEOS[0]], ids=["soundcloud", "youtube"])
+@pytest.mark.parametrize("label, path", [("Play", "/api/play"), ("Queue", "/api/queue")])
+def test_play_and_queue_send_the_url_of_the_videos_site(video, label, path):
+    steps = run_page([
+        {"search": "x", "reply": [page_video(video)]},
+        {"click": label, "list": "search-results"},
+        {"favorites": [page_video(video)]},
+        {"click": label, "list": "favorites-list"},
+    ], shown="posted")
+    sent = [path, {"url": video.url}]
+    assert steps == [[], [sent], [], [sent]]
 
 
 def test_the_manifest_makes_an_installable_app():

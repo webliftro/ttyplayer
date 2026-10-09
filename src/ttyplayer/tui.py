@@ -59,11 +59,11 @@ COMMANDS = [
 ]
 
 
-def resolve(text, limit):
-    """A link's videos, or the first `limit` search results for words."""
+def resolve(text, limit, source):
+    """A link's videos, or the first `limit` search results for words on source."""
     if youtube.is_url(text):
         return youtube.fetch(text)
-    return youtube.search(text, limit)
+    return youtube.search(text, limit, source)
 
 
 def number_cell(number, playing):
@@ -72,7 +72,7 @@ def number_cell(number, playing):
 
 def video_cells(video, number, playing=False, favorite=False):
     """One table row in column order: #, Title (♥ when a favorite), Uploader, Length."""
-    title = video.title + FAVORITE_MARK if favorite else video.title
+    title = video.tagged_title + FAVORITE_MARK if favorite else video.tagged_title
     return number_cell(number, playing), Text(title), Text(video.uploader), format_time(video.duration)
 
 
@@ -475,7 +475,7 @@ class TtyplayerApp(App):
         self.client_factory = client_factory
         self.resolve = resolve
         self.video = video
-        self.searched = None  # the text behind the Search tab's rows, for m
+        self.searched = None  # the text behind the Search tab's rows (its sc: or yt: kept), for m
         self.favorite_ids = set()
         self.history_stale = False
         self.queue_shown = ([], None)
@@ -487,7 +487,7 @@ class TtyplayerApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=self.settings.show_clock)
         with Horizontal(id="search-row"):
-            yield SearchBox(placeholder="Search YouTube or paste a link…")
+            yield SearchBox(placeholder="Search (sc: SoundCloud, yt: YouTube) or paste a link…")
             yield LoadingIndicator()
         with TabbedContent():
             with TabPane("Search", id="search"):
@@ -540,20 +540,22 @@ class TtyplayerApp(App):
 
     @work(thread=True, exclusive=True)
     def lookup(self, text, shown=None):
-        """Search for text; with shown, for the results after those (as the CLI's m does)."""
+        """Search for text (a leading sc: or yt: picks the source); with shown, for the results after those (as the CLI's m does)."""
         videos, error = None, None
+        source, query = youtube.split_source(text, self.settings.search_source)
         try:
             limit = self.settings.search_limit
             if shown is None:
-                videos = self.resolve(text, limit)
+                videos = self.resolve(query, limit, source)
             else:
-                videos = unseen(self.resolve(text, len(shown) + limit), shown)
+                videos = unseen(self.resolve(query, len(shown) + limit, source), shown)
         except youtube.YouTubeError as caught:
             error = caught
         if not get_current_worker().is_cancelled:  # a newer search replaced this one
-            self.call_from_thread(self.search_done, text, videos, error, shown)
+            heading = "Search" if youtube.is_url(query) else f"{youtube.SOURCE_NAMES[source]} results"
+            self.call_from_thread(self.search_done, text, videos, error, shown, heading)
 
-    def search_done(self, text, videos, error, shown):
+    def search_done(self, text, videos, error, shown, heading):
         self.set_searching(False)
         if error is not None:
             self.toast(f"YouTube lookup failed: {error}", severity="error")
@@ -563,6 +565,7 @@ class TtyplayerApp(App):
             self.query_one(ResultsTable).show(shown + videos, self.playing_video(), self.favorite_ids)
         else:
             self.searched = text
+            self.query_one(TabbedContent).get_tab("search").label = heading
             self.show_results(videos)
 
     def show_results(self, videos):

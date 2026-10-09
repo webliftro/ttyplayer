@@ -85,10 +85,6 @@ function command(name, value) {
   return act(async () => setState(await api("POST", "/api/command", body)));
 }
 
-function videoUrl(video) {
-  return `https://www.youtube.com/watch?v=${encodeURIComponent(video.id)}`;
-}
-
 function play(body) {
   return act(async () => setState(await api("POST", "/api/play", body)));
 }
@@ -253,7 +249,7 @@ function videoRow(video, buttons, onTap) {
 }
 
 function playOrQueueButtons(video) {
-  return [button("Play", () => play({ url: videoUrl(video) })), button("Queue", () => enqueue({ url: videoUrl(video) }))];
+  return [button("Play", () => play({ url: video.url })), button("Queue", () => enqueue({ url: video.url }))];
 }
 
 function emptyRow(text) {

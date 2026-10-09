@@ -14,7 +14,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 
 ```
 ┌─ ttyplayer ──────────────────────────────────────────────────────── 14:02 ─┐  Header (clock)
-│ 🔍 Search YouTube or paste a link…                                 ◐     │  search bar + spinner
+│ 🔍 Search (sc: SoundCloud, yt: YouTube) or paste a link…           ◐     │  search bar + spinner
 │ ┌ Search ──┬ Queue ──┬ History ──┬ Favorites ──┬ Playlists ──┐          │  TabbedContent (1–5)
 │ │  #  Title                          Uploader          Length           │  DataTable, zebra,
 │ │ ▸1  lofi hip hop radio             Lofi Girl          --:--           │  row cursor
@@ -33,6 +33,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 ```
 
 - The search bar is always visible; `/` focuses it from anywhere, Esc leaves it for the table.
+  A query starting with `sc:` searches SoundCloud, `yt:` YouTube, whatever `search_source` says;
+  after a search the Search tab's heading reads `SoundCloud results` or `YouTube results`.
 - Tabs: **Search** (results), **Queue** (what will play, reorderable), **History**, **Favorites**,
   **Playlists**. Digits `1`–`5` switch tabs. Every tab is a `DataTable` with the same columns so the eye never
   re-learns the screen: `#`, `Title`, `Uploader`, `Length`. The row being played shows `▸` in `#`.
@@ -113,7 +115,9 @@ Playback keys do nothing (no error) before a player exists.
   `zebra_stripes`, `cursor_type = "row"`; the now-playing title is `bold` in `$accent`, the
   uploader and idle text `dim`.
 - Icons are plain Unicode that every terminal font has: `▶` playing, `⏸` paused, `▸` current
-  row, `🔊`/`🔇` volume, `♥` favorite marker in a column-free way (title suffix ` ♥`).
+  row, `🔊`/`🔇` volume, `♥` favorite marker in a column-free way (title suffix ` ♥`). A SoundCloud
+  row's title starts with the two-letter tag `SC ` (in every table and in the CLI's lists), so mixed
+  lists read; YouTube rows have no tag.
 - Progress: `ProgressBar(show_percentage=False, show_eta=False)`, `total=duration`,
   `progress=position`; indeterminate while `duration` is `None`. Volume: ten cells
   `▮`/`▯` plus the number; `--` while unknown.

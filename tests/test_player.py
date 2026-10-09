@@ -1800,9 +1800,9 @@ def test_handle_control_queue_lists_the_queued_videos(monkeypatch):
     assert client.handle_control("queue") == {
         "ok": True,
         "videos": [
-            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration},
-            {"id": B.id, "title": B.title, "uploader": B.uploader, "duration": B.duration},
-            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration},
+            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration, "source": "youtube", "link": None},
+            {"id": B.id, "title": B.title, "uploader": B.uploader, "duration": B.duration, "source": "youtube", "link": None},
+            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration, "source": "youtube", "link": None},
         ],
         "index": 2,
     }

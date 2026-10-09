@@ -44,9 +44,9 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
 | POST | `/api/queue` | `{"url"|"query"}` → appends |
 | POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"seek"|"volume"|"jump"|"remove"|"move"|"clear_others", "value"?}` → the new status; `jump`/`remove` take a 0-based queue row, `move` two (`[from, to]`) |
 | GET | `/api/commands` | the command table's names (the page's and the server's tests both read it) |
-| GET | `/api/favorites` | the favorites, newest first |
+| GET | `/api/favorites` | the favorites, newest first; each video carries `url`, what its Play/Queue send |
 | POST | `/api/favorites/{id}` | toggles: unfavorites, or favorites the video in the body → the favorites |
-| GET | `/api/search?q=` | `youtube.search` results |
+| GET | `/api/search?q=` | `youtube.search` results (from `search_source`), each with its `url` |
 | GET/POST | `/api/playlists…` | list / play a playlist |
 | GET | `/api/settings`, PATCH | read / change settings |
 | WS | `/ws` | server → client: every `on_state` status as one JSON message (with `queue` when it changed since the last one); client → server: the same commands as `/api/command` |

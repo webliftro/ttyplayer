@@ -111,3 +111,46 @@ def test_fetch_playlist_wraps_download_errors(fake_ydl):
     fake_ydl.error = DownloadError("ERROR: playlist does not exist")
     with pytest.raises(youtube.YouTubeError, match="^playlist does not exist$"):
         youtube.fetch_playlist("https://www.youtube.com/playlist?list=nope")
+
+
+SC_ENTRY = {"ie_key": "Soundcloud", "id": "123", "title": "Roygbiv", "uploader": "warp", "duration": 151.0,
+            "url": "https://api.soundcloud.com/tracks/123", "webpage_url": "https://soundcloud.com/warp/roygbiv"}
+SC_SET = {"ie_key": "SoundcloudSet", "_type": "url", "id": "987", "title": "Album"}
+
+
+def test_search_on_soundcloud_asks_yt_dlp_for_scsearch(fake_ydl):
+    fake_ydl.info = {"entries": [SC_ENTRY, SC_SET]}
+    videos = youtube.search("boards of canada", 7, source="soundcloud")
+    assert fake_ydl.calls == [("scsearch7:boards of canada", False)]
+    assert [(v.source, v.url) for v in videos] == [("soundcloud", "https://soundcloud.com/warp/roygbiv")]
+
+
+def test_search_defaults_to_youtube(fake_ydl):
+    fake_ydl.info = {"entries": []}
+    youtube.search("lofi", 3)
+    assert fake_ydl.calls == [("ytsearch3:lofi", False)]
+
+
+def test_search_of_an_unknown_source_names_the_valid_ones(fake_ydl):
+    with pytest.raises(ValueError, match="Unknown source 'bandcamp'; valid sources: youtube, soundcloud"):
+        youtube.search("lofi", 3, source="bandcamp")
+    assert fake_ydl.calls == []
+
+
+def test_every_source_has_a_prefix_and_a_name():
+    assert sorted(youtube.PREFIXES.values()) == sorted(youtube.SOURCES) == sorted(youtube.SOURCE_NAMES)
+
+
+@pytest.mark.parametrize(
+    "text, source, query",
+    [
+        ("sc: boards of canada", "soundcloud", "boards of canada"),
+        ("SC:boards", "soundcloud", "boards"),
+        ("yt: boards", "youtube", "boards"),
+        ("boards of canada", "soundcloud", "boards of canada"),
+        ("https://soundcloud.com/warp/roygbiv", "soundcloud", "https://soundcloud.com/warp/roygbiv"),
+        ("bc: boards", "soundcloud", "bc: boards"),
+    ],
+)
+def test_split_source_reads_a_two_letter_prefix(text, source, query):
+    assert youtube.split_source(text, "soundcloud") == (source, query)

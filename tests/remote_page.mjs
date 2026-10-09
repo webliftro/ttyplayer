@@ -1,9 +1,11 @@
 // Runs the web remote's script on a stub DOM for tests/test_server.py: node remote_page.mjs <remote.js>.
 // stdin: a JSON list of messages the server sends over /ws, or "dismiss" for a click on the banner's ×,
-// "listen" for a click on Listen here, "stream-error" for the <audio> failing.
-// stdout: after each, {queue, banner, listen}: the queue rows the page shows, each its title with a leading "▸"
-// when marked as playing, the banner's text (null while it is hidden), and the Listen here button
-// ({shown, label, src, playing}).
+// "listen" for a click on Listen here, "stream-error" for the <audio> failing, {"search": text, "reply": videos}
+// for a search the server answers with videos, {"favorites": videos} for opening Favorites, and
+// {"click": label, "list": id} for that button on the first row of a list.
+// stdout: after each, {queue, banner, listen, posted}: the queue rows the page shows, each its title with a leading "▸"
+// when marked as playing, the banner's text (null while it is hidden), the Listen here button
+// ({shown, label, src, playing}), and the [path, body] of each POST the page sent.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -62,7 +64,10 @@ class Element {
 }
 
 const elements = {};
+const element = (id) => (elements[id] ??= new Element());
 let socket = null;
+let reply = [];
+let posted = [];
 
 class WebSocket {
   constructor() {
@@ -78,14 +83,17 @@ class WebSocket {
 const storage = new Map();
 const context = vm.createContext({
   document: {
-    getElementById: (id) => (elements[id] ??= new Element()),
+    getElementById: element,
     createElement: () => new Element(),
     querySelectorAll: () => [],
   },
   location: { search: "?token=t", pathname: "/", hash: "", protocol: "http:", host: "remote" },
   history: { replaceState() {} },
   sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
-  fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
+  fetch: async (path, options) => {
+    if (options.method === "POST") posted.push([path, JSON.parse(options.body ?? "null")]);
+    return { ok: true, status: 200, json: async () => (options.method === "GET" ? reply : {}) };
+  },
   WebSocket,
   URLSearchParams,
   performance,
@@ -98,20 +106,33 @@ vm.runInContext(readFileSync(process.argv[2], "utf-8"), context);
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const shown = [];
 for (const message of JSON.parse(readFileSync(0, "utf-8"))) {
-  if (message === "dismiss") elements["banner-close"].listeners.click();
-  else if (message === "listen") elements["listen"].listeners.click();
-  else if (message === "stream-error") elements["listen-audio"].listeners.error();
-  else socket.listeners.message({ data: JSON.stringify(message) });
+  if (message === "dismiss") element("banner-close").listeners.click();
+  else if (message === "listen") element("listen").listeners.click();
+  else if (message === "stream-error") element("listen-audio").listeners.error();
+  else if (message.search !== undefined) {
+    reply = message.reply;
+    element("search-input").value = message.search;
+    await element("search-form").listeners.submit({ preventDefault() {} });
+  } else if (message.favorites !== undefined) {
+    reply = message.favorites;
+    element("favorites").open = true;
+    element("favorites").listeners.toggle();
+  } else if (message.click !== undefined) {
+    const actions = element(message.list).children[0].children[1];
+    actions.children.find((child) => child.textContent === message.click).listeners.click({ stopPropagation() {} });
+  } else socket.listeners.message({ data: JSON.stringify(message) });
   await settle();
   shown.push({
-    queue: elements["queue-list"].children.map((row) => (row.classes.has("current") ? "▸" : "") + row.children[0].children[0].textContent),
-    banner: elements["banner"].hidden ? null : elements["banner-text"].textContent,
+    queue: element("queue-list").children.map((row) => (row.classes.has("current") ? "▸" : "") + row.children[0].children[0].textContent),
+    banner: element("banner").hidden ? null : element("banner-text").textContent,
     listen: {
-      shown: !elements["listen-row"].hidden,
-      label: elements["listen"].textContent,
-      src: elements["listen-audio"].getAttribute("src"),
-      playing: !elements["listen-audio"].paused,
+      shown: !element("listen-row").hidden,
+      label: element("listen").textContent,
+      src: element("listen-audio").getAttribute("src"),
+      playing: !element("listen-audio").paused,
     },
+    posted,
   });
+  posted = [];
 }
 process.stdout.write(JSON.stringify(shown));

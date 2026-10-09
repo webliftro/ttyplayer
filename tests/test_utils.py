@@ -131,3 +131,91 @@ def test_data_path_without_an_old_data_dir_creates_nothing(monkeypatch, tmp_path
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert utils.data_path("history.jsonl") == tmp_path / "ttyplayer" / "history.jsonl"
     assert list(tmp_path.iterdir()) == []
+
+
+# Recorded entry shapes (trimmed): a SoundCloud flat search entry has an API url, its page in webpage_url.
+SC_SEARCH_ENTRY = {
+    "_type": "url",
+    "ie_key": "Soundcloud",
+    "id": "1234567",
+    "url": "https://api.soundcloud.com/tracks/1234567",
+    "title": "Roygbiv",
+    "uploader": "warp-records",
+    "duration": 151.0,
+    "webpage_url": "https://soundcloud.com/warp-records/roygbiv",
+}
+# A SoundCloud link fetched in full: extractor_key, no ie_key.
+SC_FULL_ENTRY = {
+    "extractor_key": "Soundcloud",
+    "id": "1234567",
+    "title": "Roygbiv",
+    "uploader": "warp-records",
+    "duration": 151.0,
+    "webpage_url": "https://soundcloud.com/warp-records/roygbiv",
+}
+YT_SEARCH_ENTRY = {
+    "_type": "url",
+    "ie_key": "Youtube",
+    "id": "dQw4w9WgXcQ",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "title": "Song",
+    "channel": "Band",
+    "duration": 212,
+}
+
+
+@pytest.mark.parametrize("entry", [SC_SEARCH_ENTRY, SC_FULL_ENTRY])
+def test_video_from_info_of_a_soundcloud_entry_keeps_its_page_link(entry):
+    video = utils.video_from_info(entry)
+    assert (video.source, video.id, video.uploader) == ("soundcloud", "1234567", "warp-records")
+    assert video.link == video.url == "https://soundcloud.com/warp-records/roygbiv"
+
+
+def test_video_from_info_of_a_youtube_entry_has_no_link():
+    video = utils.video_from_info(YT_SEARCH_ENTRY)
+    assert (video.source, video.link, video.uploader) == ("youtube", None, "Band")
+    assert video.url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+def test_video_from_info_of_a_soundcloud_entry_without_webpage_url_uses_its_url():
+    entry = {key: value for key, value in SC_SEARCH_ENTRY.items() if key != "webpage_url"}
+    assert utils.video_from_info(entry).link == "https://api.soundcloud.com/tracks/1234567"
+
+
+@pytest.mark.parametrize(
+    "key, video",
+    [
+        ("Youtube", True),
+        ("Soundcloud", True),
+        ("YoutubeTab", False),
+        ("SoundcloudSet", False),
+        ("SoundcloudUser", False),
+        ("SoundcloudPlaylist", False),
+    ],
+)
+@pytest.mark.parametrize("field", ["ie_key", "extractor_key"])
+def test_is_video_keeps_single_tracks_of_both_sources(field, key, video):
+    assert utils.is_video({field: key, "id": "1234567"}) is video
+
+
+def test_handle_many_entries_of_a_soundcloud_search_drops_sets_and_users():
+    user = {"_type": "url", "ie_key": "SoundcloudUser", "id": "warp-records", "title": "Warp"}
+    sound_set = {"_type": "url", "ie_key": "SoundcloudSet", "id": "987", "title": "Album"}
+    assert [v.id for v in utils.handle_many_entries([user, SC_SEARCH_ENTRY, sound_set])] == ["1234567"]
+
+
+def test_track_extractors_are_the_search_sources():
+    from ttyplayer import youtube
+
+    assert tuple(key.lower() for key in utils.TRACK_EXTRACTORS) == youtube.SOURCES
+
+
+def test_a_stored_entry_round_trips_its_source_and_link():
+    video = utils.video_from_info(SC_SEARCH_ENTRY)
+    assert utils.video_from_info(utils.video_entry(video, "played_at")) == video
+
+
+def test_a_stored_entry_without_source_loads_as_youtube():
+    old = {"id": "dQw4w9WgXcQ", "title": "Song", "uploader": "Band", "duration": 212, "played_at": "2026-01-01T00:00:00+00:00"}
+    video = utils.video_from_info(old)
+    assert (video.source, video.link) == ("youtube", None)

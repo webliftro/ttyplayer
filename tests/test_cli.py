@@ -40,7 +40,7 @@ def test_history_clear_forgets_everything(monkeypatch, tmp_path):
 
 
 def test_play_exits_when_nothing_found(monkeypatch):
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [])
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": [])
     result = runner.invoke(app, ["play", "xyzzyqwerty"])
     assert result.exit_code == 1
     assert result.stderr == "No videos found\n"
@@ -134,7 +134,7 @@ def test_start_mpv_follows_the_show_levels_setting(saved, levels, monkeypatch, t
 
 def test_play_queues_the_picks_in_order_and_records_history(monkeypatch, tmp_path):
     videos = [Video(id=str(n), title=f"v{n}", uploader="u", duration=1) for n in range(3)]
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: videos)
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": videos)
     monkeypatch.setattr(player, "MpvClient", FakeClient)
     monkeypatch.setattr(history, "history_path", lambda: tmp_path / "h.jsonl")
     FakeClient.instances = []
@@ -150,7 +150,7 @@ def test_play_queues_the_picks_in_order_and_records_history(monkeypatch, tmp_pat
 
 
 def test_play_asks_again_on_bad_picks(monkeypatch):
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: ONE_VIDEO)
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": ONE_VIDEO)
     monkeypatch.setattr(player, "MpvClient", FakeClient)
     result = runner.invoke(app, ["play", "song"], input="9\nx\n1\n")
     assert result.exit_code == 0, result.output
@@ -206,7 +206,7 @@ def test_favorite_a_link_adds_every_video(monkeypatch, tmp_path):
 
 def test_favorite_search_words_adds_the_picks(monkeypatch, tmp_path):
     path = use_tmp_favorites(monkeypatch, tmp_path)
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [ALPHA, BETA])
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": [ALPHA, BETA])
     result = runner.invoke(app, ["favorite", "some", "song"], input="2\n")
     assert result.exit_code == 0, result.output
     assert result.output.splitlines()[-1] == "Favorited: Beta"
@@ -320,7 +320,7 @@ class FakeSearch:
         self.results = results
         self.calls = []
 
-    def __call__(self, query, limit=5):
+    def __call__(self, query, limit=5, source="youtube"):
         self.calls.append((query, limit))
         return self.results(limit)
 
@@ -619,10 +619,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
@@ -683,7 +683,7 @@ def test_lookup_prints_its_time_with_timing(monkeypatch):
     monkeypatch.setenv("TTYPLAYER_TIMING", "1")
     ticks = iter([5.0, 6.8])
     monkeypatch.setattr("ttyplayer.cli.time.monotonic", lambda: next(ticks))
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: ONE_VIDEO)
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": ONE_VIDEO)
 
     result = runner.invoke(app, ["search", "song"])
 
@@ -694,7 +694,7 @@ def test_lookup_prints_its_time_with_timing(monkeypatch):
 
 def test_lookup_prints_nothing_without_timing(monkeypatch):
     monkeypatch.delenv("TTYPLAYER_TIMING", raising=False)
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: ONE_VIDEO)
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": ONE_VIDEO)
 
     result = runner.invoke(app, ["search", "song"])
 
@@ -1011,7 +1011,7 @@ def test_playlist_add_search_words_adds_the_picks(data_home, monkeypatch):
     playlists.create("chill")
     searched = []
 
-    def search(query, limit=5):
+    def search(query, limit=5, source="youtube"):
         searched.append((query, limit))
         return [ONE, TWO, THREE]
 
@@ -1261,7 +1261,7 @@ TRACKS = [spotify.Track("Ann", "One"), spotify.Track("Bob", "Two")]
 
 def test_spotify_import_resolves_each_track_and_saves_under_the_sanitized_name(data_home, monkeypatch):
     calls = fake_spotify_playlist(monkeypatch, "Road Trip: '90s!", TRACKS)
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [ONE] if query == "Ann One" else [])
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": [ONE] if query == "Ann One" else [])
     result = runner.invoke(app, ["spotify", "import", "spotify:playlist:x"])
     assert result.exit_code == 0, result.output
     assert calls == [("spotify:playlist:x", None)]
@@ -1276,7 +1276,7 @@ def test_spotify_import_resolves_each_track_and_saves_under_the_sanitized_name(d
 def test_spotify_import_as_a_name_with_a_limit_appends_to_it(data_home, monkeypatch):
     make_playlist("roadtrip", [THREE])
     calls = fake_spotify_playlist(monkeypatch, "Whatever", TRACKS)
-    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [ONE])
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5, source="youtube": [ONE])
     result = runner.invoke(app, ["spotify", "import", "x", "--as", "roadtrip", "--limit", "1"])
     assert result.exit_code == 0, result.output
     assert calls == [("x", 1)]
@@ -1310,7 +1310,7 @@ def test_spotify_import_reports_spotify_errors_plainly(data_home, monkeypatch):
 def test_spotify_import_keeps_what_it_added_and_sums_up_when_youtube_fails(data_home, monkeypatch):
     fake_spotify_playlist(monkeypatch, "road", TRACKS)
 
-    def search(query, limit=5):
+    def search(query, limit=5, source="youtube"):
         if query == "Bob Two":
             raise youtube.YouTubeError("no internet")
         return [ONE]
@@ -1563,3 +1563,64 @@ def test_wheel_ships_the_server_page(tmp_path):
         names = archive.namelist()
     for path in static.iterdir():
         assert f"ttyplayer/static/{path.name}" in names
+
+
+# --- search sources ----------------------------------------------------------
+
+SC_VIDEO = Video(id="123", title="Roygbiv", uploader="warp", duration=151, source="soundcloud", link="https://soundcloud.com/warp/roygbiv")
+
+
+def recording_search(monkeypatch, videos):
+    """Fakes youtube.search; returns the list of sources it was asked for."""
+    sources = []
+
+    def search(query, limit=5, source="youtube"):
+        sources.append(source)
+        return videos
+
+    monkeypatch.setattr(youtube, "search", search)
+    return sources
+
+
+def test_search_source_flag_searches_soundcloud_and_tags_its_rows(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    sources = recording_search(monkeypatch, [SC_VIDEO, *ONE_VIDEO])
+    result = runner.invoke(app, ["search", "--source", "soundcloud", "boards", "of", "canada"])
+    assert result.exit_code == 0, result.output
+    assert sources == ["soundcloud"]
+    assert result.output == " 1. SC Roygbiv  (2:31)  warp\n 2. t  (0:01)  u\n"
+
+
+@pytest.mark.parametrize("command", [["search"], ["play"], ["playlist", "add", "chill"]])
+def test_the_search_source_setting_is_the_default(command, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    settings.update("search_source", "soundcloud")
+    playlists.create("chill")
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    sources = recording_search(monkeypatch, [SC_VIDEO])
+    result = runner.invoke(app, [*command, "boards"], input="1\n")
+    assert result.exit_code == 0, result.output
+    assert sources == ["soundcloud"]
+
+
+@pytest.mark.parametrize("command", [["play"], ["playlist", "add", "chill"]])
+def test_the_source_flag_beats_the_setting(command, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    settings.update("search_source", "soundcloud")
+    playlists.create("chill")
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    sources = recording_search(monkeypatch, ONE_VIDEO)
+    result = runner.invoke(app, [*command, "boards", "--source", "youtube"], input="m\n1\n")
+    assert result.exit_code == 0, result.output
+    assert sources == ["youtube", "youtube"]  # m searches the same source again
+
+
+def test_an_unknown_source_is_one_line_and_exit_1(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    sources = recording_search(monkeypatch, ONE_VIDEO)
+    result = runner.invoke(app, ["search", "--source", "bandcamp", "boards"])
+    assert result.exit_code == 1
+    assert result.stderr == "Unknown source 'bandcamp'; valid sources: youtube, soundcloud\n"
+    assert sources == []

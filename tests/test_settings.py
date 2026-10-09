@@ -17,11 +17,11 @@ def test_settings_fields_and_defaults():
     assert [(field.name, field.default) for field in dataclasses.fields(Settings)] == [
         ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10),
         ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
-        ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True),
+        ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True), ("search_source", "youtube"),
     ]
     assert settings.KEYS == [
         "show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url", "stream_enabled",
-        "spotify_client_id", "show_levels",
+        "spotify_client_id", "show_levels", "search_source",
     ]
 
 
@@ -86,6 +86,7 @@ def test_update_with_an_unknown_key_names_the_valid_keys(tmp_path):
         ("search_limit", "51", "search_limit must be between 1 and 50, not 51"),
         ("server_port", "0", "server_port must be between 1 and 65535, not 0"),
         ("server_port", "65536", "server_port must be between 1 and 65535, not 65536"),
+        ("search_source", "bandcamp", "search_source must be one of youtube, soundcloud, not 'bandcamp'"),
     ],
 )
 def test_update_rejects_a_bad_value_and_saves_nothing(tmp_path, key, value, message):
@@ -147,3 +148,10 @@ def test_readme_names_every_setting_with_its_default():
         default = settings.display(getattr(settings.DEFAULTS, key))
         empty = "*generated*" if key == "server_token" else "*none*"
         assert f"| `{key}` | {f'`{default}`' if default else empty} |" in section
+
+
+def test_search_source_takes_every_source(tmp_path):
+    from ttyplayer.youtube import SOURCES
+
+    for source in SOURCES:
+        assert settings.update("search_source", source, tmp_path / "s.toml").search_source == source

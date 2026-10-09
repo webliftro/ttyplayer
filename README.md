@@ -10,8 +10,10 @@ ttyplayer play <playlist url>        queue every entry of a playlist
 ttyplayer play <words...>            search, pick one or more results, play them in order
 ttyplayer play ... --video           open a video window as well
 ttyplayer play ... --limit 10        show more search results
+ttyplayer play ... --source soundcloud   search SoundCloud instead of YouTube
 
 ttyplayer search <words...>          list results with durations
+ttyplayer search --source soundcloud <words...>   the same, on SoundCloud
 ttyplayer history                    recently played, newest first
 ttyplayer history --play             pick from history and play again
 ttyplayer history --clear            forget the history
@@ -31,6 +33,8 @@ ttyplayer version
 ```
 
 Channels and playlists in search results are skipped; a track that cannot be played is reported and skipped.
+
+Search looks on YouTube or SoundCloud. `--source soundcloud` (on `play`, `search` and `playlist add`) picks SoundCloud for one search; `ttyplayer config set search_source soundcloud` makes it the default everywhere. SoundCloud rows carry an `SC` tag in every list, and history, favorites and playlists keep their SoundCloud link. Links from any site yt-dlp knows play as they are.
 
 While ttyplayer plays in one terminal, any other terminal can drive it:
 
@@ -102,7 +106,7 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
@@ -160,6 +164,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `stream_enabled` | `false` | `ttyplayer serve` streams the sound to the web remote instead of playing it, as `--stream` does |
 | `spotify_client_id` | *none* | the Client ID of your own Spotify app, which `ttyplayer spotify login` needs (see Spotify above) |
 | `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
+| `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged

@@ -142,3 +142,18 @@ def test_clear_removes_everything_and_reports_the_count(tmp_path):
 def test_default_path_is_under_the_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert favorites.favorites_path() == tmp_path / "ttyplayer" / "favorites.jsonl"
+
+
+SC = Video(id="123", title="Roygbiv", uploader="warp", duration=151, source="soundcloud", link="https://soundcloud.com/warp/roygbiv")
+
+
+def test_a_soundcloud_favorite_keeps_its_source_and_link(tmp_path):
+    path = tmp_path / "favorites.jsonl"
+    favorites.add(SC, path)
+    assert favorites.load(path) == [SC]
+
+
+def test_an_old_favorite_without_source_loads_as_youtube(tmp_path):
+    path = tmp_path / "favorites.jsonl"
+    path.write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "favorited_at": "2026-01-01T00:00:00+00:00"}\n')
+    assert favorites.load(path) == [A]

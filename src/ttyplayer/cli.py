@@ -21,6 +21,8 @@ app.add_typer(playlist_app, name="playlist")
 spotify_app = typer.Typer()
 app.add_typer(spotify_app, name="spotify")
 
+# play, search and playlist add: where a search looks; empty means the search_source setting.
+SOURCE_OPTION = typer.Option("", "--source", help="Search youtube or soundcloud (default: search_source)")
 shuffler = random.Random()  # playlist play --shuffle; tests swap in a seeded one
 
 # How to install mpv, per sys.platform prefix; the README's Install section and the
@@ -160,21 +162,21 @@ def check_control_dir():
 
 
 @app.command()
-def play(target: list[str], video: bool = False, limit: int = 5):
+def play(target: list[str], video: bool = False, limit: int = 5, source: str = SOURCE_OPTION):
     """Play a YouTube link or playlist, or search and pick what to play.
 
     Keys while playing: space pause, left/right or , . seek, up/down or - + volume,
     n next, p previous, q quit.
     """
-    start_playback(resolve(target, limit), video)
+    start_playback(resolve(target, limit, source), video)
 
 
 @app.command()
-def search(query: list[str], limit: int = 5):
-    """Search YouTube and list the results"""
+def search(query: list[str], limit: int = 5, source: str = SOURCE_OPTION):
+    """Search YouTube or SoundCloud and list the results"""
     from ttyplayer import youtube  # yt-dlp loads on use, so doctor runs without it
 
-    videos = lookup(youtube.search, " ".join(query), limit)
+    videos = lookup(youtube.search, " ".join(query), limit, search_source(source))
     exit_if_empty(videos)
     print_videos(videos)
 
@@ -424,10 +426,10 @@ def playlist_create(name: str):
 
 
 @playlist_app.command(name="add")
-def playlist_add(name: str, target: list[str], limit: int = 5):
+def playlist_add(name: str, target: list[str], limit: int = 5, source: str = SOURCE_OPTION):
     """Add a YouTube link or playlist, or search picks, to the end of a playlist"""
     on_playlist(playlists.require, name)
-    count = on_playlist(playlists.add, name, resolve(target, limit))
+    count = on_playlist(playlists.add, name, resolve(target, limit, source))
     typer.echo(f"Added {count} videos to {name}")
 
 
@@ -602,18 +604,31 @@ def remote(name):
     return reply
 
 
-def resolve(target, limit):
-    """Turn a link into its videos, or search words into the videos the user picks."""
+def resolve(target, limit, source=""):
+    """Turn a link into its videos, or search words (on source, by default the setting's) into the videos the user picks."""
     from ttyplayer import youtube
 
     target_text = " ".join(target)
     if youtube.is_url(target_text):
         return lookup(youtube.fetch, target_text)
+    source = search_source(source)
 
     def more(shown):
-        return unseen(lookup(youtube.search, target_text, len(shown) + limit), shown)
+        return unseen(lookup(youtube.search, target_text, len(shown) + limit, source), shown)
 
-    return pick_from(lookup(youtube.search, target_text, limit), more)
+    return pick_from(lookup(youtube.search, target_text, limit, source), more)
+
+
+def search_source(source):
+    """source, or the search_source setting when it is empty; a one-line message and exit 1 when it is unknown."""
+    from ttyplayer import youtube
+
+    source = source or load_settings().search_source
+    try:
+        youtube.search_key(source)
+    except ValueError as error:
+        fail(str(error))
+    return source
 
 
 def pick_from(videos, more=None):
@@ -679,7 +694,7 @@ def start_mpv(with_video, on_state=None, headless_pcm=False):
 
 def print_videos(videos, start=1):
     for number, video in enumerate(videos, start=start):
-        typer.echo(f"{number:>2}. {video.title}  ({format_time(video.duration)})  {video.uploader}")
+        typer.echo(f"{number:>2}. {video.tagged_title}  ({format_time(video.duration)})  {video.uploader}")
 
 
 def lookup(func, *args):

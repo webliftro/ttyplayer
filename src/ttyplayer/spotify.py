@@ -326,7 +326,8 @@ def import_tracks(tracks, name, echo) -> int:
     try:
         for number, track in enumerate(tracks, start=1):
             prefix = f"[{number}/{len(tracks)}]"
-            found = youtube.search(track.query.strip(), 1)
+            # Always YouTube, whatever search_source says: it has far more of a Spotify catalogue than SoundCloud.
+            found = youtube.search(track.query.strip(), 1, source="youtube")
             if found:
                 saved += playlists.add(name, found[:1])
                 echo(f"{prefix} ✓ {track.label} → {found[0].title}")

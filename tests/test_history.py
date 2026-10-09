@@ -71,3 +71,20 @@ def test_clear_removes_everything_and_reports_the_count(tmp_path):
 def test_default_path_is_under_the_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert history.history_path() == tmp_path / "ttyplayer" / "history.jsonl"
+
+
+SC = Video(id="123", title="Roygbiv", uploader="warp", duration=151, source="soundcloud", link="https://soundcloud.com/warp/roygbiv")
+
+
+def test_a_soundcloud_play_keeps_its_source_and_link(tmp_path):
+    path = tmp_path / "history.jsonl"
+    history.record(SC, path)
+    history.record(A, path)
+    assert history.load(path) == [A, SC]
+
+
+def test_an_old_line_without_source_loads_as_youtube(tmp_path):
+    path = tmp_path / "history.jsonl"
+    path.write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "played_at": "2026-01-01T00:00:00+00:00"}\n')
+    assert history.load(path) == [A]
+    assert history.load(path)[0].url == "https://www.youtube.com/watch?v=a"

@@ -26,7 +26,10 @@ src/ttyplayer/
   remote.py    ttyplayer tui --remote: RemoteClient answers TtyplayerApp's MpvClient calls over the
                server's /api/* (urllib) and mirrors /ws (aiohttp, own thread); RemoteApp is the TUI
                with it as the player and no control socket.
-  youtube.py   is_url, search, fetch -> list[Video], fetch_playlist -> (title, list[Video]).
+  youtube.py   is_url, search(query, limit, source), fetch -> list[Video], fetch_playlist -> (title, list[Video]).
+               SOURCES = ("youtube", "soundcloud") is the one list of search sources (settings checks
+               search_source against it); PREFIXES maps each source's two letters (yt, sc), which are both
+               yt-dlp's search key (ytsearchN:, scsearchN:) and the TUI's sc:/yt: prefix (split_source).
                Wraps yt-dlp errors in YouTubeError. Every entry list goes through
                utils.handle_many_entries, so only videos come back (see utils.is_video).
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
@@ -39,13 +42,15 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token, remote_url, stream_enabled, spotify_client_id), settings_path, load, save,
+               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
                expired, and one Retry-After wait on a 429), user_playlists, playlist(ref) -> (name, [Track]),
                import_tracks: youtube.search per track, playlists.add of the first hit. SpotifyError.
-  models.py    Video dataclass: id, title, uploader, duration; url derived from id.
+  models.py    Video dataclass: id, title, uploader, duration, source ("youtube" by default) and link (the
+               page URL yt-dlp reported, for every other source). url is the only place that builds a URL:
+               the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title.
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                video_entry, read_entries, append_entries, write_entries for the JSON lines files.
 ```
@@ -108,8 +113,9 @@ Layout, top to bottom: `Header` (clock, unless `show_clock` is off); the search 
 Threads: the app thread owns every widget. The `lookup` worker thread runs `youtube.*`; the player's listener thread (and the control socket's thread, through `handle_control`) reach the screen only through `on_state` → `call_from_thread`. Actions on the app thread call `MpvClient` methods directly; those take `queue_lock` and call `notify()` after releasing it.
 
 ```
-Enter in the search box -> spinner on; lookup worker thread: resolve(text, search_limit)
-                             is_url? youtube.fetch : youtube.search(text, search_limit)
+Enter in the search box -> spinner on; lookup worker thread: split_source(text, search_source) -> source, query
+                           resolve(query, search_limit, source)
+                             is_url? youtube.fetch : youtube.search(query, search_limit, source)
                            -> call_from_thread: spinner off; refill the table, cursor on row 1,
                               focus it (or a toast: No videos found / YouTube lookup failed)
 m on the Search table   -> spinner on; the same worker: unseen(resolve(text, shown + search_limit), shown)
@@ -231,7 +237,7 @@ When mpv cannot load a track (`end-file` with reason `error`), `_skip_failed()` 
 
 - mpv missing or never answering: one-line message, exit 1.
 - yt-dlp failures (no network, bad link, private video) raise `YouTubeError`; the CLI prints one line and exits 1. yt-dlp's own stderr output is silenced.
-- Zero results: "No videos found", exit 1, before any prompt. A search result is a video only: `utils.is_video(entry)` keeps an entry whose `ie_key` is `"Youtube"` (channels and playlists are `"YoutubeTab"`), or, without `ie_key`, whose id is 11 characters of `[A-Za-z0-9_-]`; `None` entries are dropped. A search of only channels and playlists finds nothing.
+- Zero results: "No videos found", exit 1, before any prompt. A search result is a video only: `utils.is_video(entry)` keeps an entry whose `ie_key` (or `extractor_key`) is one of `utils.TRACK_EXTRACTORS`, `"Youtube"` or `"Soundcloud"` (channels and playlists are `"YoutubeTab"`, `"SoundcloudSet"`, `"SoundcloudUser"`…), or, without either key, whose id is 11 characters of `[A-Za-z0-9_-]`; `None` entries are dropped. A search of only channels and playlists finds nothing.
 - A track mpv cannot play: reported (`status()["error"]`, see Queue) and skipped; the queue moves on.
 - Bad picks: re-prompt with the valid range.
 - Ctrl-C, `q`, and `ttyplayer stop` all go through `quit` and the `finally` that restores the terminal.

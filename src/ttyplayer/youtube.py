@@ -4,6 +4,12 @@ from yt_dlp.utils import DownloadError
 from ttyplayer.models import Video
 from ttyplayer.utils import handle_many_entries, video_from_info
 
+SOURCES = ("youtube", "soundcloud")  # where search can look; the search_source setting is one of these
+# Each source's two letters: yt-dlp's search key (ytsearch5:, scsearch5:) and the TUI's yt:/sc: prefix.
+PREFIXES = dict(zip(("yt", "sc"), SOURCES))
+SOURCE_NAMES = dict(zip(SOURCES, ("YouTube", "SoundCloud")))
+
+
 class _Silent:
     """yt-dlp prints errors to stderr even when quiet; we report them ourselves."""
 
@@ -40,9 +46,25 @@ def _clean(message):
     return message.removeprefix("ERROR: ").strip()
 
 
-def search(query, limit=5) -> list[Video]:
-    info = _extract(f"ytsearch{limit}:{query}")
+def search(query, limit=5, source="youtube") -> list[Video]:
+    info = _extract(f"{search_key(source)}search{limit}:{query}")
     return handle_many_entries(info.get("entries", []))
+
+
+def search_key(source):
+    """The two letters of a source; ValueError naming the valid ones for anything else."""
+    for prefix, known in PREFIXES.items():
+        if known == source:
+            return prefix
+    raise ValueError(f"Unknown source {source!r}; valid sources: {', '.join(SOURCES)}")
+
+
+def split_source(text, default):
+    """(source, query) for search box text: a leading yt: or sc: picks the source, else default."""
+    prefix, colon, rest = text.partition(":")
+    if colon and prefix.strip().lower() in PREFIXES:
+        return PREFIXES[prefix.strip().lower()], rest.strip()
+    return default, text
 
 
 def fetch(url) -> list[Video]:

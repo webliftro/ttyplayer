@@ -420,8 +420,8 @@ def fake_search(monkeypatch, answers):
     """youtube.search answering from answers by query: a list of videos, or an exception to raise."""
     queries = []
 
-    def search(query, limit=5):
-        queries.append((query, limit))
+    def search(query, limit, source):  # no default: import_tracks names the source itself
+        queries.append((query, limit, source))
         answer = answers[query]
         if isinstance(answer, Exception):
             raise answer
@@ -444,7 +444,7 @@ def test_import_tracks_searches_each_track_and_saves_the_first_hit(homes, monkey
     lines = []
     tracks = [Track("Ann", "One"), Track("Bob", "Two"), Track("Cy", "Three")]
     assert spotify.import_tracks(tracks, "Road Trip", lines.append) == 2
-    assert queries == [("Ann One", 1), ("Bob Two", 1), ("Cy Three", 1)]
+    assert queries == [("Ann One", 1, "youtube"), ("Bob Two", 1, "youtube"), ("Cy Three", 1, "youtube")]
     assert lines == [
         "[1/3] ✓ Ann – One → Ann - One (Official)",
         "[2/3] ✗ Bob – Two not found",

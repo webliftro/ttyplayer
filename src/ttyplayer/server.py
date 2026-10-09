@@ -216,11 +216,17 @@ async def resolve(request, first=False):
     if isinstance(body.get("url"), str):
         videos = await lookup(youtube.fetch, body["url"])
     elif isinstance(body.get("query"), str):
-        videos = await lookup(youtube.search, body["query"], live_settings(request).search_limit)
+        videos = await lookup(youtube.search, body["query"], *search_args(request))
         videos = videos[:1] if first else videos
     else:
         raise ApiError(400, 'the body needs a "url" or a "query"')
     return require_videos(videos)
+
+
+def search_args(request):
+    """youtube.search's limit and source, from the live settings."""
+    current = live_settings(request)
+    return current.search_limit, current.search_source
 
 
 def require_videos(videos):
@@ -303,8 +309,8 @@ async def get_search(request):
     query = request.query.get("q", "").strip()
     if not query:
         raise ApiError(400, "search needs ?q=")
-    videos = await lookup(youtube.search, query, live_settings(request).search_limit)
-    return web.json_response([asdict(video) for video in videos])
+    videos = await lookup(youtube.search, query, *search_args(request))
+    return web.json_response([video_json(video) for video in videos])
 
 
 @routes.get("/api/playlists")
@@ -345,7 +351,12 @@ async def post_favorite(request):
 
 
 def favorite_listing():
-    return [asdict(video) for video in favorites.load()]
+    return [video_json(video) for video in favorites.load()]
+
+
+def video_json(video):
+    """A video as the page gets it: its fields and the URL that plays it, so Play/Queue need not know its site."""
+    return {**asdict(video), "url": video.url}
 
 
 @routes.get("/api/settings")

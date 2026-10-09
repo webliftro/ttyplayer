@@ -188,3 +188,19 @@ def test_sanitize_turns_a_title_into_a_valid_name(title, name):
     assert playlists.sanitize(title) == name
     if name:
         assert playlists.NAME.fullmatch(name)
+
+
+SC = Video(id="123", title="Roygbiv", uploader="warp", duration=151, source="soundcloud", link="https://soundcloud.com/warp/roygbiv")
+
+
+def test_a_playlist_keeps_each_tracks_source_and_link():
+    playlists.create("mixed")
+    playlists.add("mixed", [A, SC])
+    assert playlists.load("mixed") == [A, SC]
+    assert playlists.load("mixed")[1].url == "https://soundcloud.com/warp/roygbiv"
+
+
+def test_an_old_playlist_line_without_source_loads_as_youtube():
+    playlists.create("old")
+    playlists.playlist_path("old").write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "added_at": "2026-01-01T00:00:00+00:00"}\n')
+    assert playlists.load("old") == [A]

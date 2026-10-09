@@ -11,6 +11,8 @@ APP_NAME = "ttyplayer"  # the product name; every path, prefix and message deriv
 OLD_NAME = "cli" "tube"  # the name before ttyplayer, split so the old-name grep guard stays clean
 WINDOWS = sys.platform == "win32"  # the one platform test; modules import it, tests patch theirs
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")  # channel (UC…, 24) and playlist ids are longer
+# yt-dlp's key for a single track of each of youtube.SOURCES; a test keeps the two in step.
+TRACK_EXTRACTORS = ("Youtube", "Soundcloud")
 
 
 def data_path(filename):
@@ -41,13 +43,22 @@ def format_time(seconds):
     return f"{mins}:{secs:02d}"
 
 
+def extractor(entry):
+    """The yt-dlp extractor behind an entry: ie_key in a flat list, extractor_key in a full one."""
+    return entry.get("ie_key") or entry.get("extractor_key")
+
+
 def video_from_info(entry):
-    """Build a Video from one yt-dlp entry. Only id is guaranteed to be present."""
+    """Build a Video from one yt-dlp entry, or a stored one (which names its source). Only id is guaranteed to be present."""
+    source = entry.get("source") or (extractor(entry) or "youtube").lower()
     return Video(
         id=entry["id"],
         title=entry.get("title") or "Untitled",
         uploader=entry.get("uploader") or entry.get("channel") or "Unknown",
         duration=entry.get("duration"),
+        source=source,
+        # a SoundCloud search entry's url is an API one; webpage_url is the page people share
+        link=None if source == "youtube" else entry.get("link") or entry.get("webpage_url") or entry.get("url"),
     )
 
 
@@ -58,6 +69,8 @@ def video_entry(video, stamp):
         "title": video.title,
         "uploader": video.uploader,
         "duration": video.duration,
+        "source": video.source,
+        "link": video.link,
         stamp: datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
@@ -92,8 +105,9 @@ def is_video(entry):
     """Whether a yt-dlp entry is a playable video: a search also returns channels and playlists."""
     if not entry:  # yt-dlp leaves None in place of deleted or private playlist entries
         return False
-    if "ie_key" in entry:
-        return entry["ie_key"] == "Youtube"  # "YoutubeTab" for channels and playlists
+    if extractor(entry):
+        # "YoutubeTab", "SoundcloudSet", "SoundcloudUser"… for channels and playlists
+        return extractor(entry) in TRACK_EXTRACTORS
     return bool(VIDEO_ID.fullmatch(entry.get("id") or ""))
 
 

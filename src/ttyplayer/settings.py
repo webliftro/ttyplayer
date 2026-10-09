@@ -28,6 +28,7 @@ class Settings:
     stream_enabled: bool = False  # serve streams the sound to the web remote instead of playing it
     spotify_client_id: str = ""  # the user's own Spotify app, for spotify login (public by design: PKCE)
     show_levels: bool = True  # the level meter: mpv's level filter and the TUI's two bars
+    search_source: str = "youtube"  # where a search looks: one of youtube.SOURCES
 
 
 DEFAULTS = Settings()
@@ -124,6 +125,11 @@ def check(key, value):
         raise SettingsError(
             f"server_port must be between {SERVER_PORT_RANGE.start} and {SERVER_PORT_RANGE.stop - 1}, not {value}"
         )
+    if key == "search_source":
+        from ttyplayer.youtube import SOURCES  # yt-dlp loads on use, so doctor runs without it
+
+        if value not in SOURCES:
+            raise SettingsError(f"search_source must be one of {', '.join(SOURCES)}, not {value!r}")
 
 
 def toml_value(value):

@@ -168,7 +168,7 @@ def drive(test):
 SEARCH_LIMIT = settings.DEFAULTS.search_limit
 
 
-def make_app(clients, resolve=lambda text, limit: VIDEOS, video=False):
+def make_app(clients, resolve=lambda text, limit, source: VIDEOS, video=False):
     return tui.TtyplayerApp(client_factory=clients, resolve=resolve, video=video)
 
 
@@ -226,7 +226,7 @@ async def test_layout_header_search_tabs_panel_footer(clients, served):
         await pilot.pause()
         assert app.query_one(Header).query("HeaderClock")
         search_box = app.query_one(Input)
-        assert search_box.placeholder == "Search YouTube or paste a link…"
+        assert search_box.placeholder == "Search (sc: SoundCloud, yt: YouTube) or paste a link…"
         assert app.focused is search_box
         assert search_box.parent is app.query_one(LoadingIndicator).parent
         tabs = app.query_one(TabbedContent)
@@ -257,15 +257,15 @@ def test_stylesheet_ships_in_the_package_and_uses_theme_colors_only():
 
 def test_resolve_fetches_links_and_searches_words(monkeypatch):
     monkeypatch.setattr(youtube, "fetch", lambda url: [("fetched", url)])
-    monkeypatch.setattr(youtube, "search", lambda query, limit: [("searched", query, limit)])
-    assert tui.resolve("https://youtu.be/x", 10) == [("fetched", "https://youtu.be/x")]
-    assert tui.resolve("lofi beats", 10) == [("searched", "lofi beats", 10)]
+    monkeypatch.setattr(youtube, "search", lambda query, limit, source: [("searched", query, limit, source)])
+    assert tui.resolve("https://youtu.be/x", 10, "soundcloud") == [("fetched", "https://youtu.be/x")]
+    assert tui.resolve("lofi beats", 10, "soundcloud") == [("searched", "lofi beats", 10, "soundcloud")]
 
 
 @drive
 async def test_search_fills_the_table_and_focuses_it(clients, served):
     asked = []
-    app = make_app(clients, resolve=lambda text, limit: asked.append(text) or VIDEOS)
+    app = make_app(clients, resolve=lambda text, limit, source: asked.append(text) or VIDEOS)
     async with run(app) as pilot:
         await search(pilot, "lofi")
         results = table(app)
@@ -285,7 +285,7 @@ async def test_search_fills_the_table_and_focuses_it(clients, served):
 @drive
 async def test_a_new_search_refills_the_table_from_the_top(clients, served):
     answers = [VIDEOS, VIDEOS[2:]]
-    app = make_app(clients, resolve=lambda text, limit: answers.pop(0))
+    app = make_app(clients, resolve=lambda text, limit, source: answers.pop(0))
     async with run(app) as pilot:
         await search(pilot, "first")
         await pilot.press("down", "down")
@@ -297,7 +297,7 @@ async def test_a_new_search_refills_the_table_from_the_top(clients, served):
 @drive
 async def test_titles_are_shown_as_typed_not_as_markup(clients, served):
     odd = Video(id="x", title="[bold]Live[/bold] [x]", uploader="[DJ]", duration=1)
-    app = make_app(clients, resolve=lambda text, limit: [odd])
+    app = make_app(clients, resolve=lambda text, limit, source: [odd])
     async with run(app) as pilot:
         await search(pilot)
         assert rows(app) == [[" 1", "[bold]Live[/bold] [x]", "[DJ]", "0:01"]]
@@ -394,7 +394,7 @@ async def test_escape_on_the_library_tabs_focuses_their_table(clients, served):
 async def test_spinner_shows_only_while_the_worker_runs(clients, served):
     release = threading.Event()
 
-    def slow(text, limit):
+    def slow(text, limit, source):
         release.wait(5)
         return VIDEOS
 
@@ -416,7 +416,7 @@ async def test_spinner_shows_only_while_the_worker_runs(clients, served):
 @drive
 async def test_zero_results_is_a_warning_toast_and_keeps_the_table(clients, served):
     answers = [VIDEOS, []]
-    app = make_app(clients, resolve=lambda text, limit: answers.pop(0))
+    app = make_app(clients, resolve=lambda text, limit, source: answers.pop(0))
     async with run(app) as pilot:
         await search(pilot, "first")
         await search(pilot, "nothing")
@@ -427,7 +427,7 @@ async def test_zero_results_is_a_warning_toast_and_keeps_the_table(clients, serv
 
 @drive
 async def test_youtube_error_is_an_error_toast_and_keeps_the_table(clients, served):
-    def failing(text, limit):
+    def failing(text, limit, source):
         if text == "bad":
             raise youtube.YouTubeError("[youtube] no internet")
         return VIDEOS
@@ -1277,7 +1277,7 @@ def recording_resolver(*answers):
     """A fake resolve: hands out answers in order and records (text, limit) of every call."""
     answers = list(answers)
 
-    def resolve(text, limit=SEARCH_LIMIT):
+    def resolve(text, limit=SEARCH_LIMIT, source="youtube"):
         resolve.asked.append((text, limit))
         answer = answers.pop(0)
         if isinstance(answer, Exception):
@@ -1311,7 +1311,7 @@ async def test_m_appends_the_unseen_results_of_a_bigger_search_numbered_on(clien
 async def test_m_shows_the_spinner_while_it_runs(clients, served):
     release = threading.Event()
 
-    def slow(text, limit=SEARCH_LIMIT):
+    def slow(text, limit=SEARCH_LIMIT, source="youtube"):
         if limit != SEARCH_LIMIT:
             release.wait(5)
             return VIDEOS + MORE
@@ -1630,7 +1630,7 @@ async def test_readme_documents_every_key_the_footer_shows(clients, served):
 # --- settings: clock, theme, search size, the Settings screen -----------------
 
 
-def make_app_with(clients, saved, resolve=lambda text, limit: VIDEOS):
+def make_app_with(clients, saved, resolve=lambda text, limit, source: VIDEOS):
     """saved written to the (tmp_path) settings file first, so the app reads it at start."""
     settings.save(saved)
     return make_app(clients, resolve=resolve)
@@ -1714,6 +1714,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["stream_enabled", "false", "(default false)"],
             ["spotify_client_id", "", "(default )"],
             ["show_levels", "true", "(default true)"],
+            ["search_source", "youtube", "(default youtube)"],
         ]
         await pilot.press("escape")
         await pilot.pause()
@@ -2022,7 +2023,7 @@ async def test_p_saves_the_queue_under_a_valid_name(clients, served):
 @drive
 async def test_p_with_one_track_suggests_its_title_and_replaces_a_playlist_of_that_name(clients, served):
     make_playlist("Gamma", VIDEOS)
-    app = make_app(clients, resolve=lambda text, limit: [Video(id="c", title="Gamma: live!", uploader="Gus", duration=1)])
+    app = make_app(clients, resolve=lambda text, limit, source: [Video(id="c", title="Gamma: live!", uploader="Gus", duration=1)])
     async with run(app) as pilot:
         await queued(pilot, "enter")
         await pilot.press("P")
@@ -2164,7 +2165,7 @@ async def settle(pilot, condition, timeout=5):
 
 
 def remote_app(url, token="secret-token"):
-    return remote.RemoteApp(url, token, resolve=lambda text, limit: VIDEOS)
+    return remote.RemoteApp(url, token, resolve=lambda text, limit, source: VIDEOS)
 
 
 @drive
@@ -2237,3 +2238,50 @@ async def test_a_wrong_token_is_one_toast(remote_served, served):
         await settle(pilot, lambda: toasts(app))
         await pilot.pause(0.3)
         assert toasts(app) == [("Server rejected the token", "error")]
+
+
+# --- search sources: the sc: / yt: prefix, the heading, the SC tag -----------
+
+SC_VIDEO = Video(id="123", title="Roygbiv", uploader="warp", duration=151, source="soundcloud", link="https://soundcloud.com/warp/roygbiv")
+
+
+def search_heading(app):
+    return str(app.query_one(TabbedContent).get_tab("search").label)
+
+
+@drive
+async def test_an_sc_prefix_searches_soundcloud_and_the_heading_and_rows_say_so(clients, served):
+    asked = []
+    answers = [[SC_VIDEO], [SC_VIDEO, *VIDEOS[:1]], VIDEOS]
+    app = make_app(clients, resolve=lambda text, limit, source: asked.append((text, source)) or answers.pop(0))
+    async with run(app) as pilot:
+        await search(pilot, "sc: boards of canada")
+        assert search_heading(app) == "SoundCloud results"
+        assert rows(app) == [[" 1", "SC Roygbiv", "warp", "2:31"]]
+        await pilot.press("m")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert rows(app)[1] == [" 2", "Alpha", "Ann", "1:01"]
+        await search(pilot, "lofi")
+        assert search_heading(app) == "YouTube results"
+        assert asked == [("boards of canada", "soundcloud"), ("boards of canada", "soundcloud"), ("lofi", "youtube")]
+
+
+@drive
+async def test_the_search_source_setting_is_the_tuis_default_and_yt_overrides_it(clients, served):
+    asked = []
+    app = make_app_with(clients, settings.Settings(search_source="soundcloud"), resolve=lambda text, limit, source: asked.append((text, source)) or VIDEOS)
+    async with run(app) as pilot:
+        await search(pilot, "boards")
+        assert search_heading(app) == "SoundCloud results"
+        await search(pilot, "yt: boards")
+        assert search_heading(app) == "YouTube results"
+        assert asked == [("boards", "soundcloud"), ("boards", "youtube")]
+
+
+@drive
+async def test_a_link_keeps_the_search_heading(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await search(pilot, "https://soundcloud.com/warp/roygbiv")
+        assert search_heading(app) == "Search"
