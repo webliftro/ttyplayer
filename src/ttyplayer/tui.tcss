@@ -123,3 +123,25 @@ HelpScreen {
     color: $accent;
     margin-top: 1;
 }
+
+SettingsScreen {
+    align: center middle;
+}
+
+#settings {
+    width: 70;
+    height: auto;
+    border: round $primary;
+    border-title-color: $accent;
+    background: $panel;
+    padding: 1 2;
+}
+
+#settings DataTable {
+    height: auto;
+}
+
+#settings-hint {
+    margin-top: 1;
+    text-style: dim;
+}

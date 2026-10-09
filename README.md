@@ -21,6 +21,7 @@ ttyplayer favorites --play           pick from favorites and play them
 ttyplayer favorites --remove 2       drop the second favorite as listed
 ttyplayer favorites --clear          forget all favorites
 ttyplayer tui [--video]              full-screen: search box, results list, now-playing bar
+ttyplayer config                     list the settings (see Settings below)
 ttyplayer doctor                     check Python, yt-dlp, mpv and ttyplayer's folders
 ttyplayer version
 ```
@@ -55,7 +56,7 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, next theme, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
 
 | Where | Key | Action |
 |---|---|---|
@@ -65,7 +66,8 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 | anywhere | `1` `2` `3` `4` | Search / Queue / History / Favorites tab |
 | anywhere | Ctrl-C | quit and stop mpv |
 | anywhere | Ctrl-P | command palette |
-| anywhere | `t` | next theme |
+| anywhere | `t` | next theme (remembered for next time) |
+| table | `S` | settings: Enter flips a true / false one, `esc` closes |
 | table | `q` | quit and stop mpv (in the search box it is just a letter) |
 | table | `space` | pause / resume |
 | table | `n` / `p` | next / previous |
@@ -84,6 +86,25 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 | Favorites row | `d` | remove from favorites |
 
 In the search box, letters, digits, `/` and `?` are typed as text; `esc` leaves it for the table.
+
+## Settings
+
+ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CONFIG_HOME/ttyplayer/` when that is set, `%APPDATA%\ttyplayer\` on Windows). Every key is optional; a missing file means the defaults.
+
+| Key | Default | What it does |
+|---|---|---|
+| `show_clock` | `true` | the clock in the TUI's header |
+| `theme` | `textual-dark` | the TUI's color theme; `t` in the TUI picks the next one and saves it |
+| `search_limit` | `10` | how many results a TUI search fetches, and `m` adds (1–50) |
+
+```
+ttyplayer config                     every setting, (default) when unchanged
+ttyplayer config get <key>           one setting's value
+ttyplayer config set <key> <value>   change it: ttyplayer config set show_clock false
+ttyplayer config path                where the file is
+```
+
+In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock shows or hides at once); the others are set with `ttyplayer config set`.
 
 ## Install
 

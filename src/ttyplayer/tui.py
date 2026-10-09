@@ -1,6 +1,7 @@
 """A full-screen ttyplayer: search bar, tabs with a results table, a now-playing panel, help, command palette."""
 
 import contextlib
+import dataclasses
 import functools
 import io
 import threading
@@ -26,9 +27,9 @@ from textual.widgets import (
 from textual.worker import get_current_worker
 
 from ttyplayer import control, favorites, history, player, youtube
+from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
-SEARCH_LIMIT = 10
 HISTORY_LIMIT = 50
 FAVORITE_MARK = " ♥"
 IDLE_TEXT = "Nothing playing — press / to search"
@@ -38,6 +39,7 @@ LONG_SEEK_SECONDS = 30
 COMMANDS = [
     ("Search…", "focus_search", "Focus the search box"),
     ("Next theme", "next_theme", "Switch to the next color theme"),
+    ("Settings…", "settings", "Show and change the settings"),
     ("Help", "help", "Every key and command"),
     ("Quit", "quit", "Quit and stop mpv"),
     ("Pause / resume", "toggle_pause", "Pause or resume playback"),
@@ -47,7 +49,7 @@ COMMANDS = [
 ]
 
 
-def resolve(text, limit=SEARCH_LIMIT):
+def resolve(text, limit):
     """A link's videos, or the first `limit` search results for words."""
     if youtube.is_url(text):
         return youtube.fetch(text)
@@ -249,6 +251,44 @@ class HelpScreen(ModalScreen):
                 yield Static(f"{name}  {help}", markup=False)
 
 
+class SettingsScreen(ModalScreen):
+    """Every setting with its value and default, one row per Settings field; Enter flips a true/false one."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Close", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="settings") as box:
+            box.border_title = "Settings"
+            yield DataTable(cursor_type="row")
+            yield Static(id="settings-hint", markup=False)
+
+    def on_mount(self):
+        table = self.query_one(DataTable)
+        table.add_columns("Setting", "Value", "Default")
+        self.show()
+        table.focus()
+
+    def show(self):
+        """One row per setting; the file's text can be anything, so the cells are plain Text."""
+        table = self.query_one(DataTable)
+        row = table.cursor_row
+        table.clear()
+        for key in config.KEYS:
+            value, default = (config.display(getattr(each, key)) for each in (self.app.settings, config.DEFAULTS))
+            table.add_row(Text(key), Text(value), Text(f"(default {default})"))
+        table.move_cursor(row=row)
+
+    @on(DataTable.RowSelected)
+    def change(self, event: DataTable.RowSelected):
+        key = config.KEYS[event.cursor_row]
+        value = getattr(self.app.settings, key)
+        if isinstance(value, bool):
+            self.app.change_setting(key, not value)
+            self.show()
+        else:
+            self.query_one("#settings-hint", Static).update(f"set with: ttyplayer config set {key} <value>")
+
+
 class TtyplayerApp(App):
     TITLE = APP_NAME
     CSS_PATH = "tui.tcss"
@@ -262,13 +302,15 @@ class TtyplayerApp(App):
         Binding("3", "show_tab('history')", "History tab", show=False),
         Binding("4", "show_tab('favorites')", "Favorites tab", show=False),
         Binding("t", "next_theme", "Next theme", show=False),
+        Binding("S", "settings", "Settings"),
         # Not a priority binding: the search box must be able to take a typed q.
         Binding("q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
     ]
 
-    def __init__(self, client_factory=player.MpvClient, resolve=resolve, video=False):
+    def __init__(self, client_factory=player.MpvClient, resolve=resolve, video=False, settings=None):
         super().__init__()
+        self.settings = settings if settings is not None else config.load()
         self.client_factory = client_factory
         self.resolve = resolve
         self.video = video
@@ -281,7 +323,7 @@ class TtyplayerApp(App):
         self.closing = False
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header(show_clock=self.settings.show_clock)
         with Horizontal(id="search-row"):
             yield SearchBox(placeholder="Search YouTube or paste a link…")
             yield LoadingIndicator()
@@ -299,6 +341,7 @@ class TtyplayerApp(App):
 
     def on_mount(self):
         self.app_thread = threading.get_ident()
+        self.apply_theme()
         self.set_searching(False)
         self.show_favorites()  # first: the other tables read favorite_ids for their ♥
         self.show_history()
@@ -334,10 +377,11 @@ class TtyplayerApp(App):
         """Search for text; with shown, for the results after those (as the CLI's m does)."""
         videos, error = None, None
         try:
+            limit = self.settings.search_limit
             if shown is None:
-                videos = self.resolve(text)
+                videos = self.resolve(text, limit)
             else:
-                videos = unseen(self.resolve(text, len(shown) + SEARCH_LIMIT), shown)
+                videos = unseen(self.resolve(text, len(shown) + limit), shown)
         except youtube.YouTubeError as caught:
             error = caught
         if not get_current_worker().is_cancelled:  # a newer search replaced this one
@@ -577,6 +621,37 @@ class TtyplayerApp(App):
         themes = sorted(self.available_themes)
         self.theme = themes[(themes.index(self.theme) + 1) % len(themes)]
         self.toast(f"Theme: {self.theme}", severity="information")
+        self.change_setting("theme", self.theme)
+
+    # --- settings -------------------------------------------------------
+
+    def apply_theme(self):
+        if self.settings.theme in self.available_themes:
+            self.theme = self.settings.theme
+            return
+        self.theme = config.DEFAULTS.theme
+        unknown = f'Unknown theme "{self.settings.theme}" in settings, using {config.DEFAULTS.theme}'
+        self.toast(unknown, severity="warning")
+
+    def change_setting(self, key, value):
+        """Set key to value for this app and in the file; the clock shows or hides at once."""
+        self.settings = dataclasses.replace(self.settings, **{key: value})
+        try:
+            config.change(key, value)
+        except config.SettingsError as error:
+            self.toast(f"Could not save settings: {error}", severity="error")
+        if key == "show_clock":
+            self.show_clock()
+
+    def show_clock(self):
+        """Header's show_clock is fixed when it is built, so a new Header replaces the old one."""
+        main = self.screen_stack[0]
+        main.query_one(Header).remove()
+        main.mount(Header(show_clock=self.settings.show_clock), before=0)
+
+    def action_settings(self):
+        if not isinstance(self.screen, SettingsScreen):
+            self.push_screen(SettingsScreen())
 
     def action_focus_search(self):
         self.query_one(SearchBox).focus()

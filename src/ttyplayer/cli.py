@@ -8,10 +8,12 @@ from importlib import metadata
 
 import typer
 
-from ttyplayer import control, favorites, history, player
+from ttyplayer import control, favorites, history, player, settings
 from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen
 
 app = typer.Typer()
+config_app = typer.Typer()
+app.add_typer(config_app, name="config")
 
 # How to install mpv, per sys.platform prefix; the README's Install section and the
 # install.sh / install.ps1 scripts repeat these, and tests keep all three in step.
@@ -194,7 +196,55 @@ def tui(video: bool = False):
     """
     from ttyplayer import tui as screen  # Textual loads only for this command
 
-    screen.TtyplayerApp(client_factory=player.MpvClient, resolve=screen.resolve, video=video).run()
+    screen.TtyplayerApp(
+        client_factory=player.MpvClient, resolve=screen.resolve, video=video, settings=load_settings()
+    ).run()
+
+
+@config_app.callback(invoke_without_command=True)
+def config(context: typer.Context):
+    """List the settings, or get, set or locate them"""
+    if context.invoked_subcommand is not None:
+        return
+    current = load_settings()
+    for key in settings.KEYS:
+        value = getattr(current, key)
+        default = "  (default)" if value == getattr(settings.DEFAULTS, key) else ""
+        typer.echo(f"{key} = {settings.display(value)}{default}")
+
+
+@config_app.command(name="get")
+def config_get(key: str):
+    """Print one setting's value"""
+    try:
+        settings.check_key(key)
+    except settings.SettingsError as error:
+        fail(str(error))
+    typer.echo(settings.display(getattr(load_settings(), key)))
+
+
+@config_app.command(name="set")
+def config_set(key: str, value: str):
+    """Change one setting and save it"""
+    try:
+        changed = settings.update(key, value)
+    except settings.SettingsError as error:
+        fail(str(error))
+    typer.echo(f"{key} = {settings.display(getattr(changed, key))}")
+
+
+@config_app.command(name="path")
+def config_path():
+    """Print where the settings file lives"""
+    typer.echo(settings.settings_path())
+
+
+def load_settings():
+    """The saved settings, or a one-line message and exit 1 when the file is broken."""
+    try:
+        return settings.load()
+    except settings.SettingsError as error:
+        fail(str(error))
 
 
 @app.command()

@@ -1,0 +1,136 @@
+import dataclasses
+import pathlib
+import subprocess
+import sys
+import tomllib
+
+import pytest
+
+from ttyplayer import settings
+from ttyplayer.settings import Settings, SettingsError
+
+
+def test_settings_fields_and_defaults():
+    assert [(field.name, field.default) for field in dataclasses.fields(Settings)] == [
+        ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10)
+    ]
+    assert settings.KEYS == ["show_clock", "theme", "search_limit"]
+
+
+def test_load_without_a_file_is_the_defaults(tmp_path):
+    assert settings.load(tmp_path / "missing.toml") == Settings()
+
+
+def test_save_writes_a_flat_toml_that_loads_back_identically(tmp_path):
+    path = tmp_path / "deep" / "settings.toml"
+    saved = Settings(show_clock=False, theme='odd "theme" \\ with\ttab', search_limit=42)
+    settings.save(saved, path)
+    assert tomllib.loads(path.read_text(encoding="utf-8")) == dataclasses.asdict(saved)
+    assert settings.load(path) == saved
+    assert path.read_text(encoding="utf-8").splitlines()[0] == "show_clock = false"
+
+
+def test_load_ignores_unknown_keys_and_fills_missing_ones(tmp_path):
+    path = tmp_path / "settings.toml"
+    path.write_text('theme = "nord"\nvolume_step = 3\n', encoding="utf-8")
+    assert settings.load(path) == Settings(theme="nord")
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("show_clock = [", "is not valid TOML"),
+        ('show_clock = "no"', "show_clock must be bool"),
+        ("search_limit = true", "search_limit must be int"),
+        ("theme = 3", "theme must be str"),
+        ("search_limit = 0", "search_limit must be between 1 and 50"),
+    ],
+)
+def test_load_rejects_a_malformed_file_or_a_wrong_type_in_one_line(tmp_path, text, message):
+    path = tmp_path / "settings.toml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(SettingsError, match=message) as caught:
+        settings.load(path)
+    assert "\n" not in str(caught.value)
+
+
+def test_update_coerces_text_saves_and_keeps_the_other_keys(tmp_path):
+    path = tmp_path / "settings.toml"
+    settings.save(Settings(theme="nord"), path)
+    assert settings.update("show_clock", "False", path) == Settings(show_clock=False, theme="nord")
+    assert settings.update("search_limit", " 25 ", path).search_limit == 25
+    assert settings.update("theme", "gruvbox", path).theme == "gruvbox"
+    assert settings.load(path) == Settings(show_clock=False, theme="gruvbox", search_limit=25)
+
+
+def test_update_with_an_unknown_key_names_the_valid_keys(tmp_path):
+    with pytest.raises(SettingsError, match="Unknown setting 'clock'; valid keys: show_clock, theme, search_limit"):
+        settings.update("clock", "true", tmp_path / "settings.toml")
+    assert not (tmp_path / "settings.toml").exists()
+
+
+@pytest.mark.parametrize(
+    "key, value, message",
+    [
+        ("show_clock", "yes", "show_clock must be true or false, not 'yes'; valid keys: show_clock, theme, search_limit"),
+        ("search_limit", "ten", "search_limit must be a whole number, not 'ten'; valid keys: show_clock, theme, search_limit"),
+        ("search_limit", "0", "search_limit must be between 1 and 50, not 0"),
+        ("search_limit", "51", "search_limit must be between 1 and 50, not 51"),
+    ],
+)
+def test_update_rejects_a_bad_value_and_saves_nothing(tmp_path, key, value, message):
+    path = tmp_path / "settings.toml"
+    with pytest.raises(SettingsError, match=message):
+        settings.update(key, value, path)
+    assert not path.exists()
+
+
+def test_load_turns_a_read_error_into_one_line(tmp_path):
+    with pytest.raises(SettingsError, match=f"Cannot read {tmp_path}") as caught:
+        settings.load(tmp_path)
+    assert "\n" not in str(caught.value)
+
+
+def test_save_turns_a_write_error_into_one_line(tmp_path):
+    (tmp_path / "file").write_text("", encoding="utf-8")
+    path = tmp_path / "file" / "settings.toml"
+    with pytest.raises(SettingsError, match="Cannot write") as caught:
+        settings.save(Settings(), path)
+    assert "\n" not in str(caught.value)
+
+
+@pytest.mark.parametrize("limit", ["1", "50"])
+def test_search_limit_range_is_inclusive(tmp_path, limit):
+    assert settings.update("search_limit", limit, tmp_path / "s.toml").search_limit == int(limit)
+
+
+def test_settings_path_defaults_to_dot_config_on_posix(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "WINDOWS", False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert settings.settings_path() == tmp_path / ".config" / "ttyplayer" / "settings.toml"
+
+
+def test_settings_path_follows_xdg_config_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert settings.settings_path() == tmp_path / "ttyplayer" / "settings.toml"
+
+
+def test_settings_path_is_appdata_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "WINDOWS", True)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    assert settings.settings_path() == tmp_path / "ttyplayer" / "settings.toml"
+
+
+def test_the_player_does_not_import_settings():
+    code = "import sys, ttyplayer.player; print('ttyplayer.settings' in sys.modules)"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout == "False\n"
+
+
+def test_readme_names_every_setting_with_its_default():
+    readme = (pathlib.Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+    section = readme.split("## Settings\n", 1)[1].split("\n## ", 1)[0]
+    for key in settings.KEYS:
+        assert f"| `{key}` | `{settings.display(getattr(settings.DEFAULTS, key))}` |" in section

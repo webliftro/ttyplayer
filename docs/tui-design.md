@@ -57,7 +57,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 | anywhere | `1` `2` `3` `4` | Search / Queue / History / Favorites tab |
 | anywhere | Ctrl-C | quit |
 | anywhere | Ctrl-P | command palette (Textual built-in: search, theme, help, quit) |
-| anywhere | `t` | next theme (cycles `App.available_themes`) |
+| anywhere | `t` | next theme (cycles `App.available_themes`, saved to the settings file) |
+| table | `S` | Settings modal: Enter flips a true / false setting, Esc closes |
 | table | `q` | quit (in the search box `q` is a letter) |
 | table | space | pause / resume |
 | table | `n` / `p` | next / previous |

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ttyplayer import cli, control, favorites, history, player, utils, youtube
+from ttyplayer import cli, control, favorites, history, player, settings, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
 
@@ -498,9 +498,17 @@ def test_remote_command_refused_prints_the_players_error(monkeypatch):
     assert result.stderr == "unknown command x\n"
 
 
-def test_tui_runs_the_app_with_the_real_player(monkeypatch):
+@pytest.fixture
+def settings_file(monkeypatch, tmp_path):
+    path = tmp_path / "settings.toml"
+    monkeypatch.setattr(settings, "settings_path", lambda: path)
+    return path
+
+
+def test_tui_runs_the_app_with_the_real_player(monkeypatch, settings_file):
     from ttyplayer import tui
 
+    settings.save(settings.Settings(search_limit=20))
     built = []
     monkeypatch.setattr(tui.TtyplayerApp, "run", lambda self: built.append(self))
     result = runner.invoke(app, ["tui", "--video"])
@@ -509,6 +517,100 @@ def test_tui_runs_the_app_with_the_real_player(monkeypatch):
     assert screen.client_factory is player.MpvClient
     assert screen.resolve is tui.resolve
     assert screen.video is True
+    assert screen.settings == settings.Settings(search_limit=20)
+
+
+def test_tui_with_a_broken_settings_file_fails_in_one_line(monkeypatch, settings_file):
+    from ttyplayer import tui
+
+    monkeypatch.setattr(tui.TtyplayerApp, "run", lambda self: pytest.fail("the app ran"))
+    settings_file.write_text("show_clock = maybe", encoding="utf-8")
+    result = runner.invoke(app, ["tui"])
+    assert result.exit_code == 1
+    assert result.stderr.startswith(f"{settings_file} is not valid TOML")
+    assert result.stderr.count("\n") == 1
+
+
+def no_network(monkeypatch):
+    monkeypatch.setattr(youtube, "search", lambda *args: pytest.fail("config used the network"))
+    monkeypatch.setattr(youtube, "fetch", lambda *args: pytest.fail("config used the network"))
+
+
+def test_config_lists_every_setting_marking_the_defaults(monkeypatch, settings_file):
+    no_network(monkeypatch)
+    settings.save(settings.Settings(show_clock=False))
+    result = runner.invoke(app, ["config"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "show_clock = false\ntheme = textual-dark  (default)\nsearch_limit = 10  (default)\n"
+
+
+def test_config_without_a_file_lists_the_defaults(settings_file):
+    result = runner.invoke(app, ["config"])
+    assert result.output.splitlines() == [
+        f"{key} = {settings.display(getattr(settings.DEFAULTS, key))}  (default)" for key in settings.KEYS
+    ]
+    assert not settings_file.exists()
+
+
+def test_config_get_prints_the_value(settings_file):
+    settings.save(settings.Settings(theme="nord"))
+    assert runner.invoke(app, ["config", "get", "theme"]).output == "nord\n"
+    assert runner.invoke(app, ["config", "get", "show_clock"]).output == "true\n"
+
+
+def test_config_set_saves_and_prints_the_setting(monkeypatch, settings_file):
+    no_network(monkeypatch)
+    result = runner.invoke(app, ["config", "set", "show_clock", "false"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "show_clock = false\n"
+    assert settings.load() == settings.Settings(show_clock=False)
+
+
+def test_config_path_prints_the_file(settings_file):
+    assert runner.invoke(app, ["config", "path"]).output == f"{settings_file}\n"
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit\n"),
+        (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit\n"),
+    ],
+)
+def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
+    result = runner.invoke(app, ["config", *args])
+    assert result.exit_code == 1
+    assert result.stderr == message
+    assert not settings_file.exists()
+
+
+@pytest.mark.parametrize("args", [[], ["get", "theme"], ["set", "theme", "nord"]])
+def test_config_with_a_broken_file_is_one_line_and_exit_1(settings_file, args):
+    settings_file.write_text("theme = 3", encoding="utf-8")
+    result = runner.invoke(app, ["config", *args])
+    assert result.exit_code == 1
+    assert result.stderr == "theme must be str, not 3\n"
+
+
+@pytest.mark.parametrize("args", [[], ["get", "theme"], ["set", "theme", "nord"]])
+def test_config_with_an_unreadable_file_is_one_line_and_exit_1(settings_file, args):
+    settings_file.mkdir(parents=True)
+    result = runner.invoke(app, ["config", *args])
+    assert result.exit_code == 1
+    assert result.stderr.startswith(f"Cannot read {settings_file}: ")
+    assert result.stderr.count("\n") == 1
+
+
+def test_config_set_with_an_unwritable_file_is_one_line_and_exit_1(monkeypatch, settings_file):
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(settings.Path, "write_text", refuse)
+    result = runner.invoke(app, ["config", "set", "theme", "nord"])
+    assert result.exit_code == 1
+    assert result.stderr == f"Cannot write {settings_file}: Permission denied\n"
 
 
 def test_cli_starts_without_loading_textual():

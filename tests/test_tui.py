@@ -20,7 +20,7 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import control, favorites, history, player, tui, youtube
+from ttyplayer import control, favorites, history, player, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -100,6 +100,14 @@ def library(monkeypatch, tmp_path):
     return paths
 
 
+@pytest.fixture(autouse=True)
+def settings_file(monkeypatch, tmp_path):
+    """The settings file in tmp_path too: t and the Settings screen write it."""
+    path = tmp_path / "settings.toml"
+    monkeypatch.setattr(settings, "settings_path", lambda: path)
+    return path
+
+
 @pytest.fixture
 def served(monkeypatch):
     """control.serve replaced by a fake; the handlers it was given are collected here."""
@@ -145,7 +153,10 @@ def drive(test):
     return wrapper
 
 
-def make_app(clients, resolve=lambda text: VIDEOS, video=False):
+SEARCH_LIMIT = settings.DEFAULTS.search_limit
+
+
+def make_app(clients, resolve=lambda text, limit: VIDEOS, video=False):
     return tui.TtyplayerApp(client_factory=clients, resolve=resolve, video=video)
 
 
@@ -234,14 +245,14 @@ def test_stylesheet_ships_in_the_package_and_uses_theme_colors_only():
 def test_resolve_fetches_links_and_searches_words(monkeypatch):
     monkeypatch.setattr(youtube, "fetch", lambda url: [("fetched", url)])
     monkeypatch.setattr(youtube, "search", lambda query, limit: [("searched", query, limit)])
-    assert tui.resolve("https://youtu.be/x") == [("fetched", "https://youtu.be/x")]
-    assert tui.resolve("lofi beats") == [("searched", "lofi beats", 10)]
+    assert tui.resolve("https://youtu.be/x", 10) == [("fetched", "https://youtu.be/x")]
+    assert tui.resolve("lofi beats", 10) == [("searched", "lofi beats", 10)]
 
 
 @drive
 async def test_search_fills_the_table_and_focuses_it(clients, served):
     asked = []
-    app = make_app(clients, resolve=lambda text: asked.append(text) or VIDEOS)
+    app = make_app(clients, resolve=lambda text, limit: asked.append(text) or VIDEOS)
     async with run(app) as pilot:
         await search(pilot, "lofi")
         results = table(app)
@@ -261,7 +272,7 @@ async def test_search_fills_the_table_and_focuses_it(clients, served):
 @drive
 async def test_a_new_search_refills_the_table_from_the_top(clients, served):
     answers = [VIDEOS, VIDEOS[2:]]
-    app = make_app(clients, resolve=lambda text: answers.pop(0))
+    app = make_app(clients, resolve=lambda text, limit: answers.pop(0))
     async with run(app) as pilot:
         await search(pilot, "first")
         await pilot.press("down", "down")
@@ -273,7 +284,7 @@ async def test_a_new_search_refills_the_table_from_the_top(clients, served):
 @drive
 async def test_titles_are_shown_as_typed_not_as_markup(clients, served):
     odd = Video(id="x", title="[bold]Live[/bold] [x]", uploader="[DJ]", duration=1)
-    app = make_app(clients, resolve=lambda text: [odd])
+    app = make_app(clients, resolve=lambda text, limit: [odd])
     async with run(app) as pilot:
         await search(pilot)
         assert rows(app) == [[" 1", "[bold]Live[/bold] [x]", "[DJ]", "0:01"]]
@@ -370,7 +381,7 @@ async def test_escape_on_the_library_tabs_focuses_their_table(clients, served):
 async def test_spinner_shows_only_while_the_worker_runs(clients, served):
     release = threading.Event()
 
-    def slow(text):
+    def slow(text, limit):
         release.wait(5)
         return VIDEOS
 
@@ -392,7 +403,7 @@ async def test_spinner_shows_only_while_the_worker_runs(clients, served):
 @drive
 async def test_zero_results_is_a_warning_toast_and_keeps_the_table(clients, served):
     answers = [VIDEOS, []]
-    app = make_app(clients, resolve=lambda text: answers.pop(0))
+    app = make_app(clients, resolve=lambda text, limit: answers.pop(0))
     async with run(app) as pilot:
         await search(pilot, "first")
         await search(pilot, "nothing")
@@ -403,7 +414,7 @@ async def test_zero_results_is_a_warning_toast_and_keeps_the_table(clients, serv
 
 @drive
 async def test_youtube_error_is_an_error_toast_and_keeps_the_table(clients, served):
-    def failing(text):
+    def failing(text, limit):
         if text == "bad":
             raise youtube.YouTubeError("[youtube] no internet")
         return VIDEOS
@@ -1237,7 +1248,7 @@ def recording_resolver(*answers):
     """A fake resolve: hands out answers in order and records (text, limit) of every call."""
     answers = list(answers)
 
-    def resolve(text, limit=tui.SEARCH_LIMIT):
+    def resolve(text, limit=SEARCH_LIMIT):
         resolve.asked.append((text, limit))
         answer = answers.pop(0)
         if isinstance(answer, Exception):
@@ -1257,7 +1268,7 @@ async def test_m_appends_the_unseen_results_of_a_bigger_search_numbered_on(clien
         await pilot.press("down", "m")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert resolve.asked == [("lofi", tui.SEARCH_LIMIT), ("lofi", 3 + tui.SEARCH_LIMIT)]
+        assert resolve.asked == [("lofi", SEARCH_LIMIT), ("lofi", 3 + SEARCH_LIMIT)]
         assert [row[:2] for row in rows(app)] == [
             [" 1", "Alpha"], [" 2", "Beta"], [" 3", "Gamma"], [" 4", "Delta"], [" 5", "Epsilon"]
         ]
@@ -1271,8 +1282,8 @@ async def test_m_appends_the_unseen_results_of_a_bigger_search_numbered_on(clien
 async def test_m_shows_the_spinner_while_it_runs(clients, served):
     release = threading.Event()
 
-    def slow(text, limit=tui.SEARCH_LIMIT):
-        if limit != tui.SEARCH_LIMIT:
+    def slow(text, limit=SEARCH_LIMIT):
+        if limit != SEARCH_LIMIT:
             release.wait(5)
             return VIDEOS + MORE
         return VIDEOS
@@ -1326,7 +1337,7 @@ async def test_m_before_a_search_on_other_tabs_and_in_the_search_box_is_ignored(
         await pilot.press("slash", "m")
         await app.workers.wait_for_complete()
         await pilot.pause()
-        assert resolve.asked == [("lofi", tui.SEARCH_LIMIT)]
+        assert resolve.asked == [("lofi", SEARCH_LIMIT)]
         assert app.query_one(Input).value == "m"  # typed over the selected text
         assert table(app).row_count == 3
 
@@ -1431,7 +1442,7 @@ async def test_palette_provider_offers_every_command_and_runs_its_action(clients
         provider = tui.TtyplayerCommands(app.screen)
         hits = [hit async for hit in provider.discover()]
         assert [hit.text for hit in hits] == [
-            "Search…", "Next theme", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute"
+            "Search…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute"
         ]
         ran = []
         for _, action, _ in tui.COMMANDS:
@@ -1494,3 +1505,150 @@ async def test_readme_documents_every_key_the_footer_shows(clients, served):
     section = readme_tui_section()
     assert len(shown) > 10
     assert [key for key in shown if f"`{key}`" not in section] == []
+
+
+# --- settings: clock, theme, search size, the Settings screen -----------------
+
+
+def make_app_with(clients, saved, resolve=lambda text, limit: VIDEOS):
+    """saved written to the (tmp_path) settings file first, so the app reads it at start."""
+    settings.save(saved)
+    return make_app(clients, resolve=resolve)
+
+
+@drive
+async def test_the_clock_is_hidden_when_show_clock_is_false(clients, served):
+    app = make_app_with(clients, settings.Settings(show_clock=False))
+    async with run(app) as pilot:
+        await pilot.pause()
+        assert not app.query_one(Header).query("HeaderClock")
+
+
+@drive
+async def test_the_saved_theme_is_applied_at_start(clients, served):
+    app = make_app_with(clients, settings.Settings(theme="nord"))
+    async with run(app) as pilot:
+        await pilot.pause()
+        assert app.theme == "nord"
+        assert toasts(app) == []
+
+
+@drive
+async def test_an_unknown_saved_theme_is_a_toast_and_the_default(clients, served, settings_file):
+    app = make_app_with(clients, settings.Settings(theme="no-such-theme"))
+    async with run(app) as pilot:
+        await pilot.pause()
+        assert app.theme == "textual-dark"
+        assert toasts(app) == [('Unknown theme "no-such-theme" in settings, using textual-dark', "warning")]
+    assert settings.load().theme == "no-such-theme"  # the file is left as the user wrote it
+
+
+@drive
+async def test_t_saves_the_new_theme(clients, served):
+    app = make_app_with(clients, settings.Settings(show_clock=False))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("t")
+        await pilot.pause()
+        assert settings.load() == settings.Settings(show_clock=False, theme=app.theme)
+        assert app.theme != "textual-dark"
+
+
+@drive
+async def test_search_and_m_fetch_search_limit_results(clients, served):
+    resolve = recording_resolver(VIDEOS, VIDEOS + MORE)
+    app = make_app_with(clients, settings.Settings(search_limit=25), resolve=resolve)
+    async with run(app) as pilot:
+        await search(pilot, "lofi")
+        await pilot.press("m")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert resolve.asked == [("lofi", 25), ("lofi", 3 + 25)]
+
+
+async def open_settings(pilot):
+    await search(pilot)
+    await pilot.press("S")
+    await pilot.pause()
+    assert isinstance(pilot.app.screen, tui.SettingsScreen)
+
+
+def settings_rows(app):
+    table = app.screen.query_one(DataTable)
+    return [[str(cell) for cell in table.get_row_at(i)] for i in range(table.row_count)]
+
+
+@drive
+async def test_s_lists_every_setting_with_its_default(clients, served):
+    app = make_app_with(clients, settings.Settings(search_limit=20))
+    async with run(app) as pilot:
+        await open_settings(pilot)
+        assert settings_rows(app) == [
+            ["show_clock", "true", "(default true)"],
+            ["theme", "textual-dark", "(default textual-dark)"],
+            ["search_limit", "20", "(default 10)"],
+        ]
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, tui.SettingsScreen)
+
+
+@drive
+async def test_enter_on_show_clock_flips_it_saves_it_and_the_header_follows(clients, served):
+    app = make_app_with(clients, settings.Settings())
+    async with run(app) as pilot:
+        await open_settings(pilot)
+        main = app.screen_stack[0]
+        assert main.query_one(Header).query("HeaderClock")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert settings.load().show_clock is False
+        assert settings_rows(app)[0] == ["show_clock", "false", "(default true)"]
+        assert len(main.query(Header)) == 1
+        assert not main.query_one(Header).query("HeaderClock")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert settings.load().show_clock is True
+        assert main.query_one(Header).query("HeaderClock")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.query_one(Header).region.y == 0
+
+
+@drive
+async def test_enter_on_a_non_boolean_setting_shows_how_to_set_it(clients, served, settings_file):
+    app = make_app_with(clients, settings.Settings())
+    async with run(app) as pilot:
+        await open_settings(pilot)
+        saved = settings_file.read_text(encoding="utf-8")
+        await pilot.press("down", "down", "enter")
+        await pilot.pause()
+        assert str(app.screen.query_one("#settings-hint", Static).render()) == "set with: ttyplayer config set search_limit <value>"
+        assert settings_file.read_text(encoding="utf-8") == saved
+
+
+@drive
+async def test_settings_is_in_the_palette_and_the_help(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await pilot.press("escape")
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        await pilot.press(*"settings")
+        await pilot.pause(0.5)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, tui.SettingsScreen)
+        await pilot.press("S")  # once open, S does not stack a second one
+        await pilot.pause()
+        assert len(app.screen_stack) == 2
+
+
+@drive
+async def test_s_in_the_search_box_is_a_letter(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await pilot.press("S")
+        await pilot.pause()
+        assert app.query_one(Input).value == "S"
+        assert not isinstance(app.screen, tui.SettingsScreen)

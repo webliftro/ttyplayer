@@ -13,10 +13,10 @@ ttyplayer itself never decodes audio or talks to YouTube's HTML directly.
 
 ```
 src/ttyplayer/
-  cli.py       Typer app: play, search, history, favorite, favorites, tui, version,
+  cli.py       Typer app: play, search, history, favorite, favorites, tui, config, version,
                pause, next, prev, stop, status. Glue only.
   tui.py       TtyplayerApp (Textual): header, search bar, Search/Queue/History/Favorites tables,
-               now-playing panel, help modal, command palette, themes, toasts over MpvClient;
+               now-playing panel, help and settings modals, command palette, themes, toasts over MpvClient;
                styles in tui.tcss (see docs/tui-design.md).
   youtube.py   is_url, search, fetch -> list[Video]. Wraps yt-dlp errors in YouTubeError.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
@@ -25,6 +25,8 @@ src/ttyplayer/
   history.py   JSON lines record of what was played; load() newest first, one per video.
   favorites.py JSON lines list the user curates; add() dedupes by id, remove(n) by listed position,
                remove_id(id), ids() for the ♥ markers.
+  settings.py  Settings dataclass (show_clock, theme, search_limit), settings_path, load, save,
+               update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   models.py    Video dataclass: id, title, uploader, duration; url derived from id.
   utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks.
 ```
@@ -32,13 +34,14 @@ src/ttyplayer/
 Dependencies point one way:
 
 ```
-cli  ->  youtube, player, history, favorites, control, tui (imported only by the tui command)
-tui  ->  youtube, player, history, favorites, control, utils, models
+cli  ->  youtube, player, history, favorites, control, settings, tui (imported only by the tui command)
+tui  ->  youtube, player, history, favorites, control, settings, utils, models
+settings  ->  utils
 player  ->  control
 youtube, player, history, favorites  ->  models, utils
 ```
 
-`youtube.py`, `player.py`, `history.py`, and `favorites.py` know nothing about each other or about Typer. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
+`youtube.py`, `player.py`, `history.py`, and `favorites.py` know nothing about each other or about Typer; nothing below `cli` and `tui` imports `settings.py`. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
 
 ## Data flow
 
@@ -74,16 +77,16 @@ key loop (main thread)         listener thread
 
 `ttyplayer tui` runs `tui.TtyplayerApp(client_factory=player.MpvClient, resolve=tui.resolve, video=...)`. Only `tui.py` imports Textual, and `cli.py` imports `tui` inside the command, so the other commands start without it.
 
-Layout, top to bottom: `Header` (clock); the search row (`SearchBox` + a `LoadingIndicator` shown only while a lookup runs); a `TabbedContent` with four `DataTable`s of the same columns (`#`, `Title`, `Uploader`, `Length`): `ResultsTable`, `QueueTable`, `HistoryTable`, `FavoritesTable`; the `NowPlaying` panel (three lines: state · title · uploader · `[i/n]`, the progress bar and time, 🔊/🔇 volume · up next · start-up time); Textual's `Footer`. `?` pushes `HelpScreen`; Ctrl-P opens Textual's command palette.
+Layout, top to bottom: `Header` (clock, unless `show_clock` is off); the search row (`SearchBox` + a `LoadingIndicator` shown only while a lookup runs); a `TabbedContent` with four `DataTable`s of the same columns (`#`, `Title`, `Uploader`, `Length`): `ResultsTable`, `QueueTable`, `HistoryTable`, `FavoritesTable`; the `NowPlaying` panel (three lines: state · title · uploader · `[i/n]`, the progress bar and time, 🔊/🔇 volume · up next · start-up time); Textual's `Footer`. `?` pushes `HelpScreen`, `S` pushes `SettingsScreen`; Ctrl-P opens Textual's command palette.
 
 Threads: the app thread owns every widget. The `lookup` worker thread runs `youtube.*`; the player's listener thread (and the control socket's thread, through `handle_control`) reach the screen only through `on_state` → `call_from_thread`. Actions on the app thread call `MpvClient` methods directly; those take `queue_lock` and call `notify()` after releasing it.
 
 ```
-Enter in the search box -> spinner on; lookup worker thread: resolve(text)
-                             is_url? youtube.fetch : youtube.search(text, 10)
+Enter in the search box -> spinner on; lookup worker thread: resolve(text, search_limit)
+                             is_url? youtube.fetch : youtube.search(text, search_limit)
                            -> call_from_thread: spinner off; refill the table, cursor on row 1,
                               focus it (or a toast: No videos found / YouTube lookup failed)
-m on the Search table   -> spinner on; the same worker: unseen(resolve(text, shown + 10), shown)
+m on the Search table   -> spinner on; the same worker: unseen(resolve(text, shown + search_limit), shown)
                            -> call_from_thread: rows appended, numbered on (or No more results)
 Enter / a on a row      -> first use: client_factory(video, on_play=app.on_play,
    (Search, History,                                 on_state=on_player_state), control.serve(...)
@@ -95,7 +98,10 @@ on_play (under queue_lock) -> history.record(video), mark the History table stal
 tab 3 / 4 shown         -> History / Favorites table reloaded from history.load(50) / favorites.load()
 keys on the table       -> BINDINGS -> app actions -> toggle_pause / seek / change_volume / toggle_mute
                            / next / prev
-t / Ctrl-P              -> action_next_theme: App.theme = the next of sorted(available_themes), toast /
+start                   -> Header(show_clock); App.theme = the saved theme (unknown: the default, a toast)
+S                       -> SettingsScreen: one row per Settings field; Enter on a bool: change_setting
+                           (settings.change saves it; show_clock mounts a new Header), else a hint
+t / Ctrl-P              -> action_next_theme: App.theme = the next of sorted(available_themes), saved, toast /
                            CommandPalette: TtyplayerCommands (from COMMANDS) + Textual's system commands
 keys on the Queue table -> Enter jump(row) / d remove(row) / K J move(row, row∓1) / c clear_others()
 listener thread         -> on_state(status) -> call_from_thread -> History reloaded if stale,
