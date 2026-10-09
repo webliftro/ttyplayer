@@ -47,10 +47,15 @@ def search(query, limit=5) -> list[Video]:
 
 def fetch(url) -> list[Video]:
     """A single video link gives a one-item list; a playlist link gives every entry."""
+    return fetch_playlist(url)[1]
+
+
+def fetch_playlist(url) -> tuple[str | None, list[Video]]:
+    """fetch(url) plus the playlist's title; the title is None for a single video link."""
     info = _extract(url)
     if "entries" in info:
-        return handle_many_entries(info["entries"])
-    return [video_from_info(info)]
+        return info.get("title"), handle_many_entries(info["entries"])
+    return None, [video_from_info(info)]
 
 
 def is_url(text):

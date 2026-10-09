@@ -1,4 +1,5 @@
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -8,12 +9,16 @@ from importlib import metadata
 
 import typer
 
-from ttyplayer import control, favorites, history, player, settings
-from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen
+from ttyplayer import control, favorites, history, player, playlists, settings
+from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen, video_from_info
 
 app = typer.Typer()
 config_app = typer.Typer()
 app.add_typer(config_app, name="config")
+playlist_app = typer.Typer()
+app.add_typer(playlist_app, name="playlist")
+
+shuffler = random.Random()  # playlist play --shuffle; tests swap in a seeded one
 
 # How to install mpv, per sys.platform prefix; the README's Install section and the
 # install.sh / install.ps1 scripts repeat these, and tests keep all three in step.
@@ -244,6 +249,115 @@ def load_settings():
     try:
         return settings.load()
     except settings.SettingsError as error:
+        fail(str(error))
+
+
+@playlist_app.callback()
+def playlist():
+    """Make, edit and play your own playlists"""
+
+
+@playlist_app.command(name="list")
+def playlist_list():
+    """List the playlists and how many videos each holds"""
+    names = playlists.names()
+    if not names:
+        fail("No playlists yet")
+    for name in names:
+        typer.echo(f"{name}  ({len(on_playlist(playlists.load, name))} videos)")
+
+
+@playlist_app.command(name="show")
+def playlist_show(name: str):
+    """List a playlist's videos, numbered"""
+    videos = on_playlist(playlists.load, name)
+    if not videos:
+        typer.echo(f"{name} is empty")
+    print_videos(videos)
+
+
+@playlist_app.command(name="create")
+def playlist_create(name: str):
+    """Make a new, empty playlist"""
+    on_playlist(playlists.create, name)
+    typer.echo(f"Created playlist {name}")
+
+
+@playlist_app.command(name="add")
+def playlist_add(name: str, target: list[str], limit: int = 5):
+    """Add a YouTube link or playlist, or search picks, to the end of a playlist"""
+    on_playlist(playlists.require, name)
+    count = on_playlist(playlists.add, name, resolve(target, limit))
+    typer.echo(f"Added {count} videos to {name}")
+
+
+@playlist_app.command(name="remove")
+def playlist_remove(name: str, number: int):
+    """Drop the video at this position"""
+    removed = on_playlist(playlists.remove, name, number)
+    typer.echo(f"Removed: {removed.title}")
+
+
+@playlist_app.command(name="move")
+def playlist_move(name: str, source: int, target: int):
+    """Move the video at one position to another"""
+    moved = on_playlist(playlists.move, name, source, target)
+    typer.echo(f"Moved to {target}: {moved.title}")
+
+
+@playlist_app.command(name="delete")
+def playlist_delete(name: str, yes: bool = typer.Option(False, "--yes", help="Do not ask first")):
+    """Delete a playlist, after asking"""
+    on_playlist(playlists.require, name)
+    if not yes and not typer.confirm(f"Delete playlist {name}?", default=False):
+        typer.echo(f"Kept {name}")
+        return
+    on_playlist(playlists.delete, name)
+    typer.echo(f"Deleted playlist {name}")
+
+
+@playlist_app.command(name="play")
+def playlist_play(name: str, video: bool = False, shuffle: bool = False):
+    """Play a whole playlist, in order or shuffled"""
+    videos = on_playlist(playlists.load, name)
+    if shuffle:
+        shuffler.shuffle(videos)
+    start_playback(videos, video)
+
+
+@playlist_app.command(name="import")
+def playlist_import(url: str, name: str | None = typer.Option(None, "--as", help="Name it this, not its title")):
+    """Save a YouTube playlist as a playlist of your own"""
+    from ttyplayer import youtube
+
+    title, videos = lookup(youtube.fetch_playlist, url)
+    if title is None:
+        fail(f"Not a playlist link: {url}")
+    name = name or playlists.sanitize(title)
+    if not name:
+        fail("The playlist title has nothing to name it by; name it with --as")
+    exit_if_empty(videos)
+    on_playlist(playlists.create, name)
+    on_playlist(playlists.add, name, videos)
+    typer.echo(f"Imported {len(videos)} videos as {name}")
+
+
+@playlist_app.command(name="save-queue")
+def playlist_save_queue(name: str):
+    """Save the playing ttyplayer's queue as a playlist, replacing what it held"""
+    on_playlist(playlists.playlist_path, name)
+    videos = [video_from_info(entry) for entry in remote("queue")["videos"]]
+    if not videos:
+        fail("The queue is empty")
+    on_playlist(playlists.replace, name, videos)
+    typer.echo(f"Saved {len(videos)} videos to {name}")
+
+
+def on_playlist(func, *args):
+    """Run a playlists.* call, turning its errors into a one-line message and exit 1."""
+    try:
+        return func(*args)
+    except playlists.PlaylistError as error:
         fail(str(error))
 
 

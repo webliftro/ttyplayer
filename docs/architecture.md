@@ -13,35 +13,40 @@ ttyplayer itself never decodes audio or talks to YouTube's HTML directly.
 
 ```
 src/ttyplayer/
-  cli.py       Typer app: play, search, history, favorite, favorites, tui, config, version,
+  cli.py       Typer app: play, search, history, favorite, favorites, playlist, tui, config, version,
                pause, next, prev, stop, status. Glue only.
   tui.py       TtyplayerApp (Textual): header, search bar, Search/Queue/History/Favorites tables,
                now-playing panel, help and settings modals, command palette, themes, toasts over MpvClient;
                styles in tui.tcss (see docs/tui-design.md).
-  youtube.py   is_url, search, fetch -> list[Video]. Wraps yt-dlp errors in YouTubeError.
+  youtube.py   is_url, search, fetch -> list[Video], fetch_playlist -> (title, list[Video]).
+               Wraps yt-dlp errors in YouTubeError.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
                handle_control for the control socket.
   control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
   history.py   JSON lines record of what was played; load() newest first, one per video.
   favorites.py JSON lines list the user curates; add() dedupes by id, remove(n) by listed position,
                remove_id(id), ids() for the ♥ markers.
+  playlists.py One JSON lines file per named playlist under data_path("playlists"), in the user's
+               order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
+               names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   models.py    Video dataclass: id, title, uploader, duration; url derived from id.
-  utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks.
+  utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks;
+               video_entry, read_entries, append_entries, write_entries for the JSON lines files.
 ```
 
 Dependencies point one way:
 
 ```
-cli  ->  youtube, player, history, favorites, control, settings, tui (imported only by the tui command)
+cli  ->  youtube, player, history, favorites, playlists, control, settings, tui (imported only by the tui command)
 tui  ->  youtube, player, history, favorites, control, settings, utils, models
 settings  ->  utils
 player  ->  control
-youtube, player, history, favorites  ->  models, utils
+youtube, player, history, favorites, playlists  ->  models, utils
 ```
 
-`youtube.py`, `player.py`, `history.py`, and `favorites.py` know nothing about each other or about Typer; nothing below `cli` and `tui` imports `settings.py`. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
+`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli` and `tui` imports `settings.py`. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
 
 ## Data flow
 
@@ -134,14 +139,14 @@ The connect is retried for up to 3 seconds because mpv creates the socket a mome
 
 ## Control socket
 
-While `run()` owns the keyboard, the player also listens on a Unix socket so another terminal can drive it: `ttyplayer pause`, `next`, `prev`, `stop`, `status`. The socket is `$XDG_RUNTIME_DIR/ttyplayer/control.sock`, or `<tempdir>/ttyplayer-<uid>/control.sock` without `XDG_RUNTIME_DIR`; the dir is created `0700`, so only the same user can send commands. A dir that already exists must be a real directory (not a symlink) owned by the user with no group/other permissions, or the server refuses it before touching anything inside. A stale socket file is replaced; the most recently started player owns the path.
+While `run()` owns the keyboard, the player also listens on a Unix socket so another terminal can drive it: `ttyplayer pause`, `next`, `prev`, `stop`, `status`, and `playlist save-queue` (which sends `queue`). The socket is `$XDG_RUNTIME_DIR/ttyplayer/control.sock`, or `<tempdir>/ttyplayer-<uid>/control.sock` without `XDG_RUNTIME_DIR`; the dir is created `0700`, so only the same user can send commands. A dir that already exists must be a real directory (not a symlink) owned by the user with no group/other permissions, or the server refuses it before touching anything inside. A stale socket file is replaced; the most recently started player owns the path.
 
 One request per connection, newline-delimited JSON:
 
 - request: `{"command": "pause"}`
-- reply: `{"ok": true}`, `{"ok": true, "title": ..., "position": ..., "duration": ..., "paused": false, "index": 1, "total": 3, "started_in": 2.4}` for `status`, or `{"ok": false, "error": "unknown command x"}`
+- reply: `{"ok": true}`, `{"ok": true, "title": ..., "position": ..., "duration": ..., "paused": false, "index": 1, "total": 3, "started_in": 2.4}` for `status`, `{"ok": true, "videos": [{"id": ..., "title": ..., "uploader": ..., "duration": ...}, ...], "index": 1}` for `queue`, or `{"ok": false, "error": "unknown command x"}`
 
-`control.Server` runs on a daemon thread and calls `MpvClient.handle_control(name)`, which performs what the keys do: `pause` is the space key, `mute` the TUI's `M` (no CLI command sends it yet), `next`/`prev` move the queue, `status` returns `MpvClient.status()`, the same values `render()` draws (`player.status_line` formats them for both). `stop` sends SIGINT to the main thread, so `run()` leaves through its Ctrl-C path. `run()` stops the server and removes the socket in the same `finally` that restores the terminal. Bytes that are not UTF-8 count as a malformed request. If the dir is unsafe or the socket cannot be bound, one warning goes to stderr and playback continues without remote control.
+`control.Server` runs on a daemon thread and calls `MpvClient.handle_control(name)`, which performs what the keys do: `pause` is the space key, `mute` the TUI's `M` (no CLI command sends it yet), `next`/`prev` move the queue, `queue` returns `MpvClient.queue_listing()` (every queued video, read under `queue_lock`, and the 1-based current index), `status` returns `MpvClient.status()`, the same values `render()` draws (`player.status_line` formats them for both). `stop` sends SIGINT to the main thread, so `run()` leaves through its Ctrl-C path. `run()` stops the server and removes the socket in the same `finally` that restores the terminal. Bytes that are not UTF-8 count as a malformed request. If the dir is unsafe or the socket cannot be bound, one warning goes to stderr and playback continues without remote control.
 
 `MpvClient.send()` is called from three threads now (keyboard, listener, control), plus the TUI. `send_lock` makes each command line one atomic write, and the `queue_lock` RLock guards every queue change (`play_current()`, `next()`, `prev()`, `jump()`, `remove()`, `move()`, `clear_others()`, the `eof` step), so two `n` presses from different threads move the queue once each instead of racing on `index`. The same lock covers the `playback-restart` measurement, so a track change can't land inside it. Callbacks run after the lock is released: the TUI's `on_state` waits for the app thread, which may itself be waiting to move the queue.
 
@@ -180,7 +185,7 @@ Tests never touch the network or start mpv.
 - `youtube.py`: a `FakeYoutubeDL` monkeypatched in place of the real class.
 - `player.py`: `build_argv` directly; queue, title, and `handle_control` logic on a client built with `__new__` and a recording `load`/`send`; `run()` around a fake stdin and stubbed termios.
 - `control.py`: a real Unix socket in a short temp dir, with a recording handler.
-- `history.py`, `favorites.py`: real files under pytest's `tmp_path`.
+- `history.py`, `favorites.py`, `playlists.py`: real files under pytest's `tmp_path` (playlists through `XDG_DATA_HOME`).
 - `cli.py`: Typer `CliRunner` with `youtube.*`, `history_path`, `favorites_path`, and `player.MpvClient` monkeypatched; a `FakeClient` records what was queued.
 - `utils.py`: pure functions, direct assertions.
 - `tui.py`: Textual's `run_test()` pilot, headless, with a fake `resolve` and a recording `FakeClient` factory; `control.serve` monkeypatched. Async test bodies run under `asyncio.run` (no pytest plugin).

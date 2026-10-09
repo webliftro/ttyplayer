@@ -20,6 +20,7 @@ ttyplayer favorites                  favorites, newest first
 ttyplayer favorites --play           pick from favorites and play them
 ttyplayer favorites --remove 2       drop the second favorite as listed
 ttyplayer favorites --clear          forget all favorites
+ttyplayer playlist ...               your own named playlists (see Playlists below)
 ttyplayer tui [--video]              full-screen: search box, results list, now-playing bar
 ttyplayer config                     list the settings (see Settings below)
 ttyplayer doctor                     check Python, yt-dlp, mpv and ttyplayer's folders
@@ -35,6 +36,25 @@ ttyplayer prev                       previous in the queue
 ttyplayer stop                       quit the player
 ttyplayer status                     1:23 / 4:56  Playing  <title>
 ```
+
+## Playlists
+
+Playlists are named lists you keep, in the order you choose, separate from history and favorites. A name is 1 to 40 letters, digits, spaces, `_` or `-`.
+
+```
+ttyplayer playlist list                          every playlist and how many videos it holds
+ttyplayer playlist show <name>                   its videos, numbered
+ttyplayer playlist create <name>                 a new, empty playlist
+ttyplayer playlist add <name> <url | words...>   append a link, every entry of a playlist link, or search picks
+ttyplayer playlist remove <name> 3               drop the third video
+ttyplayer playlist move <name> 3 1               move the third video to the top
+ttyplayer playlist delete <name> [--yes]         delete it (asks first unless --yes)
+ttyplayer playlist play <name> [--video] [--shuffle]   queue the whole playlist, in order or shuffled
+ttyplayer playlist import <playlist url> [--as <name>] save a YouTube playlist, named after its title
+ttyplayer playlist save-queue <name>             save what the playing ttyplayer has queued, replacing <name>
+```
+
+`save-queue` works from another terminal while ttyplayer plays, like `pause` and `status`; it creates the playlist if there is none by that name. `import` refuses a name that is already taken; give another with `--as`.
 
 Keys in `ttyplayer play` (the terminal player; `ttyplayer tui` has its own table below):
 
@@ -198,7 +218,7 @@ uv run pytest -q                                      # default suite, live test
 TTYPLAYER_LIVE=1 uv run pytest -q tests/test_live.py    # live tests, needs network
 ```
 
-History lives in `$XDG_DATA_HOME/ttyplayer/history.jsonl`, by default `~/.local/share/ttyplayer/history.jsonl` (`%LOCALAPPDATA%\ttyplayer\history.jsonl` on Windows). Favorites live next to it in `favorites.jsonl`. History and favorites kept under the player's earlier name are moved here on the first run.
+History lives in `$XDG_DATA_HOME/ttyplayer/history.jsonl`, by default `~/.local/share/ttyplayer/history.jsonl` (`%LOCALAPPDATA%\ttyplayer\history.jsonl` on Windows). Favorites live next to it in `favorites.jsonl`, and each playlist in `playlists/<name>.jsonl`. History and favorites kept under the player's earlier name are moved here on the first run.
 
 ### Releasing
 

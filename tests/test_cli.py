@@ -1,4 +1,5 @@
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ttyplayer import cli, control, favorites, history, player, settings, utils, youtube
+from ttyplayer import cli, control, favorites, history, player, playlists, settings, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
 
@@ -800,3 +801,332 @@ def test_license_holder_is_the_company_and_the_text_ships():
     assert "Copyright (c) 2026 Weblift SRL" in (ROOT / "LICENSE").read_text(encoding="utf-8")
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["license-files"] == ["LICENSE"]
+
+
+# --- playlist ---------------------------------------------------------------
+
+ONE = Video(id="1", title="One", uploader="u", duration=60)
+TWO = Video(id="2", title="Two", uploader="u", duration=120)
+THREE = Video(id="3", title="Three", uploader="u", duration=None)
+
+
+@pytest.fixture
+def data_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    return tmp_path
+
+
+def playlist_ids(name):
+    return [video.id for video in playlists.load(name)]
+
+
+def make_playlist(name, videos):
+    playlists.create(name)
+    playlists.add(name, videos)
+
+
+def test_playlist_list_shows_each_name_and_count(data_home):
+    make_playlist("chill", [ONE, TWO])
+    playlists.create("empty")
+    result = runner.invoke(app, ["playlist", "list"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "chill  (2 videos)\nempty  (0 videos)\n"
+
+
+def test_playlist_list_when_there_are_none(data_home):
+    result = runner.invoke(app, ["playlist", "list"])
+    assert result.exit_code == 1
+    assert result.stderr == "No playlists yet\n"
+
+
+def test_playlist_show_numbers_the_videos_in_order(data_home):
+    make_playlist("chill", [TWO, ONE, TWO])
+    result = runner.invoke(app, ["playlist", "show", "chill"])
+    assert result.exit_code == 0, result.output
+    assert result.output == " 1. Two  (2:00)  u\n 2. One  (1:00)  u\n 3. Two  (2:00)  u\n"
+
+
+def test_playlist_show_an_empty_playlist(data_home):
+    playlists.create("chill")
+    result = runner.invoke(app, ["playlist", "show", "chill"])
+    assert result.exit_code == 0
+    assert result.output == "chill is empty\n"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["show", "nope"],
+        ["add", "nope", "https://www.youtube.com/watch?v=1"],
+        ["remove", "nope", "1"],
+        ["move", "nope", "1", "2"],
+        ["delete", "nope", "--yes"],
+        ["play", "nope"],
+    ],
+)
+def test_playlist_commands_on_a_missing_playlist(args, data_home, monkeypatch):
+    monkeypatch.setattr(youtube, "fetch", lambda url: pytest.fail("looked up before checking"))
+    result = runner.invoke(app, ["playlist", *args])
+    assert result.exit_code == 1
+    assert result.stderr == "No playlist named nope\n"
+    assert result.stdout == ""
+
+
+def test_playlist_create(data_home):
+    result = runner.invoke(app, ["playlist", "create", "road trip"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Created playlist road trip\n"
+    assert playlists.names() == ["road trip"]
+
+
+def test_playlist_create_twice_fails(data_home):
+    playlists.create("chill")
+    result = runner.invoke(app, ["playlist", "create", "chill"])
+    assert result.exit_code == 1
+    assert result.stderr == "A playlist named chill already exists\n"
+
+
+def test_playlist_create_with_a_bad_name_fails_in_one_line(data_home):
+    result = runner.invoke(app, ["playlist", "create", "../x"])
+    assert result.exit_code == 1
+    assert result.stderr == "Bad playlist name '../x': use 1 to 40 letters, digits, spaces, _ or -\n"
+    assert playlists.names() == []
+
+
+def test_playlist_add_a_link_adds_every_video(data_home, monkeypatch):
+    make_playlist("chill", [ONE])
+    monkeypatch.setattr(youtube, "fetch", lambda url: [TWO, THREE])
+    result = runner.invoke(app, ["playlist", "add", "chill", "https://www.youtube.com/playlist?list=x"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Added 2 videos to chill\n"
+    assert playlist_ids("chill") == ["1", "2", "3"]
+
+
+def test_playlist_add_search_words_adds_the_picks(data_home, monkeypatch):
+    playlists.create("chill")
+    searched = []
+
+    def search(query, limit=5):
+        searched.append((query, limit))
+        return [ONE, TWO, THREE]
+
+    monkeypatch.setattr(youtube, "search", search)
+    result = runner.invoke(app, ["playlist", "add", "chill", "some", "song", "--limit", "3"], input="3 1\n")
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines()[-1] == "Added 2 videos to chill"
+    assert searched == [("some song", 3)]
+    assert playlist_ids("chill") == ["3", "1"]
+
+
+def test_playlist_add_reports_youtube_errors_plainly(data_home, monkeypatch):
+    playlists.create("chill")
+    monkeypatch.setattr(youtube, "fetch", raise_youtube_error)
+    result = runner.invoke(app, ["playlist", "add", "chill", "https://www.youtube.com/watch?v=1"])
+    assert result.exit_code == 1
+    assert result.stderr == "YouTube lookup failed: no internet\n"
+    assert playlists.load("chill") == []
+
+
+def test_playlist_remove(data_home):
+    make_playlist("chill", [ONE, TWO])
+    result = runner.invoke(app, ["playlist", "remove", "chill", "1"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Removed: One\n"
+    assert playlist_ids("chill") == ["2"]
+
+
+def test_playlist_remove_out_of_range(data_home):
+    make_playlist("chill", [ONE])
+    result = runner.invoke(app, ["playlist", "remove", "chill", "2"])
+    assert result.exit_code == 1
+    assert result.stderr == "No video number 2 in chill\n"
+    assert playlist_ids("chill") == ["1"]
+
+
+def test_playlist_move(data_home):
+    make_playlist("chill", [ONE, TWO, THREE])
+    result = runner.invoke(app, ["playlist", "move", "chill", "3", "1"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Moved to 1: Three\n"
+    assert playlist_ids("chill") == ["3", "1", "2"]
+
+
+def test_playlist_move_out_of_range(data_home):
+    make_playlist("chill", [ONE, TWO])
+    result = runner.invoke(app, ["playlist", "move", "chill", "1", "5"])
+    assert result.exit_code == 1
+    assert result.stderr == "No video number 5 in chill\n"
+    assert playlist_ids("chill") == ["1", "2"]
+
+
+def test_playlist_delete_asks_and_yes_deletes(data_home):
+    playlists.create("chill")
+    result = runner.invoke(app, ["playlist", "delete", "chill"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "Delete playlist chill? [y/N]" in result.output
+    assert result.output.endswith("Deleted playlist chill\n")
+    assert playlists.names() == []
+
+
+@pytest.mark.parametrize("answer", ["n\n", "\n"])
+def test_playlist_delete_keeps_it_unless_the_answer_is_yes(answer, data_home):
+    playlists.create("chill")
+    result = runner.invoke(app, ["playlist", "delete", "chill"], input=answer)
+    assert result.exit_code == 0, result.output
+    assert result.output.endswith("Kept chill\n")
+    assert playlists.names() == ["chill"]
+
+
+def test_playlist_delete_yes_does_not_ask(data_home):
+    playlists.create("chill")
+    result = runner.invoke(app, ["playlist", "delete", "chill", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Deleted playlist chill\n"
+    assert playlists.names() == []
+
+
+def test_playlist_play_queues_the_whole_playlist_in_order(data_home, monkeypatch):
+    make_playlist("chill", [TWO, ONE, TWO])
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    FakeClient.instances = []
+    result = runner.invoke(app, ["playlist", "play", "chill", "--video"])
+    assert result.exit_code == 0, result.output
+    client = FakeClient.instances[0]
+    assert [v.id for v in client.queue] == ["2", "1", "2"]
+    assert client.video is True
+    assert client.ran
+    assert [v.id for v in history.load()] == ["2"]
+
+
+def test_playlist_play_shuffle_shuffles_with_the_shuffler(data_home, monkeypatch):
+    videos = [Video(id=str(n), title=f"v{n}", uploader="u", duration=1) for n in range(8)]
+    make_playlist("chill", videos)
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    monkeypatch.setattr(cli, "shuffler", random.Random(7))
+    expected = list(videos)
+    random.Random(7).shuffle(expected)
+    FakeClient.instances = []
+    result = runner.invoke(app, ["playlist", "play", "chill", "--shuffle"])
+    assert result.exit_code == 0, result.output
+    assert FakeClient.instances[0].queue == expected
+    assert expected != videos
+    assert playlist_ids("chill") == [v.id for v in videos]
+
+
+def test_playlist_play_an_empty_playlist(data_home, monkeypatch):
+    playlists.create("chill")
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    FakeClient.instances = []
+    result = runner.invoke(app, ["playlist", "play", "chill"])
+    assert result.exit_code == 1
+    assert result.stderr == "No videos found\n"
+    assert FakeClient.instances == []
+
+
+def test_playlist_import_names_it_after_the_sanitized_title(data_home, monkeypatch):
+    urls = []
+
+    def fetch_playlist(url):
+        urls.append(url)
+        return "Road Trip: '90s / hits!", [ONE, TWO]
+
+    monkeypatch.setattr(youtube, "fetch_playlist", fetch_playlist)
+    result = runner.invoke(app, ["playlist", "import", "https://www.youtube.com/playlist?list=x"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Imported 2 videos as Road Trip 90s hits\n"
+    assert urls == ["https://www.youtube.com/playlist?list=x"]
+    assert playlist_ids("Road Trip 90s hits") == ["1", "2"]
+
+
+def test_playlist_import_as_a_given_name(data_home, monkeypatch):
+    monkeypatch.setattr(youtube, "fetch_playlist", lambda url: ("Whatever", [ONE]))
+    result = runner.invoke(app, ["playlist", "import", "https://www.youtube.com/playlist?list=x", "--as", "roadtrip"])
+    assert result.exit_code == 0, result.output
+    assert playlists.names() == ["roadtrip"]
+
+
+def test_playlist_import_a_title_with_nothing_usable_asks_for_as(data_home, monkeypatch):
+    monkeypatch.setattr(youtube, "fetch_playlist", lambda url: ("日本の歌", [ONE]))
+    result = runner.invoke(app, ["playlist", "import", "https://www.youtube.com/playlist?list=x"])
+    assert result.exit_code == 1
+    assert result.stderr == "The playlist title has nothing to name it by; name it with --as\n"
+    assert playlists.names() == []
+
+
+def test_playlist_import_a_single_video_link_fails(data_home, monkeypatch):
+    monkeypatch.setattr(youtube, "fetch_playlist", lambda url: (None, [ONE]))
+    result = runner.invoke(app, ["playlist", "import", "https://www.youtube.com/watch?v=1"])
+    assert result.exit_code == 1
+    assert result.stderr == "Not a playlist link: https://www.youtube.com/watch?v=1\n"
+    assert playlists.names() == []
+
+
+def test_playlist_import_onto_an_existing_name_fails_without_changes(data_home, monkeypatch):
+    make_playlist("roadtrip", [THREE])
+    monkeypatch.setattr(youtube, "fetch_playlist", lambda url: ("roadtrip", [ONE]))
+    result = runner.invoke(app, ["playlist", "import", "https://www.youtube.com/playlist?list=x"])
+    assert result.exit_code == 1
+    assert result.stderr == "A playlist named roadtrip already exists\n"
+    assert playlist_ids("roadtrip") == ["3"]
+
+
+def test_playlist_import_reports_youtube_errors_plainly(data_home, monkeypatch):
+    monkeypatch.setattr(youtube, "fetch_playlist", raise_youtube_error)
+    result = runner.invoke(app, ["playlist", "import", "https://www.youtube.com/playlist?list=x"])
+    assert result.exit_code == 1
+    assert result.stderr == "YouTube lookup failed: no internet\n"
+
+
+QUEUE_REPLY = {
+    "ok": True,
+    "videos": [
+        {"id": "1", "title": "One", "uploader": "u", "duration": 60},
+        {"id": "2", "title": "Two", "uploader": "u", "duration": None},
+    ],
+    "index": 2,
+}
+
+
+def test_playlist_save_queue_replaces_the_playlist_with_the_queue(data_home, monkeypatch):
+    make_playlist("chill", [THREE])
+    send = fake_send(QUEUE_REPLY)
+    monkeypatch.setattr(control, "send", send)
+    result = runner.invoke(app, ["playlist", "save-queue", "chill"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Saved 2 videos to chill\n"
+    assert send.names == ["queue"]
+    assert playlists.load("chill") == [ONE, Video(id="2", title="Two", uploader="u", duration=None)]
+
+
+def test_playlist_save_queue_creates_a_new_playlist(data_home, monkeypatch):
+    monkeypatch.setattr(control, "send", fake_send(QUEUE_REPLY))
+    result = runner.invoke(app, ["playlist", "save-queue", "new one"])
+    assert result.exit_code == 0, result.output
+    assert playlist_ids("new one") == ["1", "2"]
+
+
+def test_playlist_save_queue_with_nothing_playing(data_home, monkeypatch):
+    make_playlist("chill", [THREE])
+    monkeypatch.setattr(control, "send", no_player)
+    result = runner.invoke(app, ["playlist", "save-queue", "chill"])
+    assert result.exit_code == 1
+    assert result.stderr == "No ttyplayer is playing\n"
+    assert playlist_ids("chill") == ["3"]
+
+
+def test_playlist_save_queue_of_an_empty_queue_changes_nothing(data_home, monkeypatch):
+    make_playlist("chill", [THREE])
+    monkeypatch.setattr(control, "send", fake_send({"ok": True, "videos": [], "index": 1}))
+    result = runner.invoke(app, ["playlist", "save-queue", "chill"])
+    assert result.exit_code == 1
+    assert result.stderr == "The queue is empty\n"
+    assert playlist_ids("chill") == ["3"]
+
+
+def test_playlist_save_queue_with_a_bad_name_asks_no_player(data_home, monkeypatch):
+    send = fake_send(QUEUE_REPLY)
+    monkeypatch.setattr(control, "send", send)
+    result = runner.invoke(app, ["playlist", "save-queue", "a/b"])
+    assert result.exit_code == 1
+    assert result.stderr.startswith("Bad playlist name 'a/b'")
+    assert send.names == []

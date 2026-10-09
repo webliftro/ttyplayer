@@ -1,11 +1,9 @@
 """Videos the user chose to keep, one JSON object per line, newest at the bottom."""
 
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ttyplayer.models import Video
-from ttyplayer.utils import data_path, video_from_info
+from ttyplayer.utils import append_entries, data_path, read_entries, video_entry, video_from_info, write_entries
 
 
 def favorites_path() -> Path:
@@ -17,16 +15,7 @@ def add(video: Video, path: Path | None = None) -> bool:
     path = path or favorites_path()
     if any(entry["id"] == video.id for entry in _entries(path)):
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "id": video.id,
-        "title": video.title,
-        "uploader": video.uploader,
-        "duration": video.duration,
-        "favorited_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    append_entries(path, [video_entry(video, "favorited_at")])
     return True
 
 
@@ -48,7 +37,7 @@ def remove_id(video_id: str, path: Path | None = None) -> bool:
     kept = [entry for entry in reversed(entries) if entry["id"] != video_id]
     if len(kept) == len(entries):
         return False
-    path.write_text("".join(json.dumps(entry) + "\n" for entry in kept), encoding="utf-8")
+    write_entries(path, kept)
     return True
 
 
@@ -74,16 +63,10 @@ def load(path: Path | None = None, limit: int | None = None) -> list[Video]:
 
 def _entries(path: Path) -> list[dict]:
     """Stored entries newest first, one per video id, skipping corrupt lines."""
-    if not path.exists():
-        return []
     seen = set()
     entries = []
-    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(entry, dict) or "id" not in entry or entry["id"] in seen:
+    for entry in reversed(read_entries(path)):
+        if entry["id"] in seen:
             continue
         seen.add(entry["id"])
         entries.append(entry)

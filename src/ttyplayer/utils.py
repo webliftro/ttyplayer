@@ -1,5 +1,7 @@
+import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ttyplayer.models import Video
@@ -45,6 +47,43 @@ def video_from_info(entry):
         uploader=entry.get("uploader") or entry.get("channel") or "Unknown",
         duration=entry.get("duration"),
     )
+
+
+def video_entry(video, stamp):
+    """The JSON-lines entry stored for video, its `stamp` field set to now (UTC)."""
+    return {
+        "id": video.id,
+        "title": video.title,
+        "uploader": video.uploader,
+        "duration": video.duration,
+        stamp: datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def read_entries(path):
+    """The entries of a JSON-lines file in file order, skipping corrupt lines; [] if it is missing."""
+    if not path.exists():
+        return []
+    entries = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and "id" in entry:
+            entries.append(entry)
+    return entries
+
+
+def append_entries(path, entries):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.writelines(json.dumps(entry) + "\n" for entry in entries)
+
+
+def write_entries(path, entries):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
 
 
 def handle_many_entries(entries):

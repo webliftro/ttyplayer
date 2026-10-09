@@ -45,3 +45,9 @@ def test_fetch_a_missing_video_raises_a_clean_error():
     message = str(error.value)
     assert "\n" not in message
     assert not message.startswith("ERROR:")
+
+
+def test_fetch_playlist_of_a_known_video_has_no_title():
+    title, [video] = youtube.fetch_playlist(watch_url(KNOWN_ID))
+    assert title is None
+    assert video.id == KNOWN_ID

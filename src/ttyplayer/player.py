@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import asdict
 
 from ttyplayer import control
 from ttyplayer.models import Video
@@ -479,6 +480,8 @@ class MpvClient:
             interrupt_main()  # run()'s Ctrl-C path quits and restores the terminal
         elif name == "status":
             return control.ok(**self.status())
+        elif name == "queue":
+            return control.ok(**self.queue_listing())
         else:
             return control.failure(f"unknown command {name}")
         return control.ok()
@@ -588,6 +591,11 @@ class MpvClient:
         self.queue[:] = kept
         self.index = 0
         return True
+
+    def queue_listing(self):
+        """Every queued video and the 1-based index of the current one, as the control socket sends them."""
+        with self.queue_lock:
+            return {"videos": [asdict(video) for video in self.queue], "index": self.index + 1}
 
     def current_title(self):
         # The queue knows the title before mpv does, so no file-name flicker on load.

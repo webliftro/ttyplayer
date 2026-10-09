@@ -1542,3 +1542,23 @@ def test_minus_plus_and_equals_change_the_volume(monkeypatch):
     run_with_keys(client, ["-", "+", "=", "q"], monkeypatch, path)
     os.rmdir(os.path.dirname(path))
     assert calls == [-player.VOLUME_STEP, player.VOLUME_STEP, player.VOLUME_STEP]
+
+
+def test_handle_control_queue_lists_the_queued_videos(monkeypatch):
+    client = make_remote_client([A, B, A], monkeypatch)
+    client.index = 1
+    assert client.handle_control("queue") == {
+        "ok": True,
+        "videos": [
+            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration},
+            {"id": B.id, "title": B.title, "uploader": B.uploader, "duration": B.duration},
+            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration},
+        ],
+        "index": 2,
+    }
+    assert client.sent == []
+
+
+def test_handle_control_queue_when_empty(monkeypatch):
+    client = make_remote_client([], monkeypatch)
+    assert client.handle_control("queue") == {"ok": True, "videos": [], "index": 1}

@@ -78,3 +78,23 @@ def test_fetch_wraps_download_errors(fake_ydl):
     fake_ydl.error = DownloadError("ERROR: video unavailable")
     with pytest.raises(youtube.YouTubeError):
         youtube.fetch("https://www.youtube.com/watch?v=abc")
+
+
+def test_fetch_playlist_returns_the_title_and_every_entry(fake_ydl):
+    fake_ydl.info = {"title": "Road Trip", "entries": [ENTRY, None, OTHER]}
+    title, videos = youtube.fetch_playlist("https://www.youtube.com/playlist?list=xyz")
+    assert title == "Road Trip"
+    assert [v.id for v in videos] == ["abc", "def"]
+
+
+def test_fetch_playlist_of_a_single_video_has_no_title(fake_ydl):
+    fake_ydl.info = ENTRY
+    title, videos = youtube.fetch_playlist("https://www.youtube.com/watch?v=abc")
+    assert title is None
+    assert [v.id for v in videos] == ["abc"]
+
+
+def test_fetch_playlist_wraps_download_errors(fake_ydl):
+    fake_ydl.error = DownloadError("ERROR: playlist does not exist")
+    with pytest.raises(youtube.YouTubeError, match="^playlist does not exist$"):
+        youtube.fetch_playlist("https://www.youtube.com/playlist?list=nope")
