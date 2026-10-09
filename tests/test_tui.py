@@ -1562,7 +1562,8 @@ async def test_palette_provider_offers_every_command_and_runs_its_action(clients
         provider = tui.TtyplayerCommands(app.screen)
         hits = [hit async for hit in provider.discover()]
         assert [hit.text for hit in hits] == [
-            "Search…", "Playlists", "Save queue as playlist…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute"
+            "Search…", "Playlists", "Save queue as playlist…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute",
+            "Sleep…",
         ]
         ran = []
         for _, action, _ in tui.COMMANDS:
@@ -2285,3 +2286,92 @@ async def test_a_link_keeps_the_search_heading(clients, served):
     async with run(app) as pilot:
         await search(pilot, "https://soundcloud.com/warp/roygbiv")
         assert search_heading(app) == "Search"
+
+
+# --- sleep timer ----------------------------------------------------------
+
+
+@drive
+async def test_the_panel_shows_the_sleep_timer_while_it_is_armed(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        app.on_player_state(status(sleep={"ends_at": time.time() + 600}))
+        await pilot.pause()
+        assert re.fullmatch(r"zz (10:00|9:5\d)", text(app, "#np-sleep"))
+        app.on_player_state(status(sleep={"after": "track"}))
+        await pilot.pause()
+        assert text(app, "#np-sleep") == "zz end"
+        app.on_player_state(status(sleep=None))
+        await pilot.pause()
+        assert text(app, "#np-sleep") == ""
+
+
+class NoTimer:
+    def __init__(self, interval, function, args=()):
+        pass
+
+    def start(self):
+        pass
+
+    def cancel(self):
+        pass
+
+    def join(self, timeout=None):
+        pass
+
+
+async def sleep_dialog(pilot):
+    """Ctrl-P's Sleep…, as the palette runs it: the dialog, prefilled."""
+    await pilot.app.run_action("sleep")
+    await pilot.pause()
+    assert isinstance(pilot.app.screen, tui.NameScreen)
+    assert pilot.app.screen.query_one(Input).value == "30m"
+
+
+@drive
+async def test_sleep_command_arms_the_players_timer_and_says_so(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        client = await queued(pilot, "enter")
+        client.handle_control = functools.partial(player.MpvClient.handle_control, client)  # the real sleep wiring
+        client.timer = NoTimer
+        await sleep_dialog(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, tui.NameScreen)
+        assert client.sleep_status() == {"ends_at": client.sleep_ends_at}
+        [(message, severity)] = toasts(app)
+        assert re.fullmatch(r"Sleeping in (30:00|29:59)", message) and severity == "information"
+        assert text(app, "#np-sleep").startswith("zz ")
+        await sleep_dialog(pilot)
+        await name_dialog(pilot, "soon")
+        error = str(app.screen.query_one("#name-error", Static).render())
+        assert error == f"Sleep takes {player.SLEEP_FORMS}, not 'soon'"
+        await name_dialog(pilot, "off")
+        assert client.sleep_status() is None
+        assert text(app, "#np-sleep") == ""
+
+
+@drive
+async def test_esc_leaves_the_sleep_timer_alone(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        client = await queued(pilot, "enter")
+        client.handle_control = functools.partial(player.MpvClient.handle_control, client)
+        await sleep_dialog(pilot)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not isinstance(app.screen, tui.NameScreen)
+        assert client.sleep_status() is None
+        assert toasts(app) == []
+
+
+@drive
+async def test_sleep_with_nothing_playing_says_so_in_the_dialog(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await sleep_dialog(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert str(app.screen.query_one("#name-error", Static).render()) == "Nothing is playing"
+        assert clients.made == []

@@ -507,6 +507,41 @@ def test_remote_commands_with_nothing_playing(command, monkeypatch):
     assert result.stdout == ""
 
 
+@pytest.mark.parametrize("args, sent", [(["sleep", "20m"], "sleep 20m"), (["sleep"], "sleep")])
+def test_sleep_sends_its_text_and_prints_the_players_line(args, sent, monkeypatch):
+    send = fake_send({"ok": True, "message": "Sleeping in 20:00"})
+    monkeypatch.setattr(control, "send", send)
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0
+    assert result.output == "Sleeping in 20:00\n"
+    assert send.names == [sent]
+
+
+def test_sleep_with_bad_text_prints_the_players_error(monkeypatch):
+    monkeypatch.setattr(control, "send", fake_send({"ok": False, "error": "Sleep takes 30m, …, not 'soon'"}))
+    result = runner.invoke(app, ["sleep", "soon"])
+    assert result.exit_code == 1
+    assert result.stderr == "Sleep takes 30m, …, not 'soon'\n"
+
+
+def test_sleep_reaches_the_players_sleep(monkeypatch):
+    """ttyplayer sleep against MpvClient.handle_control: the CLI's text becomes the player's sleep()."""
+    calls = []
+    fake_player = player.MpvClient.__new__(player.MpvClient)  # no mpv; sleep() only records
+    fake_player.sleep = calls.append
+    monkeypatch.setattr(control, "send", lambda name, path=None: fake_player.handle_control(name))
+    result = runner.invoke(app, ["sleep", "end"])
+    assert result.exit_code == 0
+    assert calls == ["end"]
+
+
+def test_status_shows_the_sleep_timer(monkeypatch):
+    monkeypatch.setattr(player.time, "time", lambda: 1000.0)
+    reply = {**STATUS, "index": 1, "total": 1, "sleep": {"ends_at": 1600.0}}
+    monkeypatch.setattr(control, "send", fake_send(reply))
+    assert runner.invoke(app, ["status"]).output == "1:23 / 4:56  Paused  zz 10:00  🔊 ▮▮▮▮▮▮▮▯▯▯ 70%  Song\n"
+
+
 def test_remote_command_refused_prints_the_players_error(monkeypatch):
     monkeypatch.setattr(control, "send", fake_send({"ok": False, "error": "unknown command x"}))
     result = runner.invoke(app, ["pause"])

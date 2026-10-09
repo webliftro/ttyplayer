@@ -122,6 +122,7 @@ def make_client(videos):
     client.on_play = None
     client.on_state = None
     client.queue_lock = threading.RLock()
+    client.fade_lock = threading.RLock()
     client.send_lock = threading.Lock()
     client.reply_lock = threading.Lock()
     client.replies = {}
@@ -240,6 +241,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "error": None,
         "stream": False,
         "levels": None,
+        "sleep": None,
     }
 
 
@@ -1812,3 +1814,242 @@ def test_handle_control_queue_lists_the_queued_videos(monkeypatch):
 def test_handle_control_queue_when_empty(monkeypatch):
     client = make_remote_client([], monkeypatch)
     assert client.handle_control("queue") == {"ok": True, "videos": [], "index": 1}
+
+
+# --- sleep timer --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text, spec",
+    [("30m", 1800), ("1h", 3600), ("1h30m", 5400), ("90", 90), ("2H5M", 7500), (" end ", "end"), ("off", None)],
+)
+def test_parse_sleep_reads_durations_end_and_off(text, spec):
+    assert player.parse_sleep(text) == spec
+
+
+@pytest.mark.parametrize("text", ["", "0", "0m", "30s", "1h30", "m", "-5", "1.5h", "soon", "٣"])
+def test_parse_sleep_refuses_anything_else_with_the_accepted_forms(text):
+    with pytest.raises(ValueError, match="30m, 1h, 1h30m, 90 \\(seconds\\), end or off"):
+        player.parse_sleep(text)
+
+
+def fixed_now(monkeypatch, now=1000.0):
+    monkeypatch.setattr(player.time, "time", lambda: now)
+
+
+@pytest.mark.parametrize(
+    "sleep, text, message",
+    [
+        (None, "", "Sleep timer off"),
+        ({"after": "track"}, "zz end", "Sleeping after this track"),
+        ({"ends_at": 2200.0}, "zz 20:00", "Sleeping in 20:00"),
+        ({"ends_at": 1000.2}, "zz 0:01", "Sleeping in 0:01"),  # a part second left still shows
+        ({"ends_at": 990.0}, "zz 0:00", "Sleeping in 0:00"),  # fading
+    ],
+)
+def test_sleep_text_and_message(sleep, text, message, monkeypatch):
+    fixed_now(monkeypatch)
+    assert player.sleep_text(sleep) == text
+    assert player.sleep_message(sleep) == message
+
+
+def test_status_line_shows_the_sleep_timer_after_the_state(monkeypatch):
+    fixed_now(monkeypatch)
+    status = {"position": 1, "duration": 2, "paused": False, "volume": None, "muted": False, "title": "T", "total": 1}
+    assert "Playing  zz 20:00  🔊" in player.status_line({**status, "sleep": {"ends_at": 2200.0}})
+    assert "zz" not in player.status_line(status)
+
+
+class FakeTimer:
+    """threading.Timer stand-in: never runs by itself; fire() runs the callback on the caller's thread."""
+
+    def __init__(self, interval, function, args=()):
+        self.interval, self.function, self.args = interval, function, args
+        self.started = self.cancelled = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def join(self, timeout=None):
+        pass
+
+    def fire(self):
+        self.function(*self.args)
+
+
+def sleeping_client(monkeypatch, videos=(A, B)):
+    """make_remote_client playing videos[0] at player volume 50, FakeTimers kept in .timers, fade waits in .waits."""
+    client = make_remote_client(list(videos), monkeypatch)
+    client.timers, client.waits = [], []
+    client.timer = lambda *args, **kwargs: client.timers.append(FakeTimer(*args, **kwargs)) or client.timers[-1]
+    client.fade_wait = lambda cancelled, seconds: client.waits.append(seconds)
+    client.play_current()
+    client.state.update({"volume": 50.0, "pause": False})
+    fixed_now(monkeypatch)
+    return client
+
+
+def test_sleep_arms_one_timer_and_status_says_when_it_ends(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(1200)
+    [timer] = client.timers
+    assert (timer.interval, timer.started, timer.cancelled) == (1200, True, False)
+    assert client.status()["sleep"] == {"ends_at": 2200.0}
+
+
+def test_a_new_sleep_replaces_the_timer_and_none_cancels_it(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(1200)
+    client.sleep(60)
+    assert [timer.cancelled for timer in client.timers] == [True, False]
+    assert client.status()["sleep"] == {"ends_at": 1060.0}
+    client.sleep(None)
+    assert client.timers[1].cancelled
+    assert client.status()["sleep"] is None
+
+
+def test_sleep_end_stops_at_the_end_of_the_track_instead_of_playing_the_next(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(1200)
+    client.sleep("end")
+    assert client.timers[0].cancelled
+    assert client.status()["sleep"] == {"after": "track"}
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    assert client.interrupted == [True]
+    assert client.loaded == [A.url]  # B never loads
+    assert client.status()["sleep"] is None
+
+
+def test_without_sleep_end_the_next_track_plays(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    assert client.interrupted == []
+    assert client.loaded == [A.url, B.url]
+
+
+def test_the_timer_fades_the_volume_out_pauses_restores_it_then_stops(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(60)
+    client.timers[0].fire()
+    steps = [["add", "volume", -5.0]] * player.SLEEP_FADE_STEPS
+    assert client.sent == steps + [["cycle", "pause"], ["add", "volume", 50.0]]
+    assert client.waits == [player.SLEEP_FADE_SECONDS / player.SLEEP_FADE_STEPS] * player.SLEEP_FADE_STEPS
+    assert sum(client.waits) == pytest.approx(player.SLEEP_FADE_SECONDS)
+    assert client.interrupted == [True]
+
+
+def test_the_fade_moves_the_volume_the_keys_move(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.state["ao-volume"] = 35.0
+    client.sleep(60)
+    client.timers[0].fire()
+    assert client.sent[0] == ["add", "ao-volume", -3.5]
+    assert client.sent[-1] == ["add", "ao-volume", 35.0]
+
+
+@pytest.mark.parametrize("state, idle", [({"pause": True}, False), ({}, True), ({"volume": 0.0}, False)])
+def test_the_timer_stops_at_once_when_paused_idle_or_silent(state, idle, monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.state.update(state)
+    client.idle = idle
+    client.sleep(60)
+    client.timers[0].fire()
+    assert client.sent == []
+    assert client.interrupted == [True]
+
+
+def test_sleep_off_during_the_fade_restores_the_volume_and_plays_on(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(60)
+    client.fade_wait = lambda cancelled, seconds: len(client.sent) == 3 and client.sleep(None)
+    client.timers[0].fire()
+    assert client.sent == [["add", "volume", -5.0]] * 3 + [["add", "volume", 15.0]]
+    assert client.interrupted == []
+
+
+def test_an_older_timer_firing_late_does_nothing(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(60)
+    client.sleep(None)
+    client.timers[0].fire()  # cancel() raced the timer
+    assert client.sent == []
+    assert client.interrupted == []
+
+
+def ready_to_quit(client):
+    """Stand-ins for what quit() tears down after the timer: no poller or writer, a finished process, a no-op ipc."""
+    client.poller = client.volume_writer = None
+    client.process = subprocess.Popen([sys.executable, "-c", ""])
+    client.ipc = type("Ipc", (), {"close": lambda self: None})()
+    client.socket_dir = None
+
+
+def test_quit_cancels_the_timer(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.sleep(60)
+    client.sleep("end")
+    client.sleep(60)
+    ready_to_quit(client)
+    client.quit()
+    assert client.timers[-1].cancelled
+    assert client.status()["sleep"] is None
+
+
+@pytest.mark.parametrize("then", ["off", "replaced", "quit"])
+def test_quit_waits_for_a_cancelled_fade_to_restore_the_volume(then, monkeypatch):
+    client = sleeping_client(monkeypatch)
+    ready_to_quit(client)
+    client.sleep(60)
+    stepped, restoring, go_on = threading.Event(), threading.Event(), threading.Event()
+    client.fade_wait = lambda cancelled, seconds: (stepped.set(), cancelled.wait(60))  # only a cancel ends the step
+    record = client.send
+
+    def slow_restore(command):  # a restore that takes longer than one step + 1 s, as osascript on macOS may
+        if command == ["add", "volume", 5.0]:
+            restoring.set()
+            go_on.wait(5)
+        record(command)
+
+    client.send = slow_restore
+    fader = threading.Thread(target=client.timers[0].fire)  # the timer's own thread, fading
+    fader.start()
+    assert stepped.wait(5)  # waiting after the first step
+    if then != "quit":
+        client.sleep({"off": None, "replaced": 60}[then])
+    quitter = threading.Thread(target=client.quit)
+    quitter.start()
+    assert restoring.wait(1)  # the cancel cut the step short: the volume comes back at once
+    quitter.join(timeout=player.SLEEP_FADE_SECONDS / player.SLEEP_FADE_STEPS + 1.2)  # past round 2's 1.5 s cap
+    assert quitter.is_alive()  # quit() still waits for the restore
+    go_on.set()
+    fader.join(5)
+    quitter.join(5)
+    assert client.sent == [["add", "volume", -5.0], ["add", "volume", 5.0], ["quit"]]
+    assert client.interrupted == []
+
+
+@pytest.mark.parametrize(
+    "name, reply",
+    [
+        ("sleep 20m", {"ok": True, "message": "Sleeping in 20:00"}),
+        ("sleep end", {"ok": True, "message": "Sleeping after this track"}),
+        ("sleep off", {"ok": True, "message": "Sleep timer off"}),
+        ("sleep", {"ok": True, "message": "Sleep timer off"}),
+        ("sleep soon", {"ok": False, "error": f"Sleep takes {player.SLEEP_FORMS}, not 'soon'"}),
+        ("sleepy", {"ok": False, "error": "unknown command sleepy"}),
+    ],
+)
+def test_handle_control_sleep_replies_the_human_line(name, reply, monkeypatch):
+    client = sleeping_client(monkeypatch)
+    assert client.handle_control(name) == reply
+
+
+def test_handle_control_sleep_with_no_text_shows_the_armed_timer(monkeypatch):
+    client = sleeping_client(monkeypatch)
+    client.handle_control("sleep 1h")
+    assert client.handle_control("sleep") == {"ok": True, "message": "Sleeping in 60:00"}
+    assert client.handle_control("status")["sleep"] == {"ends_at": 4600.0}
+    assert len(client.timers) == 1

@@ -4,6 +4,7 @@ import re
 import socket
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -178,6 +179,19 @@ def test_handle_control_does_the_command_on_the_server(served, connect):
     assert client.handle_control("pause") == {"ok": True}
     assert client.handle_control("dance")["ok"] is False
     assert served.posts() == [("/api/command", {"name": "pause"})]
+
+
+def test_handle_control_sleep_arms_the_servers_timer_and_replies_its_line(served, connect):
+    served.player.timer = lambda interval, function, args=(): types.SimpleNamespace(start=lambda: None, cancel=lambda: None)
+    client = connected(connect(served.url))
+    armed = client.handle_control("sleep 20m")
+    assert armed["ok"] and re.fullmatch(r"Sleeping in (20:00|19:59)", armed["message"])
+    assert client.status()["sleep"] == {"ends_at": served.player.sleep_ends_at}
+    assert client.handle_control("sleep")["message"].startswith("Sleeping in ")
+    assert client.handle_control("sleep off") == {"ok": True, "message": "Sleep timer off"}
+    assert client.handle_control("sleep soon") == {"ok": False, "error": "sleep failed on the server"}
+    assert client.errors == [f"Sleep takes {player.SLEEP_FORMS}, not 'soon'"]
+    assert served.posts() == [("/api/command", {"name": "sleep", "value": value}) for value in ("20m", "", "off", "soon")]
 
 
 def test_move_reorders_the_servers_queue_and_the_current_track_stays_current(served, connect):

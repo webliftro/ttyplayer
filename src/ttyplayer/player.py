@@ -3,6 +3,7 @@ import json
 import math
 import os
 import queue
+import re
 import secrets
 import shutil
 import signal
@@ -40,6 +41,10 @@ LEVEL_KEY = "lavfi.astats.{}.Peak_level"  # {} is the channel, from 1
 LEVELS_INTERVAL = 0.1  # seconds between level reads while a track plays
 LEVEL_SILENCE = -90.0  # dBFS stored for astats' -inf
 LEVEL_FLOOR = -60.0  # dBFS at which a level bar is empty; 0 dBFS fills it
+SLEEP_FADE_SECONDS = 5  # how long the sleep timer takes to fade the volume out
+SLEEP_FADE_STEPS = 10  # volume steps in that fade
+SLEEP_FORMS = "30m, 1h, 1h30m, 90 (seconds), end or off"
+SLEEP_PATTERN = re.compile(r"(\d+)|(?:(\d+)h)?(?:(\d+)m)?", re.ASCII)  # seconds, or hours and/or minutes
 
 # What each key does, by the key's name: the character typed, or the arrow's direction.
 KEYS = {
@@ -123,6 +128,42 @@ def parse_level(text):
     return max(level, LEVEL_SILENCE)
 
 
+def parse_sleep(text):
+    """A sleep timer from `ttyplayer sleep`'s text: seconds (an int), "end" of the track, or None for off."""
+    text = text.strip().lower()
+    if text in ("end", "off"):
+        return "end" if text == "end" else None
+    match = SLEEP_PATTERN.fullmatch(text)
+    seconds, hours, minutes = (int(group or 0) for group in match.groups()) if match else (0, 0, 0)
+    seconds += hours * 3600 + minutes * 60
+    if seconds <= 0:
+        raise ValueError(f"Sleep takes {SLEEP_FORMS}, not {text!r}")
+    return seconds
+
+
+def format_sleep(sleep):
+    """status()["sleep"] as the bars show it: the time left (m:ss) or "end"; None while no timer is armed."""
+    if sleep is None:
+        return None
+    if "after" in sleep:
+        return "end"
+    return format_time(math.ceil(max(0, sleep["ends_at"] - time.time())))
+
+
+def sleep_text(sleep):
+    """zz and the time left (or end) for a status line; "" while no timer is armed."""
+    left = format_sleep(sleep)
+    return f"zz {left}" if left else ""
+
+
+def sleep_message(sleep):
+    """The `ttyplayer sleep` reply for status()["sleep"]."""
+    left = format_sleep(sleep)
+    if left is None:
+        return "Sleep timer off"
+    return "Sleeping after this track" if left == "end" else f"Sleeping in {left}"
+
+
 def macos():
     return sys.platform == "darwin"
 
@@ -157,6 +198,8 @@ def status_line(status):
     position = format_time(status["position"])
     duration = format_time(status["duration"])
     state = "Paused" if status["paused"] else "Playing"
+    if sleep := sleep_text(status.get("sleep")):
+        state += f"  {sleep}"
     volume = volume_meter(status["volume"], status["muted"])
     # The meter goes before the title, so a narrow terminal cuts the title, not the meter.
     line = f"{position} / {duration}  {state}  {volume}  {status['title']}"
@@ -287,6 +330,12 @@ class MpvClient:
     headless_pcm = False  # no local sound: process.stdout carries it as PCM for serve --stream (see stream.py)
     show_levels = False  # whether mpv runs the level filter (never under headless_pcm)
     levels = None  # [left, right] peak dBFS while a track plays with show_levels, else None
+    sleep_timer = None  # the threading.Timer of `sleep <duration>`; it also runs the fade, under fade_lock
+    sleep_ends_at = None  # epoch time that timer fires at
+    sleep_after_track = False  # `sleep end`: stop when the current track ends
+    sleep_cancelled = None  # that timer's Event, set by the next sleep() or quit(): its fade stops and restores the volume
+    timer = threading.Timer  # tests swap in fakes for both
+    fade_wait = staticmethod(threading.Event.wait)  # (cancelled, seconds): a step's pause, cut short by a cancel
 
     def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False, levels=True):
         # on_play(video) is called whenever a queued video starts; the CLI uses
@@ -313,6 +362,7 @@ class MpvClient:
             raise RuntimeError("mpv did not start")
         # Keys, listener, control socket and TUI all move through the queue.
         self.queue_lock = threading.RLock()
+        self.fade_lock = threading.RLock()  # held by a sleep timer while it fades; quit() waits on it
         self.send_lock = threading.Lock()
         self.reply_lock = threading.Lock()
         self.replies = {}  # request_id -> callback(data), until the reply arrives
@@ -375,7 +425,7 @@ class MpvClient:
                 self.notify()
         elif message.get("event") == "end-file" and message.get("reason") == "eof":
             # At the end of the queue this still notifies, to tell a UI it went idle.
-            self._edit(self._next_or_idle)
+            self._edit(self._end_of_track)
         elif message.get("event") == "end-file" and message.get("reason") == "error":
             self._edit(self._skip_failed, message.get("file_error") or "unavailable")
 
@@ -501,6 +551,9 @@ class MpvClient:
     # --- lifecycle ------------------------------------------------------
 
     def quit(self):
+        self._disarm_sleep()
+        with self.fade_lock:  # a fade, even of a cancelled timer, restores the volume before mpv goes
+            pass
         if self.poller:
             self.stop_polling.set()  # before the socket closes under it
             self.poller.join(timeout=1)
@@ -576,6 +629,8 @@ class MpvClient:
             self.toggle_mute()
         elif name == "stop":
             interrupt_main()  # run()'s Ctrl-C path quits and restores the terminal
+        elif name.partition(" ")[0] == "sleep":
+            return self.sleep_control(name.removeprefix("sleep").strip())
         elif name == "status":
             return control.ok(**self.status())
         elif name == "queue":
@@ -583,6 +638,81 @@ class MpvClient:
         else:
             return control.failure(f"unknown command {name}")
         return control.ok()
+
+    def sleep_control(self, text):
+        """`sleep <text>`: arm or cancel the timer, or with no text leave it; the reply's message says how it stands."""
+        if text:
+            try:
+                self.sleep(parse_sleep(text))
+            except ValueError as error:
+                return control.failure(str(error))
+        return control.ok(message=sleep_message(self.sleep_status()))
+
+    # --- sleep timer ------------------------------------------------------
+
+    def sleep(self, spec):
+        """Stop spec seconds from now, at the "end" of the current track, or (None) never; replaces any earlier timer."""
+        with self.queue_lock:
+            self._disarm_sleep()
+            self.sleep_after_track = spec == "end"
+            if isinstance(spec, int):
+                self.sleep_ends_at = time.time() + spec
+                self.sleep_cancelled = threading.Event()
+                self.sleep_timer = self.timer(spec, self.fall_asleep, args=(self.sleep_cancelled,))
+                self.sleep_timer.daemon = True
+                self.sleep_timer.start()
+        self.notify()
+
+    def _disarm_sleep(self):
+        """Cancel the timer and the end-of-track stop, and stop a fade (it restores the volume on its own thread)."""
+        with self.queue_lock:
+            if self.sleep_timer:
+                self.sleep_timer.cancel()
+                self.sleep_cancelled.set()
+            self.sleep_timer = self.sleep_cancelled = self.sleep_ends_at = None
+            self.sleep_after_track = False
+
+    def sleep_status(self):
+        if self.sleep_after_track:
+            return {"after": "track"}
+        if self.sleep_ends_at is not None:
+            return {"ends_at": self.sleep_ends_at}
+        return None
+
+    def fall_asleep(self, cancelled):
+        """The timer's callback, on its own thread: fade out while a track plays, then stop as `ttyplayer stop` does.
+
+        It only sends to mpv and interrupts the main thread, as the keys and the control socket do.
+        """
+        with self.fade_lock:
+            if cancelled.is_set():
+                return  # cancelled as it fired
+            volume = self.state.get(self.volume_backend())
+            if self.playing() and isinstance(volume, (int, float)) and volume > 0 and not self.fade_out(volume, cancelled):
+                return  # a newer sleep() or quit() took over
+            if not cancelled.is_set():
+                interrupt_main()
+
+    def fade_out(self, volume, cancelled):
+        """Step the volume down to 0 over SLEEP_FADE_SECONDS, pause, then put the volume back; False if cancelled first.
+
+        A cancel ends the step's wait, so the volume comes back at once, in one step.
+        """
+        step = volume / SLEEP_FADE_STEPS
+        faded = 0
+        for _ in range(SLEEP_FADE_STEPS):
+            if cancelled.is_set():
+                break
+            self.change_volume(-step)
+            faded += step
+            self.fade_wait(cancelled, SLEEP_FADE_SECONDS / SLEEP_FADE_STEPS)
+        finished = not cancelled.is_set()
+        if finished and self.playing():
+            self.toggle_pause()  # silent before the volume comes back
+        self.change_volume(faded)
+        if self.volume_writer:
+            self.volume_steps.join()  # macOS: written before quit() drops the steps left
+        return finished
 
     # --- queue ----------------------------------------------------------
 
@@ -648,6 +778,14 @@ class MpvClient:
         if self.on_play:
             self.on_play(video)
         return True
+
+    def _end_of_track(self):
+        """Play the next track, or after `sleep end` stop as `ttyplayer stop` does."""
+        if self.sleep_after_track:
+            self.sleep_after_track = False
+            interrupt_main()
+            return True
+        return self._next_or_idle()
 
     def _next_or_idle(self):
         if not self._play_index(self.index + 1):
@@ -749,6 +887,7 @@ class MpvClient:
             "error": self.error,
             "stream": self.headless_pcm,
             "levels": self.levels,
+            "sleep": self.sleep_status(),
         }
 
     def notify(self):

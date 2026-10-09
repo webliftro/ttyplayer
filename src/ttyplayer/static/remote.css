@@ -87,7 +87,7 @@ button.primary, button[type="submit"] {
 .np-state { font-size: 1.5rem; width: 1.5rem; text-align: center; }
 .np-text { flex: 1; min-width: 0; }
 .np-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.np-uploader, .np-position, .times, .meta, .connection, .volume-value { color: var(--muted); font-size: 0.875rem; }
+.np-uploader, .np-position, .np-sleep, .times, .meta, .connection, .volume-value { color: var(--muted); font-size: 0.875rem; }
 
 .progress {
   height: 0.375rem;
@@ -121,7 +121,7 @@ button.icon { border: none; background: none; font-size: 1.25rem; }
 }
 .transport .primary { width: calc(var(--transport) * 1.25); height: calc(var(--transport) * 1.25); font-size: 2rem; }
 
-.listen-row { display: flex; justify-content: center; margin-top: 0.75rem; }
+.listen-row, .sleep-row { display: flex; justify-content: center; margin-top: 0.75rem; }
 .connection { text-align: center; min-height: 1.25rem; margin-top: 0.25rem; }
 
 /* --- search and the lists --- */

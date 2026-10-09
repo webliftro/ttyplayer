@@ -587,6 +587,12 @@ def stop():
     remote("stop")
 
 
+@app.command(name="sleep")
+def sleep_command(spec: str = typer.Argument("", help=f"{player.SLEEP_FORMS}; none shows the timer")):
+    """Stop the playing ttyplayer after a while, or when its track ends"""
+    typer.echo(remote(f"sleep {spec}".strip())["message"])
+
+
 @app.command()
 def status():
     """Show what the playing ttyplayer is playing"""

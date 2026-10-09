@@ -43,8 +43,13 @@ ttyplayer pause                      pause / resume
 ttyplayer next                       next in the queue
 ttyplayer prev                       previous in the queue
 ttyplayer stop                       quit the player
+ttyplayer sleep 30m                  Sleeping in 30:00 (also 1h, 1h30m, 90 seconds)
+ttyplayer sleep end                  stop when the current track ends
+ttyplayer sleep off                  cancel it (no argument: show it)
 ttyplayer status                     1:23 / 4:56  Playing  <title>
 ```
+
+When the sleep timer runs out, the volume fades to nothing over 5 seconds and the player stops as if `q` was pressed; the volume is put back first, so the next play starts at the old level. Paused or idle, it stops at once. `ttyplayer status`, the TUI and the web remote show `zz 27:13` (or `zz end`) while a timer is armed.
 
 ## Playlists
 
@@ -106,7 +111,7 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
@@ -207,7 +212,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | GET | `/api/status` | the player's status, plus `queue` (the videos) and `index` (1-based) |
 | POST | `/api/play` | `{"url": "…"}` or `{"query": "…"}`: the link's videos, or the first search result, replace the queue and play |
 | POST | `/api/queue` | `{"url": "…"}` or `{"query": "…"}`: appended to the queue (played at once when nothing plays) |
-| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"seek"\|"volume"\|"jump"\|"remove"\|"move"\|"clear_others", "value"?}`; `seek` and `volume` take a number of seconds / steps, `jump` and `remove` a 0-based queue row, `move` two (`[from, to]`; the current track stays current); `clear_others` keeps only the current track → the new status |
+| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"sleep"\|"seek"\|"volume"\|"jump"\|"remove"\|"move"\|"clear_others", "value"?}`; `sleep` takes the text `ttyplayer sleep` does (`"30m"`, `"end"`, `"off"`), `seek` and `volume` a number of seconds / steps, `jump` and `remove` a 0-based queue row, `move` two (`[from, to]`; the current track stays current); `clear_others` keeps only the current track → the new status |
 | GET | `/api/commands` | the command names `/api/command` takes |
 | GET | `/api/search?q=…` | the search results (`search_limit` of them) |
 | GET | `/api/favorites` | the favorites, newest first |

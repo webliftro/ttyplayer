@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 import aiohttp
 from aiohttp import WSMsgType
 
-from ttyplayer import control, server, tui
+from ttyplayer import control, player, server, tui
 from ttyplayer.models import Video
 
 REQUEST_TIMEOUT = 2  # seconds a command may hold the TUI's thread
@@ -151,7 +151,12 @@ class RemoteClient:
         return self.command("move", [source, target])
 
     def handle_control(self, name):
-        """The control socket's player commands, done on the server."""
+        """The control socket's player commands, done on the server; sleep's reply says how the timer stands."""
+        command, _, text = name.partition(" ")
+        if command == server.SLEEP_COMMAND:
+            if not self.command(command, text.strip()):
+                return control.failure(f"{command} failed on the server")
+            return control.ok(message=player.sleep_message((self.last_status or {}).get("sleep")))
         if name not in server.CONTROL_COMMANDS:
             return control.failure(f"unknown command {name}")
         return control.ok() if self.command(name) else control.failure(f"{name} failed on the server")

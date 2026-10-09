@@ -28,6 +28,7 @@
   <section id="now-playing" class="now-playing" aria-label="Now playing">
     <div class="np-head">
       <span id="np-state" class="np-state" aria-label="Stopped">■</span>
+      <span id="np-sleep" class="np-sleep"></span>
       <div class="np-text">
         <div id="np-title" class="np-title">Nothing playing</div>
         <div id="np-uploader" class="np-uploader"></div>
@@ -45,6 +46,9 @@
       <button id="prev" type="button" aria-label="Previous">⏮</button>
       <button id="play-pause" type="button" class="primary" aria-label="Play or pause">▶</button>
       <button id="next" type="button" aria-label="Next">⏭</button>
+    </div>
+    <div class="sleep-row">
+      <button id="sleep" type="button" class="small">Sleep 30m</button>
     </div>
     <div id="listen-row" class="listen-row" hidden>
       <button id="listen" type="button" aria-pressed="false">Listen here</button>

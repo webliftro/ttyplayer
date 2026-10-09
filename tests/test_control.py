@@ -62,6 +62,12 @@ def test_send_round_trip_reaches_the_handler(server, path):
 
 
 @posix_only
+def test_a_command_with_its_text_reaches_the_handler_whole(server, path):
+    assert control.send("sleep 30m", path) == {"ok": True, "echo": "sleep 30m"}
+    assert server.calls == ["sleep 30m"]
+
+
+@posix_only
 def test_handler_failure_comes_back_as_its_error(server, path):
     assert control.send("boom", path) == {"ok": False, "error": "unknown command boom"}
 
@@ -241,6 +247,11 @@ def test_loopback_server_writes_its_port_and_a_random_token(loopback):
 def test_loopback_send_round_trip_carries_the_token(loopback):
     assert control.send("pause", loopback.path) == {"ok": True, "echo": "pause"}
     assert loopback.calls == ["pause"]
+
+
+def test_loopback_carries_a_command_with_its_text(loopback):
+    assert control.send("sleep end", loopback.path) == {"ok": True, "echo": "sleep end"}
+    assert loopback.calls == ["sleep end"]
 
 
 @pytest.mark.parametrize(

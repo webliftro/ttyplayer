@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,7 +18,7 @@ import aiohttp
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
-from ttyplayer import control, favorites, playlists, server, settings, stream, youtube
+from ttyplayer import control, favorites, player, playlists, server, settings, stream, youtube
 from ttyplayer.models import Video
 
 TOKEN = "secret-token"
@@ -40,12 +41,13 @@ class FakeClient:
         self.index = 0
         self.idle = True
         self.error = None
+        self.sleep = None
         self.queue_lock = threading.RLock()
         self.calls = []
 
     def status(self):
         return {"title": self.queue[self.index].title if self.queue else None, "index": self.index + 1,
-                "total": len(self.queue), "idle": self.idle, "error": self.error}
+                "total": len(self.queue), "idle": self.idle, "error": self.error, "sleep": self.sleep}
 
     def queue_listing(self):
         return {"videos": [asdict(video) for video in self.queue], "index": self.index + 1}
@@ -228,6 +230,34 @@ def test_command_with_a_value_calls_the_player(fake, name, value, call):
     assert fake.calls == [call]
 
 
+@pytest.mark.parametrize("value, sent", [("30m", "sleep 30m"), ("off", "sleep off"), ("", "sleep ")])
+def test_sleep_hands_its_text_to_handle_control(fake, value, sent):
+    status, body = api(fake, "POST", "/api/command", json={"name": "sleep", "value": value})
+    assert status == 200
+    assert fake.calls == [sent]
+    assert body == server.full_status(fake)
+
+
+@pytest.mark.parametrize("value", [None, 30, ["30m"]])
+def test_sleep_needs_a_text_value(fake, value):
+    body = {"name": "sleep"} if value is None else {"name": "sleep", "value": value}
+    status, reply = api(fake, "POST", "/api/command", json=body)
+    assert status == 400
+    assert reply == {"error": 'sleep needs a text value, like "30m", "end" or "off"'}
+    assert fake.calls == []
+
+
+def test_sleep_refused_by_the_player_is_a_400_with_its_error(fake):
+    fake.handle_control = lambda name: control.failure(f"Sleep takes {player.SLEEP_FORMS}, not 'soon'")
+    status, reply = api(fake, "POST", "/api/command", json={"name": "sleep", "value": "soon"})
+    assert (status, reply) == (400, {"error": f"Sleep takes {player.SLEEP_FORMS}, not 'soon'"})
+
+
+def test_status_json_carries_the_sleep_timer(fake):
+    fake.sleep = {"after": "track"}
+    assert api(fake, "GET", "/api/status")[1]["sleep"] == {"after": "track"}
+
+
 def test_clear_others_keeps_only_the_current_track(fake):
     status, body = api(fake, "POST", "/api/command", json={"name": "clear_others"})
     assert status == 200
@@ -240,7 +270,7 @@ def test_commands_lists_the_command_table(fake):
 
 
 # A value each command takes, so every name in the table is exercised.
-COMMAND_VALUES = {"seek": 5, "volume": -5, "jump": 0, "remove": 0, "move": [0, 1]}
+COMMAND_VALUES = {"seek": 5, "volume": -5, "jump": 0, "remove": 0, "move": [0, 1], "sleep": "30m"}
 
 
 @pytest.mark.parametrize("name", server.COMMANDS)
@@ -768,7 +798,7 @@ def test_the_page_links_its_script_style_and_manifest_and_nothing_inline():
 
 def test_the_page_sends_only_commands_the_server_knows():
     used = set(re.findall(r'command\("(\w+)"', remote_js()))
-    assert used == {"pause", "next", "prev", "mute", "volume", "jump", "remove", "clear_others"}
+    assert used == {"pause", "next", "prev", "mute", "volume", "jump", "remove", "clear_others", "sleep"}
     assert used <= set(server.COMMANDS)
 
 
@@ -777,6 +807,7 @@ def run_page(messages, shown="queue"):
 
     shown="queue": the queue rows, each its title with a leading "▸" when it is marked as playing;
     shown="banner": the banner's text, None while it is hidden. A message "dismiss" clicks the banner's ×.
+    shown=None: every field the harness reports (see remote_page.mjs).
     """
     node = shutil.which("node")
     if node is None:
@@ -784,7 +815,7 @@ def run_page(messages, shown="queue"):
     harness = Path(__file__).with_name("remote_page.mjs")
     result = subprocess.run([node, str(harness), str(server.STATIC_DIR / "remote.js")], input=json.dumps(messages),
                             capture_output=True, encoding="utf-8", timeout=30, check=True)
-    return [step[shown] for step in json.loads(result.stdout)]
+    return [step[shown] for step in json.loads(result.stdout)] if shown else json.loads(result.stdout)
 
 
 def status(queue, index, idle=False, error=None, **more):
@@ -819,6 +850,17 @@ def test_the_page_still_follows_a_status_that_carries_an_error():
 
 def test_the_page_shows_a_failed_commands_error_in_the_banner():
     assert run_page([status(VIDEOS[:2], 1), {"error": "no such row"}], shown="banner") == [None, "no such row"]
+
+
+def test_the_page_shows_the_sleep_timer_and_its_button_arms_or_cancels_it():
+    shown = run_page([status(VIDEOS[:2], 1, sleep=None), "sleep", status(None, 1, sleep={"after": "track"}), "sleep",
+                      status(None, 1, sleep={"ends_at": time.time() + 600})], shown=None)
+    sleep = [step["sleep"] for step in shown]
+    posted = [step["posted"] for step in shown]
+    assert sleep[:4] == [{"text": "", "label": "Sleep 30m"}] * 2 + [{"text": "zz end", "label": "Sleep off"}] * 2
+    assert re.fullmatch(r"zz (10:00|9:5\d)", sleep[4]["text"]) and sleep[4]["label"] == "Sleep off"
+    assert posted[1] == [["/api/command", {"name": "sleep", "value": "30m"}]]
+    assert posted[3] == [["/api/command", {"name": "sleep", "value": "off"}]]
 
 
 def test_listen_here_shows_only_when_the_server_streams():

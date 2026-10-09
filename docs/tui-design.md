@@ -24,7 +24,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 │ ┌ Now playing ──────────────────────────────────────────────────────────┐
 │ │ ▶  Never Gonna Give You Up · Rick Astley                        [2/5] │  title bold accent
 │ │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  1:23 / 3:33 │  ProgressBar
-│ │ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%    Up next: lofi hip hop radio       started in 2.4s │  volume · queue · timing
+│ │ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  Up next: lofi hip hop radio  started in 2.4s │  volume · sleep · queue · timing
 │ │ L ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │  level meter (show_levels)
 │ │ R ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │
 │ └───────────────────────────────────────────────────────────────────────┘
@@ -43,12 +43,17 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   columns above, tab title `Playlists › <name> (n)`; Esc or Backspace goes back to the list. The tab
   is read from the `playlists` files each time it is shown and after every change.
 - Small centered modals: the playlist name (`P`, New playlist…; a bad name is shown under the box
-  until a good one is typed), the playlist picker (`A`), and the yes / no before deleting a playlist.
+  until a good one is typed), the sleep timer (Sleep…, the same modal), the playlist picker (`A`),
+  and the yes / no before deleting a playlist.
 - **Now playing** is docked above the Footer, five lines (three with `show_levels` off), always
   present. Idle it reads
   `Nothing playing — press / to search` (dim). It is built only from `MpvClient.status()`:
   `title`, `uploader`, `position`, `duration`, `paused`, `index`, `total`, `up_next`, `volume`,
-  `started_in` (the last one only when `player.timing()`), `levels`.
+  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`.
+- After the volume, `zz 27:13` (`zz end` for `sleep end`) while a sleep timer is armed, from
+  `player.sleep_text(status["sleep"])`; empty otherwise. It refreshes with each status, like the
+  time. The palette's **Sleep…** opens a one-line modal prefilled with `30m` (`player.parse_sleep()`'s
+  error stays under the box; `off` cancels; Esc leaves the timer alone) and toasts the player's reply.
 - The last two lines are the level meter: `L` and `R` bars of the volume meter's cells
   (`player.level_meter()`), as wide as the panel, empty at −60 dBFS, full at 0 dBFS, in `$accent`.
   `levels` is `None` while paused (and before mpv has measured): the bars are empty, not hidden, so

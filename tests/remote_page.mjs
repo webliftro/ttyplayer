@@ -1,11 +1,12 @@
 // Runs the web remote's script on a stub DOM for tests/test_server.py: node remote_page.mjs <remote.js>.
 // stdin: a JSON list of messages the server sends over /ws, or "dismiss" for a click on the banner's ×,
-// "listen" for a click on Listen here, "stream-error" for the <audio> failing, {"search": text, "reply": videos}
+// "listen" for a click on Listen here, "sleep" for a click on the Sleep button, "stream-error" for the <audio> failing, {"search": text, "reply": videos}
 // for a search the server answers with videos, {"favorites": videos} for opening Favorites, and
 // {"click": label, "list": id} for that button on the first row of a list.
-// stdout: after each, {queue, banner, listen, posted}: the queue rows the page shows, each its title with a leading "▸"
+// stdout: after each, {queue, banner, listen, sleep, posted}: the queue rows the page shows, each its title with a leading "▸"
 // when marked as playing, the banner's text (null while it is hidden), the Listen here button
-// ({shown, label, src, playing}), and the [path, body] of each POST the page sent.
+// ({shown, label, src, playing}), the sleep timer ({text, label}: its zz text and the button's),
+// and the [path, body] of each POST the page sent.
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -108,6 +109,7 @@ const shown = [];
 for (const message of JSON.parse(readFileSync(0, "utf-8"))) {
   if (message === "dismiss") element("banner-close").listeners.click();
   else if (message === "listen") element("listen").listeners.click();
+  else if (message === "sleep") element("sleep").listeners.click();
   else if (message === "stream-error") element("listen-audio").listeners.error();
   else if (message.search !== undefined) {
     reply = message.reply;
@@ -131,6 +133,7 @@ for (const message of JSON.parse(readFileSync(0, "utf-8"))) {
       src: element("listen-audio").getAttribute("src"),
       playing: !element("listen-audio").paused,
     },
+    sleep: { text: element("np-sleep").textContent, label: element("sleep").textContent },
     posted,
   });
   posted = [];

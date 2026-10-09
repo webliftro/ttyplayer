@@ -56,7 +56,9 @@ COMMANDS = [
     ("Next", "next", "Play the next track in the queue"),
     ("Previous", "prev", "Play the previous track in the queue"),
     ("Mute", "toggle_mute", "Mute or unmute"),
+    ("Sleep…", "sleep", f"Stop after a while or at the track's end: {player.SLEEP_FORMS}"),
 ]
+SLEEP_PREFILL = "30m"
 
 
 def resolve(text, limit, source):
@@ -138,6 +140,7 @@ class NowPlaying(Vertical):
             yield Static(id="np-time")
         with Horizontal(classes="np-line"):
             yield Static(id="np-volume")
+            yield Static(id="np-sleep")
             yield Static(id="np-next", markup=False)
             yield Static(id="np-timing")
         yield LevelMeter("L", id="np-level-left", classes="np-level")
@@ -164,6 +167,7 @@ class NowPlaying(Vertical):
             f"{format_time(status['position'])} / {format_time(status['duration'])}"
         )
         self.query_one("#np-volume", Static).update(player.volume_meter(status["volume"], status["muted"]))
+        self.query_one("#np-sleep", Static).update(player.sleep_text(status.get("sleep")))
         self.query_one("#np-next", Static).update(queue_text(status))
         self.query_one("#np-timing", Static).update(timing_text(status))
 
@@ -345,20 +349,24 @@ class HelpScreen(ModalScreen):
 
 
 class NameScreen(ModalScreen):
-    """Asks for a playlist name: Enter runs save(name), whose PlaylistError stays on screen until a name works."""
+    """Asks for a playlist name, or another line: Enter runs save(name), whose error stays on screen until a name works.
+
+    The error is a PlaylistError, or a ValueError (a sleep timer's text).
+    """
 
     BINDINGS = [Binding("escape", "dismiss", "Cancel", show=False)]
 
-    def __init__(self, title, name, save):
+    def __init__(self, title, name, save, placeholder=playlists.NAME_RULE):
         super().__init__()
         self.title_text = title
         self.prefill = name
         self.save = save
+        self.placeholder = placeholder
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog") as box:
             box.border_title = self.title_text
-            yield Input(value=self.prefill, placeholder=playlists.NAME_RULE)
+            yield Input(value=self.prefill, placeholder=self.placeholder)
             yield Static(id="name-error", markup=False)
 
     @on(Input.Submitted)
@@ -367,7 +375,7 @@ class NameScreen(ModalScreen):
         name = event.value.strip()
         try:
             self.save(name)
-        except playlists.PlaylistError as error:
+        except (playlists.PlaylistError, ValueError) as error:
             self.query_one("#name-error", Static).update(str(error))
             return
         self.dismiss(name)
@@ -933,6 +941,27 @@ class TtyplayerApp(App):
     def action_toggle_mute(self):
         if self.client:
             self.client.toggle_mute()
+
+    def action_sleep(self):
+        """Sleep…: a sleep timer's text (30m, end, off, …) for the player; Esc leaves the timer as it is."""
+        if self.screen is not self.screen_stack[0]:
+            return
+        replies = []
+
+        def arm(text):
+            player.parse_sleep(text)  # a ValueError stays in the dialog
+            if self.client is None:
+                raise ValueError("Nothing is playing")
+            reply = self.client.handle_control(f"sleep {text}")
+            if not reply["ok"]:
+                raise ValueError(reply["error"])
+            replies.append(reply["message"])
+
+        def armed(text):
+            if text is not None:
+                self.toast(replies[-1], severity="information")
+
+        self.push_screen(NameScreen("Sleep timer", SLEEP_PREFILL, arm, placeholder=player.SLEEP_FORMS), armed)
 
     def action_next_theme(self):
         themes = sorted(self.available_themes)

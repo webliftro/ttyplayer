@@ -5,6 +5,7 @@
 const TOKEN_KEY = "ttyplayer-token";
 const RECONNECT_FIRST = 1000; // ms; doubles after each failed attempt
 const RECONNECT_MAX = 10000;
+const SLEEP_FOR = "30m"; // what the Sleep button arms
 
 const $ = (id) => document.getElementById(id);
 
@@ -194,7 +195,16 @@ function renderNowPlaying() {
   $("mute").textContent = state.muted ? "🔇" : "🔊";
   $("mute").setAttribute("aria-pressed", String(Boolean(state.muted)));
   $("listen-row").hidden = !state.stream;
+  $("sleep").textContent = state.sleep ? "Sleep off" : `Sleep ${SLEEP_FOR}`;
   renderProgress();
+  renderSleep();
+}
+
+// zz and the time left on the player's sleep timer (zz end: when the track ends), as the TUI shows it.
+function renderSleep() {
+  const sleep = state.sleep;
+  const left = sleep && (sleep.after ? "end" : formatTime(Math.ceil(sleep.ends_at - Date.now() / 1000)));
+  $("np-sleep").textContent = left ? `zz ${left}` : "";
 }
 
 function button(label, onClick, className = "small", ariaLabel = label) {
@@ -412,6 +422,7 @@ function wire() {
   $("play-pause").addEventListener("click", () => command("pause"));
   $("next").addEventListener("click", () => command("next"));
   $("mute").addEventListener("click", () => command("mute"));
+  $("sleep").addEventListener("click", () => command("sleep", state.sleep ? "off" : SLEEP_FOR));
   $("volume").addEventListener("input", () => {
     volumeHeld = true;
     $("volume-value").textContent = $("volume").value;
@@ -429,7 +440,10 @@ function wire() {
   });
   $("favorites").addEventListener("toggle", () => $("favorites").open && loadFavorites());
   $("playlists").addEventListener("toggle", () => $("playlists").open && loadPlaylists());
-  setInterval(() => playing() && renderProgress(), 1000);
+  setInterval(() => {
+    if (playing()) renderProgress();
+    renderSleep();
+  }, 1000);
 }
 
 wire();
