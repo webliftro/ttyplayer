@@ -39,8 +39,12 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token, remote_url), settings_path, load, save,
+               server_token, remote_url, stream_enabled, spotify_client_id), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
+  spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
+               tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
+               expired, and one Retry-After wait on a 429), user_playlists, playlist(ref) -> (name, [Track]),
+               import_tracks: youtube.search per track, playlists.add of the first hit. SpotifyError.
   models.py    Video dataclass: id, title, uploader, duration; url derived from id.
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                video_entry, read_entries, append_entries, write_entries for the JSON lines files.
@@ -50,7 +54,9 @@ Dependencies point one way:
 
 ```
 cli  ->  youtube, player, history, favorites, playlists, control, settings, tui (imported only by the tui command),
-         server (imported only by the serve command), remote (imported only by tui --remote)
+         server (imported only by the serve command), remote (imported only by tui --remote),
+         spotify (imported only by the spotify commands)
+spotify  ->  youtube, playlists, settings (for the config dir only)
 remote  ->  tui, server, control, models      (tui -> remote -> (HTTP) server: the server plays)
 server  ->  player, youtube, playlists, settings, control, history (through the client and callbacks cli wires)
 tui  ->  youtube, player, history, favorites, control, settings, utils, models
@@ -59,7 +65,7 @@ player  ->  control
 youtube, player, history, favorites, playlists  ->  models, utils
 ```
 
-`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli`, `tui` and `server` imports `settings.py`. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
+`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli`, `tui` and `server` imports `settings.py`, except `spotify.py`, which keeps its tokens beside it (`settings_path()`'s folder) and reads no setting. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
 
 ## Data flow
 

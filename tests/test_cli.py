@@ -13,7 +13,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import posix_only
-from ttyplayer import cli, control, favorites, history, player, playlists, settings, utils, youtube
+from ttyplayer import cli, control, favorites, history, player, playlists, settings, spotify, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
 
@@ -609,10 +609,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
@@ -1171,6 +1171,151 @@ def test_playlist_import_reports_youtube_errors_plainly(data_home, monkeypatch):
     assert result.exit_code == 1
     assert result.stderr == "YouTube lookup failed: no internet\n"
 
+
+@pytest.fixture
+def config_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    return tmp_path / "config"
+
+
+def raise_spotify_error(*args):
+    raise spotify.SpotifyError("Not logged in to Spotify: run ttyplayer spotify login")
+
+
+def test_spotify_login_without_a_client_id_points_at_the_readme(config_home, monkeypatch):
+    monkeypatch.setattr(spotify, "login", lambda *args: pytest.fail("login ran"))
+    result = runner.invoke(app, ["spotify", "login"])
+    assert result.exit_code == 1
+    assert result.stderr == (
+        "Set spotify_client_id first: ttyplayer config set spotify_client_id <id> (see the README's Spotify section)\n"
+    )
+
+
+def test_spotify_login_logs_in_with_the_client_id_and_greets(config_home, monkeypatch):
+    settings.update("spotify_client_id", "cid")
+    calls = []
+
+    def login(client_id, echo):
+        calls.append(client_id)
+        echo("Opening Spotify in your browser; if it does not open, visit:\nhttps://accounts.spotify.com/authorize?x")
+        return "Ana"
+
+    monkeypatch.setattr(spotify, "login", login)
+    result = runner.invoke(app, ["spotify", "login"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["cid"]
+    assert result.output.endswith("Logged in as Ana\n")
+
+
+def test_spotify_login_reports_a_refusal_in_one_line(config_home, monkeypatch):
+    settings.update("spotify_client_id", "cid")
+
+    def refused(*args):
+        raise spotify.SpotifyError("Spotify refused the login: access_denied")
+
+    monkeypatch.setattr(spotify, "login", refused)
+    result = runner.invoke(app, ["spotify", "login"])
+    assert result.exit_code == 1
+    assert result.stderr == "Spotify refused the login: access_denied\n"
+
+
+def test_spotify_playlists_lists_name_tracks_and_id(monkeypatch):
+    monkeypatch.setattr(spotify, "user_playlists", lambda: [("Road Trip", 12, "p1"), ("Chill", 3, "p2")])
+    result = runner.invoke(app, ["spotify", "playlists"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "Road Trip  12  p1\nChill  3  p2\n"
+
+
+def test_spotify_playlists_with_none_or_an_error_fails(monkeypatch):
+    monkeypatch.setattr(spotify, "user_playlists", lambda: [])
+    assert runner.invoke(app, ["spotify", "playlists"]).stderr == "No Spotify playlists\n"
+    monkeypatch.setattr(spotify, "user_playlists", raise_spotify_error)
+    result = runner.invoke(app, ["spotify", "playlists"])
+    assert result.exit_code == 1
+    assert result.stderr == "Not logged in to Spotify: run ttyplayer spotify login\n"
+
+
+def fake_spotify_playlist(monkeypatch, title, tracks):
+    calls = []
+
+    def playlist(ref, limit=None):
+        calls.append((ref, limit))
+        return title, tracks[:limit]
+
+    monkeypatch.setattr(spotify, "playlist", playlist)
+    return calls
+
+
+TRACKS = [spotify.Track("Ann", "One"), spotify.Track("Bob", "Two")]
+
+
+def test_spotify_import_resolves_each_track_and_saves_under_the_sanitized_name(data_home, monkeypatch):
+    calls = fake_spotify_playlist(monkeypatch, "Road Trip: '90s!", TRACKS)
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [ONE] if query == "Ann One" else [])
+    result = runner.invoke(app, ["spotify", "import", "spotify:playlist:x"])
+    assert result.exit_code == 0, result.output
+    assert calls == [("spotify:playlist:x", None)]
+    assert result.output == (
+        "[1/2] ✓ Ann – One → One\n"
+        "[2/2] ✗ Bob – Two not found\n"
+        "Saved 1 of 2 tracks to Road Trip 90s\n"
+    )
+    assert playlist_ids("Road Trip 90s") == ["1"]
+
+
+def test_spotify_import_as_a_name_with_a_limit_appends_to_it(data_home, monkeypatch):
+    make_playlist("roadtrip", [THREE])
+    calls = fake_spotify_playlist(monkeypatch, "Whatever", TRACKS)
+    monkeypatch.setattr(youtube, "search", lambda query, limit=5: [ONE])
+    result = runner.invoke(app, ["spotify", "import", "x", "--as", "roadtrip", "--limit", "1"])
+    assert result.exit_code == 0, result.output
+    assert calls == [("x", 1)]
+    assert result.output.endswith("Saved 1 of 1 tracks to roadtrip\n")
+    assert playlist_ids("roadtrip") == ["3", "1"]
+
+
+def test_spotify_import_a_name_with_nothing_usable_asks_for_as(data_home, monkeypatch):
+    fake_spotify_playlist(monkeypatch, "日本の歌", TRACKS)
+    result = runner.invoke(app, ["spotify", "import", "x"])
+    assert result.exit_code == 1
+    assert result.stderr == "The playlist title has nothing to name it by; name it with --as\n"
+    assert playlists.names() == []
+
+
+def test_spotify_import_a_bad_as_name_fails_in_one_line(data_home, monkeypatch):
+    fake_spotify_playlist(monkeypatch, "Whatever", TRACKS)
+    result = runner.invoke(app, ["spotify", "import", "x", "--as", "../evil"])
+    assert result.exit_code == 1
+    assert result.stderr.startswith("Bad playlist name '../evil'")
+
+
+def test_spotify_import_reports_spotify_errors_plainly(data_home, monkeypatch):
+    monkeypatch.setattr(spotify, "playlist", raise_spotify_error)
+    result = runner.invoke(app, ["spotify", "import", "x"])
+    assert result.exit_code == 1
+    assert result.stderr == "Not logged in to Spotify: run ttyplayer spotify login\n"
+    assert playlists.names() == []
+
+
+def test_spotify_import_keeps_what_it_added_and_sums_up_when_youtube_fails(data_home, monkeypatch):
+    fake_spotify_playlist(monkeypatch, "road", TRACKS)
+
+    def search(query, limit=5):
+        if query == "Bob Two":
+            raise youtube.YouTubeError("no internet")
+        return [ONE]
+
+    monkeypatch.setattr(youtube, "search", search)
+    result = runner.invoke(app, ["spotify", "import", "x"])
+    assert result.exit_code == 1
+    assert result.stdout == "[1/2] ✓ Ann – One → One\nSaved 1 of 2 tracks to road\n"
+    assert result.stderr == "YouTube lookup failed: no internet\n"
+    assert playlist_ids("road") == ["1"]
+
+
+def test_spotify_import_limit_must_be_positive():
+    result = runner.invoke(app, ["spotify", "import", "x", "--limit", "0"])
+    assert result.exit_code == 2
 
 QUEUE_REPLY = {
     "ok": True,

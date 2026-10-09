@@ -18,6 +18,8 @@ config_app = typer.Typer()
 app.add_typer(config_app, name="config")
 playlist_app = typer.Typer()
 app.add_typer(playlist_app, name="playlist")
+spotify_app = typer.Typer()
+app.add_typer(spotify_app, name="spotify")
 
 shuffler = random.Random()  # playlist play --shuffle; tests swap in a seeded one
 
@@ -471,13 +473,19 @@ def playlist_import(url: str, name: str | None = typer.Option(None, "--as", help
     title, videos = lookup(youtube.fetch_playlist, url)
     if title is None:
         fail(f"Not a playlist link: {url}")
-    name = name or playlists.sanitize(title)
-    if not name:
-        fail("The playlist title has nothing to name it by; name it with --as")
+    name = import_name(title, name)
     exit_if_empty(videos)
     on_playlist(playlists.create, name)
     on_playlist(playlists.add, name, videos)
     typer.echo(f"Imported {len(videos)} videos as {name}")
+
+
+def import_name(title, name):
+    """The --as name, else title sanitized into a playlist name; a one-line message and exit 1 when nothing is left."""
+    name = name or playlists.sanitize(title)
+    if not name:
+        fail("The playlist title has nothing to name it by; name it with --as")
+    return name
 
 
 @playlist_app.command(name="save-queue")
@@ -497,6 +505,60 @@ def on_playlist(func, *args):
         return func(*args)
     except playlists.PlaylistError as error:
         fail(str(error))
+
+
+@spotify_app.callback()
+def spotify_group():
+    """Bring your Spotify playlists over: each track is found on YouTube (no Spotify audio)"""
+
+
+@spotify_app.command(name="login")
+def spotify_login():
+    """Log in to Spotify in the browser, once (needs the spotify_client_id setting)"""
+    from ttyplayer import spotify
+
+    client_id = load_settings().spotify_client_id
+    if not client_id:
+        fail("Set spotify_client_id first: ttyplayer config set spotify_client_id <id> (see the README's Spotify section)")
+    typer.echo(f"Logged in as {on_spotify(spotify.login, client_id, typer.echo)}")
+
+
+@spotify_app.command(name="playlists")
+def spotify_playlists():
+    """List your Spotify playlists: name, tracks, id"""
+    from ttyplayer import spotify
+
+    found = on_spotify(spotify.user_playlists)
+    if not found:
+        fail("No Spotify playlists")
+    for name, total, spotify_id in found:
+        typer.echo(f"{name}  {total}  {spotify_id}")
+
+
+@spotify_app.command(name="import")
+def spotify_import(
+    playlist: str,
+    name: str | None = typer.Option(None, "--as", help="Name it this, not its Spotify name"),
+    limit: int | None = typer.Option(None, min=1, help="Import only the first N tracks"),
+):
+    """Save a Spotify playlist (link, spotify:playlist:<id> or id) as a playlist, each track found on YouTube"""
+    from ttyplayer import spotify
+
+    title, tracks = on_spotify(spotify.playlist, playlist, limit)
+    name = import_name(title, name)
+    on_spotify(spotify.import_tracks, tracks, name, typer.echo)
+
+
+def on_spotify(func, *args):
+    """Run a spotify.* call, turning its errors (and the YouTube and playlist ones it meets) into one line and exit 1."""
+    from ttyplayer import spotify, youtube
+
+    try:
+        return func(*args)
+    except (spotify.SpotifyError, playlists.PlaylistError) as error:
+        fail(str(error))
+    except youtube.YouTubeError as error:
+        fail(youtube_failed(error))
 
 
 @app.command()
@@ -622,10 +684,14 @@ def lookup(func, *args):
     try:
         videos = func(*args)
     except youtube.YouTubeError as error:
-        fail(f"YouTube lookup failed: {error}")
+        fail(youtube_failed(error))
     if player.timing():
         typer.echo(f"lookup took {time.monotonic() - began:.1f}s", err=True)
     return videos
+
+
+def youtube_failed(error):
+    return f"YouTube lookup failed: {error}"
 
 
 def exit_if_empty(videos):

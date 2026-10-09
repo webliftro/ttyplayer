@@ -21,6 +21,7 @@ ttyplayer favorites --play           pick from favorites and play them
 ttyplayer favorites --remove 2       drop the second favorite as listed
 ttyplayer favorites --clear          forget all favorites
 ttyplayer playlist ...               your own named playlists (see Playlists below)
+ttyplayer spotify ...                bring Spotify playlists over, found on YouTube (see Spotify below)
 ttyplayer tui [--video]              full-screen: search box, results list, now-playing bar
 ttyplayer serve [--host] [--port]    play headless, driven over HTTP from any device (see Server below)
 ttyplayer serve --stream             the same, but the sound goes to the web remote, not the speakers
@@ -78,6 +79,27 @@ Picks accept several numbers at once: `1 3 5` queues those three in that order. 
 
 `TTYPLAYER_TIMING=1 ttyplayer play <words>` prints how long the YouTube lookup took and adds `started in 2.4s` (from `loadfile` to the first sound) to the status line.
 
+## Spotify
+
+ttyplayer can bring a Spotify playlist over as one of its own playlists. It reads only the playlist's *track list* from Spotify, never its audio (Spotify's audio is DRM-protected): each track is searched on YouTube as `<first artist> <title>`, and the first hit is added. A track YouTube has no hit for is reported and skipped; local files and podcast episodes in the playlist are skipped too. The result is a normal playlist: `ttyplayer playlist play <name>`, or the Playlists tab in the TUI.
+
+```
+ttyplayer spotify login                                      log in to Spotify in the browser, once
+ttyplayer spotify playlists                                  your Spotify playlists: name, tracks, id
+ttyplayer spotify import <link | id> [--as <name>] [--limit N]  find each track on YouTube and save it
+```
+
+`import` takes a playlist link (`https://open.spotify.com/playlist/<id>`), a `spotify:playlist:<id>` URI, or the bare id. It names the playlist after the Spotify one (unless `--as`), creating it, or appending to it if one by that name exists; it prints `[3/40] ✓ Artist – Title → <YouTube title>` (or `✗ … not found`) per track, and `Saved N of M tracks to <name>` at the end. Each YouTube search takes a second or two, so a long playlist takes a while; `--limit N` imports only the first N tracks. If the network fails part way, what was saved stays saved.
+
+Logging in needs a Spotify app of your own (free, once):
+
+1. Open the [Spotify developer dashboard](https://developer.spotify.com/dashboard), log in, and press **Create app**.
+2. Give it any name and description, set the **Redirect URI** to exactly `http://127.0.0.1:8765/callback`, tick **Web API**, and save.
+3. Open the app's **Settings**, copy its **Client ID**, and run `ttyplayer config set spotify_client_id <client id>`.
+4. Run `ttyplayer spotify login`: the browser opens Spotify's consent page; approve it, and the terminal says `Logged in as <your name>`.
+
+ttyplayer asks only for read access to your playlists (`playlist-read-private playlist-read-collaborative`) and uses no client secret (the login is OAuth with PKCE). The login is kept in `spotify.json` next to `settings.toml`, readable only by you; it holds a refresh token, so treat it like a password. To revoke ttyplayer's access, remove the app under **Manage apps** on your Spotify account page (spotify.com/account/apps) and delete `spotify.json`.
+
 ## TUI
 
 `ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, and Textual's own theme picker); `?` lists every key and command.
@@ -134,6 +156,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `server_token` | *generated* | the token every API request needs; `ttyplayer serve` makes one on first use |
 | `remote_url` | *none* | the server `ttyplayer tui` drives instead of playing itself, e.g. `http://host:7700` |
 | `stream_enabled` | `false` | `ttyplayer serve` streams the sound to the web remote instead of playing it, as `--stream` does |
+| `spotify_client_id` | *none* | the Client ID of your own Spotify app, which `ttyplayer spotify login` needs (see Spotify above) |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged

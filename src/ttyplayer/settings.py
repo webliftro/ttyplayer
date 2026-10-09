@@ -26,6 +26,7 @@ class Settings:
     server_token: str = ""  # ttyplayer serve generates it on first use
     remote_url: str = ""  # the server tui drives instead of its own player, e.g. http://host:7700
     stream_enabled: bool = False  # serve streams the sound to the web remote instead of playing it
+    spotify_client_id: str = ""  # the user's own Spotify app, for spotify login (public by design: PKCE)
 
 
 DEFAULTS = Settings()
