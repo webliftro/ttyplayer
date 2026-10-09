@@ -66,6 +66,10 @@ class FakeClient:
         self.calls.append(("remove", index))
         return True
 
+    def move(self, source, target):
+        self.calls.append(("move", source, target))
+        return True
+
     def clear_others(self):
         self.calls.append("clear_others")
         return True
@@ -205,7 +209,8 @@ def test_command_reuses_handle_control(fake, name):
 
 @pytest.mark.parametrize(
     "name, value, call",
-    [("seek", -5, ("seek", -5)), ("volume", 2.5, ("volume", 2.5)), ("jump", 1, ("play", 1)), ("remove", 0, ("remove", 0))],
+    [("seek", -5, ("seek", -5)), ("volume", 2.5, ("volume", 2.5)), ("jump", 1, ("play", 1)), ("remove", 0, ("remove", 0)),
+     ("move", [2, 0], ("move", 2, 0))],
 )
 def test_command_with_a_value_calls_the_player(fake, name, value, call):
     fake.queue[:] = VIDEOS
@@ -225,7 +230,7 @@ def test_commands_lists_the_command_table(fake):
 
 
 # A value each command takes, so every name in the table is exercised.
-COMMAND_VALUES = {"seek": 5, "volume": -5, "jump": 0, "remove": 0}
+COMMAND_VALUES = {"seek": 5, "volume": -5, "jump": 0, "remove": 0, "move": [0, 1]}
 
 
 @pytest.mark.parametrize("name", server.COMMANDS)
@@ -249,6 +254,12 @@ def test_every_listed_command_is_accepted(fake, name):
         ({"name": "jump"}, "jump needs a queue row number"),
         ({"name": "jump", "value": 1.5}, "jump needs a queue row number"),
         ({"name": "remove", "value": False}, "remove needs a queue row number"),
+        ({"name": "move"}, "move needs two queue row numbers"),
+        ({"name": "move", "value": 1}, "move needs two queue row numbers"),
+        ({"name": "move", "value": [1]}, "move needs two queue row numbers"),
+        ({"name": "move", "value": [0, 1, 2]}, "move needs two queue row numbers"),
+        ({"name": "move", "value": [0, True]}, "move needs two queue row numbers"),
+        ({"name": "move", "value": [0, 1.5]}, "move needs two queue row numbers"),
     ],
 )
 def test_bad_commands_are_400(fake, body, error):

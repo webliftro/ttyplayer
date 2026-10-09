@@ -129,6 +129,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `server_host` | `127.0.0.1` | the address `ttyplayer serve` listens on; `0.0.0.0` opens it to the network |
 | `server_port` | `7700` | the port `ttyplayer serve` listens on (1–65535) |
 | `server_token` | *generated* | the token every API request needs; `ttyplayer serve` makes one on first use |
+| `remote_url` | *none* | the server `ttyplayer tui` drives instead of playing itself, e.g. `http://host:7700` |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
@@ -170,7 +171,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | GET | `/api/status` | the player's status, plus `queue` (the videos) and `index` (1-based) |
 | POST | `/api/play` | `{"url": "…"}` or `{"query": "…"}`: the link's videos, or the first search result, replace the queue and play |
 | POST | `/api/queue` | `{"url": "…"}` or `{"query": "…"}`: appended to the queue (played at once when nothing plays) |
-| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"seek"\|"volume"\|"jump"\|"remove"\|"clear_others", "value"?}`; `seek` and `volume` take a number of seconds / steps, `jump` and `remove` a 0-based queue row; `clear_others` keeps only the current track → the new status |
+| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"seek"\|"volume"\|"jump"\|"remove"\|"move"\|"clear_others", "value"?}`; `seek` and `volume` take a number of seconds / steps, `jump` and `remove` a 0-based queue row, `move` two (`[from, to]`; the current track stays current); `clear_others` keeps only the current track → the new status |
 | GET | `/api/commands` | the command names `/api/command` takes |
 | GET | `/api/search?q=…` | the search results (`search_limit` of them) |
 | GET | `/api/favorites` | the favorites, newest first |
@@ -180,6 +181,12 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | GET, PATCH | `/api/settings` | every setting but the token; PATCH `{"key": value}` changes and saves them, checked like `config set` |
 | WS | `/ws?token=…` | sends the status on connect and on every change; takes the same `{"name", "value"?}` commands as `/api/command` and answers each with the status |
 | GET | `/` | the web remote (needs no token itself; it reads the token from its address); its files are under `/static/`, plus `/manifest.webmanifest` |
+
+### The TUI as a remote
+
+`ttyplayer tui --remote http://host:7700` opens the same screen, with the same keys and tabs, on another machine (a laptop, say) while the server plays: Enter on a result makes the *server's* speakers play, and the now-playing panel and the Queue tab follow the server over its socket (the header says `remote: host:7700`). The token is the `server_token` setting, so copy it into the laptop's settings with `ttyplayer config set server_token <token>`; `--token <token>` works too, but leaves it in your shell history. `ttyplayer config set remote_url http://host:7700` makes the remote the default, so a plain `ttyplayer tui` drives it.
+
+Searching still happens on the laptop; the server looks each picked video up again before it plays or queues it, so a long queue fills in over a few seconds. History stays the server's: the laptop records nothing. When the server cannot be reached the TUI says so once and keeps trying; a refused token says `Server rejected the token`.
 
 Security: the token is the only gate, and plain HTTP carries it in clear text. That is fine on a home network you trust; it is why `serve` listens on 127.0.0.1 unless told otherwise. To reach it beyond your LAN (a VPS, say), put it behind a reverse proxy with HTTPS. Anyone with the token can control the player, including stopping it; change the token with `ttyplayer config set server_token <new>` and restart.
 

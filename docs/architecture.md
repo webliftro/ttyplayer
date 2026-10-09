@@ -21,6 +21,9 @@ src/ttyplayer/
   server.py    ttyplayer serve: make_app(client, settings) builds the aiohttp app (token middleware,
                /api/*, /ws, the page under static/); Broadcaster is the player's on_state;
                ServerThread runs the app on its own thread and event loop; ensure_token.
+  remote.py    ttyplayer tui --remote: RemoteClient answers TtyplayerApp's MpvClient calls over the
+               server's /api/* (urllib) and mirrors /ws (aiohttp, own thread); RemoteApp is the TUI
+               with it as the player and no control socket.
   youtube.py   is_url, search, fetch -> list[Video], fetch_playlist -> (title, list[Video]).
                Wraps yt-dlp errors in YouTubeError.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
@@ -33,7 +36,7 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token), settings_path, load, save,
+               server_token, remote_url), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   models.py    Video dataclass: id, title, uploader, duration; url derived from id.
   utils.py     data_path, format_time, video_from_info, handle_many_entries, unseen, parse_picks;
@@ -44,7 +47,8 @@ Dependencies point one way:
 
 ```
 cli  ->  youtube, player, history, favorites, playlists, control, settings, tui (imported only by the tui command),
-         server (imported only by the serve command)
+         server (imported only by the serve command), remote (imported only by tui --remote)
+remote  ->  tui, server, control, models      (tui -> remote -> (HTTP) server: the server plays)
 server  ->  player, youtube, playlists, settings, control, history (through the client and callbacks cli wires)
 tui  ->  youtube, player, history, favorites, control, settings, utils, models
 settings  ->  utils
@@ -142,7 +146,21 @@ Ctrl-C, SIGTERM, `stop` (CLI, /api/command, /ws) -> KeyboardInterrupt in the mai
 
 Threads: the main thread only sleeps. The aiohttp thread runs its own event loop and is the only place requests and sockets live; it calls `MpvClient`'s thread-safe methods (`handle_control`, `seek`, `change_volume`, `status`, `queue_listing`, `play_current`, `jump`, `notify`, and the queue under `queue_lock`). `youtube.*` runs in the loop's executor, never on the loop. The player's listener and poller threads reach the sockets only through `Broadcaster.__call__` → `loop.call_soon_threadsafe` → one send per open socket; a closed or broken socket is dropped without touching the others.
 
-Every `/api/*` request and `/ws` passes the `require_token` middleware (`Authorization: Bearer <token>` or `?token=`, compared with `hmac.compare_digest`); `GET /` and `/static/*` do not. Errors are JSON `{"error": "<one line>"}` through the `errors_as_json` middleware. `/api/command` and the socket's text messages share `run_command`: `pause|next|prev|stop|mute` go to `handle_control`, `seek|volume` to `seek` / `change_volume` with a numeric `value`. Replies and a new socket's first message are `full_status`: `status()` plus `queue` (the `queue_listing` videos); broadcasts are each `on_state` status as the player sends it.
+Every `/api/*` request and `/ws` passes the `require_token` middleware (`Authorization: Bearer <token>` or `?token=`, compared with `hmac.compare_digest`); `GET /` and `/static/*` do not. Errors are JSON `{"error": "<one line>"}` through the `errors_as_json` middleware. `/api/command` and the socket's text messages share `run_command`: `pause|next|prev|stop|mute` go to `handle_control`, `seek|volume` to `seek` / `change_volume` with a numeric `value`. `jump|remove` take a queue row (`is_row`), `move` a `[source, target]` pair of them, `clear_others` nothing. Replies and a new socket's first message are `full_status`: `status()` plus `queue` (the `queue_listing` videos); broadcasts are each `on_state` status as the player sends it.
+
+### The TUI as a remote
+
+```
+cli.tui --remote URL (or settings remote_url) [--token T, else settings server_token]
+          -> remote.RemoteApp(url, token, …)          TtyplayerApp, client_factory -> RemoteClient
+             on mount: ensure_client()                the panel follows the server from the start
+             start_remote(): nothing                  this machine plays nothing: no control socket
+TtyplayerApp --(the MpvClient calls)--> RemoteClient --HTTP--> /api/command  (TUI thread, 2 s timeout)
+                                                     --HTTP--> /api/play, /api/queue  (worker thread, in order)
+                                        listener thread <--WS-- /ws  -> mirror(status) -> on_state
+```
+
+`add()` only buffers: the next `play_current()` posts the buffered videos from `index` on (`/api/play` for the first, `/api/queue` for the rest), the next `notify()` appends them; a newer play stops an older batch. `queue`, `index` and `idle` mirror the last status the server sent (a command's reply or a `/ws` message). Failures reach `RemoteApp.server_error` as one toast each (`Server rejected the token`, `Server unreachable at …`, `YouTube lookup failed: …`); the listener reconnects with backoff and reports a failure once until it connects again. `on_play` is accepted and ignored: history is the server's. `move(i, j)` sends the server's `move` command (`[i, j]`), or nothing, returning False, when a row is off the mirrored queue. `quit()` bumps the batch too, so nothing more is posted once the lookup in flight returns.
 
 ## mpv IPC
 

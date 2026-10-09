@@ -24,6 +24,7 @@ class Settings:
     server_host: str = "127.0.0.1"
     server_port: int = 7700
     server_token: str = ""  # ttyplayer serve generates it on first use
+    remote_url: str = ""  # the server tui drives instead of its own player, e.g. http://host:7700
 
 
 DEFAULTS = Settings()

@@ -42,7 +42,7 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
 | GET | `/api/status` | `status()` as JSON (+ `queue`: list, `index`) |
 | POST | `/api/play` | `{"query": "…"}` or `{"url": "…"}` → resolves and replaces the queue |
 | POST | `/api/queue` | `{"url"|"query"}` → appends |
-| POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"seek"|"volume"|"jump"|"remove"|"clear_others", "value"?}` → the new status; `jump`/`remove` take a 0-based queue row |
+| POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"seek"|"volume"|"jump"|"remove"|"move"|"clear_others", "value"?}` → the new status; `jump`/`remove` take a 0-based queue row, `move` two (`[from, to]`) |
 | GET | `/api/commands` | the command table's names (the page's and the server's tests both read it) |
 | GET | `/api/favorites` | the favorites, newest first |
 | POST | `/api/favorites/{id}` | toggles: unfavorites, or favorites the video in the body → the favorites |
@@ -95,7 +95,7 @@ Decide after measuring 1–3 on the developer's Mac + a Linux box; (3) is the li
    in the terminal; tests with `aiohttp`'s test client and a `FakeClient`.
 2. `web-remote` — the static page; tests: served files, token flow, a headless browser is out of
    reach — API contract tests + a manual checklist for the developer's phone.
-3. `tui-remote` — `RemoteClient` + `--remote`; the TUI suite runs against it with a fake server.
+3. ~~`tui-remote`~~ **done** — `RemoteClient` + `--remote`; the TUI suite runs against it with a fake server.
 4. `stream-spike` — measure the three candidates; a report in the baton; then `stream` if it holds.
 
 ## Security notes

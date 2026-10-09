@@ -23,7 +23,7 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import control, favorites, history, player, playlists, settings, tui, youtube
+from ttyplayer import control, favorites, history, player, playlists, remote, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -1601,6 +1601,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["server_host", "127.0.0.1", "(default 127.0.0.1)"],
             ["server_port", "7700", "(default 7700)"],
             ["server_token", "", "(default )"],
+            ["remote_url", "", "(default )"],
         ]
         await pilot.press("escape")
         await pilot.pause()
@@ -2023,3 +2024,104 @@ def test_the_design_doc_lists_the_playlist_keys():
     design = (pathlib.Path(__file__).parent.parent / "docs" / "tui-design.md").read_text(encoding="utf-8")
     for key in ("`5`", "`P`", "`A`", "`s`", "Backspace"):
         assert key in design.split("## Keys", 1)[1].split("\n## ", 1)[0]
+
+
+# --- tui-remote: the same app driving ttyplayer serve -----------------------------
+
+
+@pytest.fixture
+def remote_served(monkeypatch):
+    """ttyplayer serve over a fake player (tests/test_remote.py's), its lookups answered from VIDEOS."""
+    from test_remote import Served
+
+    by_url = {video.url: video for video in VIDEOS}
+    monkeypatch.setattr(youtube, "fetch", lambda url: [by_url[url]])
+    monkeypatch.setattr(remote, "RETRY_SECONDS", (0.05,))
+    served = Served()
+    yield served
+    served.stop()
+
+
+async def settle(pilot, condition, timeout=5):
+    """Let the app run until condition() holds, as the remote's threads get there."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            pytest.fail("timed out waiting")
+        await pilot.pause(0.02)
+
+
+def remote_app(url, token="secret-token"):
+    return remote.RemoteApp(url, token, resolve=lambda text, limit: VIDEOS)
+
+
+@drive
+async def test_the_app_runs_unchanged_against_a_server(remote_served, served, library):
+    app = remote_app(remote_served.url)
+    async with run(app) as pilot:
+        await settle(pilot, lambda: app.client is not None and app.client.status() is not None)
+        assert app.sub_title == f"remote: 127.0.0.1:{remote_served.port}"
+        assert served == []  # no control socket: this machine plays nothing
+        await search(pilot)
+        await pilot.press("down", "enter")
+        await settle(pilot, lambda: remote_served.player.queue == VIDEOS[1:])
+        assert remote_served.player.index == 0 and remote_served.player.idle is False
+        await settle(pilot, lambda: [row[1] for row in rows(app, tui.QueueTable)] == ["Beta", "Gamma"])
+        assert text(app, "#np-title") == "Beta"
+        await pilot.press("n")
+        await settle(pilot, lambda: remote_served.player.index == 1)
+        await settle(pilot, lambda: text(app, "#np-title") == "Gamma")
+        assert toasts(app) == []
+    assert not library["history"].exists()  # history is the server's
+
+
+@drive
+async def test_shift_j_and_k_reorder_the_servers_queue(remote_served, served, library):
+    app = remote_app(remote_served.url)
+    async with run(app) as pilot:
+        await settle(pilot, lambda: app.client is not None and app.client.status() is not None)
+        await queued(pilot, "enter")
+        await settle(pilot, lambda: [row[1] for row in queue_rows(app)] == ["Alpha", "Beta", "Gamma"])
+        queue = app.query_one(tui.QueueTable)
+        await pilot.press("J")
+        await settle(pilot, lambda: [row[:2] for row in queue_rows(app)] == [[" 1", "Beta"], ["▸2", "Alpha"], [" 3", "Gamma"]])
+        assert remote_served.player.queue == [VIDEOS[1], VIDEOS[0], VIDEOS[2]]
+        assert remote_served.player.index == 1  # Alpha is still the one playing
+        assert queue.cursor_row == 1
+        await pilot.press("shift+down", "J")  # the second is already last: nothing is sent
+        await settle(pilot, lambda: [v.id for v in remote_served.player.queue] == ["b", "c", "a"])
+        await pilot.pause(0.1)
+        assert queue.cursor_row == 2
+        await pilot.press("K", "shift+up")
+        await settle(pilot, lambda: [v.id for v in remote_served.player.queue] == ["a", "b", "c"])
+        await settle(pilot, lambda: queue.cursor_row == 0)
+        assert remote_served.player.index == 0
+        moves = [body["value"] for path, body in remote_served.posts() if body.get("name") == "move"]
+        assert moves == [[0, 1], [1, 2], [2, 1], [1, 0]]
+        assert toasts(app) == []
+
+
+@drive
+async def test_an_unreachable_server_is_one_toast_and_the_app_runs_on(served, monkeypatch):
+    from test_remote import free_port
+
+    monkeypatch.setattr(remote, "RETRY_SECONDS", (0.05,))
+    url = f"http://127.0.0.1:{free_port()}"
+    app = remote_app(url)
+    async with run(app) as pilot:
+        await settle(pilot, lambda: toasts(app))
+        await pilot.pause(0.3)  # several retries
+        assert toasts(app) == [(f"Server unreachable at {url}", "error")]
+        await pilot.press("escape", "space")
+        await pilot.pause(0.1)
+        assert toasts(app)[-1] == (f"Server unreachable at {url}", "error")
+        assert app.is_running
+
+
+@drive
+async def test_a_wrong_token_is_one_toast(remote_served, served):
+    app = remote_app(remote_served.url, token="wrong")
+    async with run(app) as pilot:
+        await settle(pilot, lambda: toasts(app))
+        await pilot.pause(0.3)
+        assert toasts(app) == [("Server rejected the token", "error")]

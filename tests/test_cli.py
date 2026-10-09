@@ -523,6 +523,36 @@ def test_tui_runs_the_app_with_the_real_player(monkeypatch, settings_file):
     assert screen.settings == settings.Settings(search_limit=20)
 
 
+@pytest.mark.parametrize(
+    "args, saved, url, token",
+    [
+        (["--remote", "http://box:7700", "--token", "given"], {}, "http://box:7700", "given"),
+        (["--remote", "http://box:7700"], {"server_token": "saved"}, "http://box:7700", "saved"),
+        ([], {"remote_url": "http://pi:7700", "server_token": "saved"}, "http://pi:7700", "saved"),
+        (["--remote", "http://box:7700"], {"remote_url": "http://pi:7700"}, "http://box:7700", ""),
+    ],
+)
+def test_tui_remote_drives_a_server_instead_of_mpv(monkeypatch, settings_file, args, saved, url, token):
+    from ttyplayer import remote, tui
+
+    settings.save(settings.Settings(**saved))
+    built = []
+    monkeypatch.setattr(tui.TtyplayerApp, "run", lambda self: built.append(self))
+    made = []
+    monkeypatch.setattr(remote, "RemoteClient", lambda *args, **kwargs: made.append((args, kwargs)) or "client")
+    result = runner.invoke(app, ["tui", *args])
+    assert result.exit_code == 0, result.output
+    [screen] = built
+    assert isinstance(screen, remote.RemoteApp)
+    assert screen.resolve is tui.resolve
+    assert screen.settings == settings.Settings(**saved)
+    assert screen.sub_title == f"remote: {url.removeprefix('http://')}"
+    assert screen.client_factory(False, on_play=screen.on_play, on_state=screen.on_player_state) == "client"
+    assert made == [
+        ((url, token), {"on_play": screen.on_play, "on_state": screen.on_player_state, "on_error": screen.server_error})
+    ]
+
+
 def test_tui_with_a_broken_settings_file_fails_in_one_line(monkeypatch, settings_file):
     from ttyplayer import tui
 
@@ -576,10 +606,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):

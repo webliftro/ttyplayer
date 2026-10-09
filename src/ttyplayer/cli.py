@@ -193,18 +193,30 @@ def favorites_command(
 
 
 @app.command()
-def tui(video: bool = False):
+def tui(
+    video: bool = False,
+    remote_url: str = typer.Option("", "--remote", help="Drive the ttyplayer serve at this URL (default: remote_url)"),
+    token: str = typer.Option("", help="The server's token (default: server_token)"),
+):
     """Open the full-screen player: search, pick and play in one screen.
 
     Keys: / search, Enter play, a add to queue, f favorite, m more results,
     space pause, , . seek 5s, < > seek 30s, - + volume, M mute, n next,
     p previous, 1-4 tabs, t theme, ? help, Ctrl-P commands, q quit.
+
+    With --remote (or the remote_url setting) the server plays and this screen drives it.
     """
     from ttyplayer import tui as screen  # Textual loads only for this command
 
-    screen.TtyplayerApp(
-        client_factory=player.MpvClient, resolve=screen.resolve, video=video, settings=load_settings()
-    ).run()
+    current = load_settings()
+    url = remote_url or current.remote_url
+    if url:
+        from ttyplayer.remote import RemoteApp  # aiohttp loads only for a remote
+
+        ui = RemoteApp(url, token or current.server_token, resolve=screen.resolve, video=video, settings=current)
+    else:
+        ui = screen.TtyplayerApp(client_factory=player.MpvClient, resolve=screen.resolve, video=video, settings=current)
+    ui.run()
 
 
 @app.command()

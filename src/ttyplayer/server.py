@@ -25,12 +25,15 @@ SHUTDOWN_TIMEOUT = 1  # seconds aiohttp waits for open requests when the server 
 TOKEN_BYTES = 24
 
 # The /api/command and /ws command names: handle_control's own, then MpvClient methods
-# taking a number, a 0-based queue row, or nothing. COMMANDS is all of them, as /api/commands lists them.
+# taking a number, a 0-based queue row, two rows, or nothing. COMMANDS is all of them, as /api/commands lists them.
 CONTROL_COMMANDS = {"pause", "next", "prev", "stop", "mute"}
 VALUE_COMMANDS = {"seek": "seek", "volume": "change_volume"}  # name -> MpvClient method
 ROW_COMMANDS = {"jump": "jump", "remove": "remove"}
+PAIR_COMMANDS = {"move": "move"}  # [source, target]
 PLAIN_COMMANDS = {"clear_others": "clear_others"}
-COMMANDS = sorted(CONTROL_COMMANDS | VALUE_COMMANDS.keys() | ROW_COMMANDS.keys() | PLAIN_COMMANDS.keys())
+COMMANDS = sorted(
+    CONTROL_COMMANDS | VALUE_COMMANDS.keys() | ROW_COMMANDS.keys() | PAIR_COMMANDS.keys() | PLAIN_COMMANDS.keys()
+)
 
 
 class ApiError(Exception):
@@ -166,6 +169,11 @@ def full_status(client):
     return {**client.status(), "queue": client.queue_listing()["videos"]}
 
 
+def is_row(value):
+    """Whether a JSON value is a queue row number: an int, and not a bool."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def run_command(client, body):
     """Do what {"name": …, "value"?} asks, as /api/command and /ws share it; the new status."""
     name = body.get("name")
@@ -179,9 +187,13 @@ def run_command(client, body):
             raise ApiError(400, f"{name} needs a numeric value")
         getattr(client, VALUE_COMMANDS[name])(value)
     elif name in ROW_COMMANDS:
-        if isinstance(value, bool) or not isinstance(value, int):
+        if not is_row(value):
             raise ApiError(400, f"{name} needs a queue row number")
         getattr(client, ROW_COMMANDS[name])(value)
+    elif name in PAIR_COMMANDS:
+        if not (isinstance(value, list) and len(value) == 2 and all(is_row(row) for row in value)):
+            raise ApiError(400, f"{name} needs two queue row numbers")
+        getattr(client, PAIR_COMMANDS[name])(*value)
     elif name in PLAIN_COMMANDS:
         getattr(client, PLAIN_COMMANDS[name])()
     else:
