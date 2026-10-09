@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import posix_only
 from ttyplayer import cli, control, favorites, history, player, playlists, settings, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
@@ -1338,6 +1339,7 @@ def stream_fakes(monkeypatch, serve_fakes):
     return stream
 
 
+@posix_only
 def test_serve_stream_pipes_mpv_into_ffmpeg_and_stops_mpv_before_ffmpeg(stream_fakes, serve_fakes):
     result = runner.invoke(app, ["serve", "--stream"])
     assert result.exit_code == 0, result.output
@@ -1350,6 +1352,7 @@ def test_serve_stream_pipes_mpv_into_ffmpeg_and_stops_mpv_before_ffmpeg(stream_f
     ]  # fmt: skip
 
 
+@posix_only
 def test_serve_streams_when_stream_enabled_is_set(stream_fakes, serve_fakes):
     settings.save(settings.Settings(stream_enabled=True, server_token="kept"))
     assert runner.invoke(app, ["serve"]).exit_code == 0
@@ -1364,6 +1367,7 @@ def test_serve_without_stream_changes_nothing(stream_fakes, serve_fakes):
     assert not [entry for entry in serve_log if "streamer" in str(entry)]
 
 
+@posix_only
 def test_serve_stream_without_ffmpeg_says_how_to_install_it_and_starts_nothing(monkeypatch, stream_fakes, serve_fakes):
     monkeypatch.setattr(stream_fakes, "find_ffmpeg", lambda: None)
     result = runner.invoke(app, ["serve", "--stream"])
@@ -1376,10 +1380,11 @@ def test_serve_stream_on_windows_refuses(monkeypatch, stream_fakes, serve_fakes)
     monkeypatch.setattr(cli, "WINDOWS", True)
     result = runner.invoke(app, ["serve", "--stream"])
     assert result.exit_code == 1
-    assert result.stderr.startswith("serve --stream needs macOS or Linux")
-    assert FakeClient.instances == []
+    assert result.stderr == "serve --stream needs macOS or Linux: mpv cannot hand its sound to ffmpeg on Windows\n"
+    assert FakeClient.instances == [] and serve_log == []
 
 
+@posix_only
 def test_serve_stream_when_ffmpeg_cannot_start_stops_mpv(monkeypatch, stream_fakes, serve_fakes):
     def broken(pcm, ffmpeg):
         raise PermissionError(13, "Permission denied")

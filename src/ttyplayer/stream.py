@@ -5,6 +5,8 @@ ffmpeg at the speed it plays, and silence while mpv has none (paused, between tr
 stream never stalls; one reader thread splits ffmpeg's Ogg output into pages and offers
 each page to every listener. A listener that falls behind loses pages, never the others' sound.
 Late listeners first get the stream's header pages, which an Opus decoder needs before any audio.
+Linux and macOS only: next_chunk polls mpv's pipe with select, which Windows offers for sockets
+alone, so cli.stream_ffmpeg refuses the mode there.
 """
 
 import asyncio

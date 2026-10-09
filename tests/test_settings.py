@@ -7,10 +7,10 @@ import tomllib
 
 import pytest
 
+from conftest import posix_only
 from ttyplayer import settings
 from ttyplayer.settings import Settings, SettingsError
 
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="Path.home() ignores HOME on Windows")
 
 
 def test_settings_fields_and_defaults():

@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from conftest import posix_only
 from ttyplayer import player, stream
 
 
@@ -142,6 +143,7 @@ def test_mpv_client_pipes_stdout_only_when_headless(monkeypatch):
 # --- pipe wiring and shutdown -------------------------------------------------------
 
 
+@posix_only
 def test_mpvs_pcm_reaches_ffmpeg_and_stop_waits_for_it(ffmpeg):
     pcm = bytes(range(256)) * 100
     streamer, process = streamer_on(pcm_file(pcm), ffmpeg)
@@ -166,6 +168,7 @@ def test_stop_kills_an_ffmpeg_that_does_not_exit(ffmpeg):
     assert process.log == ["wait", "kill", "wait"]
 
 
+@posix_only
 def test_the_pacer_holds_pcm_to_the_speed_it_plays(ffmpeg):
     now, slept = [0.0], []
 
@@ -181,6 +184,7 @@ def test_the_pacer_holds_pcm_to_the_speed_it_plays(ffmpeg):
     assert set(slept) == {0.02}
 
 
+@posix_only
 def test_falling_behind_restarts_the_pacers_clock_instead_of_bursting(ffmpeg):
     now, slept = [0.0], []
     pcm = pcm_file(bytes(stream.PCM_CHUNK * 3))
@@ -195,6 +199,7 @@ def test_falling_behind_restarts_the_pacers_clock_instead_of_bursting(ffmpeg):
     assert slept == [pytest.approx(0.02)] * 2  # without the restart the third chunk would not wait
 
 
+@posix_only
 def test_while_mpv_has_no_pcm_ffmpeg_gets_silence_then_mpvs_pcm(ffmpeg):
     pcm_read, pcm_write = os.pipe()
     with open(pcm_read, "rb") as pcm, open(pcm_write, "wb") as mpv:
