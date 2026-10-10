@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Plain Radio Show</title>
+    <image>
+      <url>https://plain.example.org/logo.png</url>
+      <title>Plain Radio Show</title>
+    </image>
+    <item>
+      <title>Episode two</title>
+      <pubDate>Tue, 07 Oct 2026 10:00:00 GMT</pubDate>
+      <enclosure url="https://plain.example.org/two.ogg" length="1" type="audio/ogg"/>
+    </item>
+    <item>
+      <title>Episode one, no type</title>
+      <pubDate>Tue, 30 Sep 2026 10:00:00 GMT</pubDate>
+      <enclosure url="https://plain.example.org/files/one.mp3?source=rss" length="1"/>
+    </item>
+    <item>
+      <title>A PDF</title>
+      <pubDate>Wed, 08 Oct 2026 10:00:00 GMT</pubDate>
+      <enclosure url="https://plain.example.org/notes.pdf" length="1" type="application/pdf"/>
+    </item>
+  </channel>
+</rss>

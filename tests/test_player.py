@@ -253,6 +253,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "title": "Second",
         "uploader": "u",
         "thumbnail": None,
+        "source": "youtube",
         "position": 83.5,
         "duration": 296.0,
         "paused": True,
@@ -2248,8 +2249,9 @@ def test_radio_with_nothing_to_play_reports_once_and_goes_idle(related, error, m
     assert client.states[-1]["error"] == error
 
 
-def test_radio_needs_a_youtube_track(monkeypatch):
-    track = Video(id="1234567", title="SC", uploader="u", duration=60, source="soundcloud", link="https://sc/x")
+@pytest.mark.parametrize("source", ["soundcloud", "podcast"])
+def test_radio_needs_a_youtube_track(source, monkeypatch):
+    track = Video(id="1234567", title="SC", uploader="u", duration=60, source=source, link="https://sc/x")
     client = radio_client(monkeypatch, videos=[A, track])
     end_track(client)
     assert client.related.seeds == []
@@ -2620,3 +2622,23 @@ def test_a_jump_replaces_the_prefetched_track_by_its_own_loadfile(monkeypatch):
     client.prev()
     client.handle_message(RESTART)
     assert client.sent == [["loadfile", C.url, "append"], ASK_ENTRY]  # no playlist-remove: each loadfile cleared mpv's playlist
+
+
+# --- podcasts ----------------------------------------------------------------------
+
+EPISODE = Video(id="0123456789a", title="Ep", uploader="Show", duration=3600, source="podcast",
+                link="https://media.example.com/ep.mp3", thumbnail="https://example.com/cover.jpg")
+
+
+def test_a_podcast_episode_is_loaded_as_its_enclosure_url_and_prefetched_the_same(monkeypatch):
+    client = make_remote_client([EPISODE, A], monkeypatch)
+    client.load = player.MpvClient.load.__get__(client)  # the real loadfile, into the recorded send()
+    client.prefetch = True
+    client.play_current()
+    assert client.sent == [["loadfile", "https://media.example.com/ep.mp3"]]
+    assert client.status()["thumbnail"] == "https://example.com/cover.jpg"  # the art panel shows the artwork
+    client.sent.clear()
+    client.queue[:] = [A, EPISODE]
+    client.handle_message(RESTART)
+    assert client.sent[0] == ["loadfile", "https://media.example.com/ep.mp3", "append"]
+

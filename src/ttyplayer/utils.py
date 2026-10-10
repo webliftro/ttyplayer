@@ -12,7 +12,7 @@ APP_NAME = "ttyplayer"  # the product name; every path, prefix and message deriv
 OLD_NAME = "cli" "tube"  # the name before ttyplayer, split so the old-name grep guard stays clean
 WINDOWS = sys.platform == "win32"  # the one platform test; modules import it, tests patch theirs
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")  # channel (UC…, 24) and playlist ids are longer
-# yt-dlp's key for a single track of each of youtube.SOURCES; a test keeps the two in step.
+# yt-dlp's key for a single track of each of youtube.YTDLP_SOURCES; a test keeps the two in step.
 TRACK_EXTRACTORS = ("Youtube", "Soundcloud")
 THUMBNAIL_WIDTH = 480  # the widest thumbnail worth fetching for a 10-cell column
 

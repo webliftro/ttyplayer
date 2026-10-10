@@ -18,7 +18,7 @@ import aiohttp
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
-from ttyplayer import control, favorites, lyrics, player, playlists, server, settings, stream, youtube
+from ttyplayer import control, favorites, lyrics, player, playlists, podcasts, server, settings, stream, youtube
 from ttyplayer.models import Video
 
 TOKEN = "secret-token"
@@ -409,6 +409,33 @@ def test_youtube_errors_are_502_in_one_line(monkeypatch, fake):
     assert api(fake, "GET", "/api/search?q=x") == (502, {"error": "no internet"})
 
 
+@pytest.mark.parametrize("method, path, body", [
+    ("GET", "/api/search?q=the+daily", None),
+    ("POST", "/api/play", {"query": "the daily"}),
+    ("POST", "/api/queue", {"query": "the daily"}),
+])
+def test_podcast_errors_are_502_in_one_line(monkeypatch, fake, method, path, body):
+    def fail(*args):
+        raise podcasts.PodcastError("HTTP 403 from itunes.apple.com")
+
+    monkeypatch.setattr(podcasts, "search_shows", fail)
+    assert api(fake, method, path, current(search_source="podcast"), json=body) == (
+        502, {"error": "HTTP 403 from itunes.apple.com"}
+    )
+
+
+def test_search_on_podcast_lists_the_first_shows_newest_episodes(monkeypatch, fake):
+    show = podcasts.Show(name="The Daily", author="NYT", feed_url="https://feeds.example.com/daily", artwork=None, id=1)
+    episode = replace(SONG, source="podcast", link="https://media.example.com/1.mp3")
+    calls = []
+    monkeypatch.setattr(podcasts, "search_shows", lambda query, limit, *opener: calls.append(("shows", query, limit)) or [show])
+    monkeypatch.setattr(podcasts, "episodes", lambda url, limit, *opener: calls.append(("episodes", url, limit)) or [episode])
+    assert api(fake, "GET", "/api/search?q=the+daily", current(search_source="podcast", search_limit=3)) == (
+        200, [page_video(episode)]
+    )
+    assert calls == [("shows", "the daily", 1), ("episodes", "https://feeds.example.com/daily", 3)]
+
+
 def test_search_lists_videos_with_the_search_limit(monkeypatch, fake):
     calls = []
 
@@ -631,6 +658,13 @@ def test_lyrics_off_or_nothing_playing_is_404_without_a_lookup(fake, fetch):
     idle = api(fake, "GET", "/api/lyrics")
     assert off == (404, {"error": "lyrics are off"})
     assert idle == (404, {"error": "nothing is playing"})
+    assert fetch.calls == []
+
+
+def test_lyrics_of_a_podcast_episode_are_none_without_a_lookup(fake, fetch):
+    episode = replace(SONG, source="podcast", link="https://media.example.com/1.mp3")
+    status, body = api(playing(fake, episode), "GET", "/api/lyrics")
+    assert (status, body["synced"], body["plain"]) == (200, None, None)
     assert fetch.calls == []
 
 

@@ -30,11 +30,24 @@ src/ttyplayer/
                related(video_id, limit=10) -> list[Video]: the RD<id> mix (the one place its URL is built),
                the seed dropped; radio mode's source. A mix pages on without end, so yt-dlp reads only its
                first 2 * limit + 1 entries (fetch_playlist(url, end) -> playlistend).
-               SOURCES = ("youtube", "soundcloud") is the one list of search sources (settings checks
-               search_source against it); PREFIXES maps each source's two letters (yt, sc), which are both
-               yt-dlp's search key (ytsearchN:, scsearchN:) and the TUI's sc:/yt: prefix (split_source).
+               SOURCES = ("youtube", "soundcloud", "podcast") is the one list of search sources (settings
+               checks search_source against it); YTDLP_SOURCES the first two, the ones yt-dlp searches.
+               PREFIXES maps each source's two letters (yt, sc, pc), which are the TUI's prefix
+               (split_source) and, for yt-dlp's sources, its search key (ytsearchN:, scsearchN:).
+               search(..., source="podcast") hands off to podcasts.search_shows and returns shows, not
+               videos: the TUI lists them, `search --source podcast` numbers them, and the server and
+               `play --source podcast`, which need videos, take podcasts.latest (the first show's episodes).
                Wraps yt-dlp errors in YouTubeError. Every entry list goes through
                utils.handle_many_entries, so only videos come back (see utils.is_video).
+  podcasts.py  The third source, without yt-dlp: search_shows(query, limit) -> [Show(name, author, feed_url,
+               artwork, id)] from the iTunes Search API (no key); episodes(feed_url, limit) -> [Video] from
+               the show's RSS (xml.etree, which resolves no external entities; the body capped at 5 MB),
+               newest first, items without an audio enclosure skipped; dated_episodes the same with each
+               pubDate; latest(query, limit) -> (show, episodes). An episode is Video(source="podcast",
+               id = sha1(enclosure url)[:11], link = the enclosure URL mpv plays, uploader = the show).
+               urllib, http(s) only, 5 s a request; every failure (a bad URL, a reply of the wrong
+               shape, an unreadable feed) is one line of PodcastError, a 502 on the server. remember/remembered keep
+               the CLI's last show list for `podcast episodes <n>`.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
                handle_control for the control socket; append(videos), the one "add to the end, play if
                idle" path (the server's /api/queue and radio mode use it); radio mode (see below).
@@ -64,10 +77,12 @@ src/ttyplayer/
                find(video_id, title, uploader, duration) adds a disk cache under data_path("lyrics")
                (sha1 of the video id, 0600, through art.store so the 200 most recently used are kept); a
                miss is cached as `none`, a network error is not. The TUI's Lyrics tab calls find(), the
-               `lyrics` command lookup() (it has no video id: status carries none).
+               `lyrics` command lookup() (it has no video id: status carries none). skipped(source) says why
+               a source is never looked up (podcast: talk, not songs); the TUI, the server and the command
+               show that instead of asking LRCLIB.
   models.py    Video dataclass: id, title, uploader, duration, source ("youtube" by default), link (the
                page URL yt-dlp reported, for every other source) and thumbnail (the cover's URL or None). url is the only place that builds a URL:
-               the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title.
+               the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title, "PC " before a podcast episode's.
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                thumbnail_url, the one choice of a cover: the widest thumbnail up to 480 px, else the last,
                else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries,
@@ -166,6 +181,10 @@ Enter in the search box -> spinner on; lookup worker thread: split_source(text, 
                               focus it (or a toast: No videos found / YouTube lookup failed)
 m on the Search table   -> spinner on; the same worker: unseen(resolve(text, shown + search_limit), shown)
                            -> call_from_thread: rows appended, numbered on (or No more results)
+pc: words               -> the same worker, resolve -> youtube.search -> podcasts.search_shows: show rows (#, Show, Author), heading
+                           Podcast results; Enter on one -> load_episodes worker: podcasts.episodes(feed_url)
+                           -> its episodes in the same ResultsTable (opened = the show), heading
+                           Episodes of <show>; Esc / Backspace -> the shows again; m -> more episodes
 Enter / a on a row      -> first use: client_factory(video, on_play=app.on_play,
    (Search, History,                                 on_state=on_player_state), control.serve(...)
     Favorites)             Enter: queue = that row and the rows after it in that table, play_current();

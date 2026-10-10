@@ -4,10 +4,12 @@ from yt_dlp.utils import DownloadError
 from ttyplayer.models import Video
 from ttyplayer.utils import handle_many_entries, video_from_info
 
-SOURCES = ("youtube", "soundcloud")  # where search can look; the search_source setting is one of these
-# Each source's two letters: yt-dlp's search key (ytsearch5:, scsearch5:) and the TUI's yt:/sc: prefix.
-PREFIXES = dict(zip(("yt", "sc"), SOURCES))
-SOURCE_NAMES = dict(zip(SOURCES, ("YouTube", "SoundCloud")))
+YTDLP_SOURCES = ("youtube", "soundcloud")  # the sources yt-dlp searches
+# Where search can look; the search_source setting is one of these. Podcasts come from podcasts.py, not yt-dlp.
+SOURCES = (*YTDLP_SOURCES, "podcast")
+# Each source's two letters: the TUI's yt:/sc:/pc: prefix, and yt-dlp's search key (ytsearch5:, scsearch5:).
+PREFIXES = dict(zip(("yt", "sc", "pc"), SOURCES))
+SOURCE_NAMES = dict(zip(SOURCES, ("YouTube", "SoundCloud", "Podcast")))
 
 
 class _Silent:
@@ -46,7 +48,13 @@ def _clean(message):
     return message.removeprefix("ERROR: ").strip()
 
 
-def search(query, limit=5, source="youtube") -> list[Video]:
+def search(query, limit=5, source="youtube") -> list:
+    """The first limit results for query on source: videos, or on podcast shows (podcasts.Show), whose episodes
+    podcasts.episodes lists."""
+    if source == "podcast":
+        from ttyplayer import podcasts
+
+        return podcasts.search_shows(query, limit)
     info = _extract(f"{search_key(source)}search{limit}:{query}")
     return handle_many_entries(info.get("entries", []))
 

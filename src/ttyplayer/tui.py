@@ -30,7 +30,7 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, youtube
 from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
@@ -43,6 +43,7 @@ LYRICS_OFF_TEXT = "Lyrics are off (show_lyrics)"
 LONG_SEEK_SECONDS = 30
 VIDEO_COLUMNS = ("Title", "Uploader", "Length")
 PLAYLIST_COLUMNS = ("Name", "Tracks", "Length")
+SHOW_COLUMNS = ("Show", "Author")
 NEW_PLAYLIST = "New playlist…"  # … is not allowed in a name, so it can never be a playlist's
 shuffler = random.Random()  # s on an open playlist; tests swap in a seeded one
 
@@ -70,6 +71,16 @@ def resolve(text, limit, source):
     if youtube.is_url(text):
         return youtube.fetch(text)
     return youtube.search(text, limit, source)
+
+
+def lookup_failed(error):
+    """The toast of a failed search or feed: which service failed, then its one line."""
+    service = "Podcast" if isinstance(error, podcasts.PodcastError) else "YouTube"
+    return f"{service} lookup failed: {error}"
+
+
+def results_heading(source):
+    return f"{youtube.SOURCE_NAMES[source]} results"
 
 
 def number_cell(number, playing):
@@ -271,6 +282,9 @@ class LyricsView(VerticalScroll):
         if not self.app.settings.show_lyrics or video is None:
             self.loaded_id = None
             self.show_message(LYRICS_IDLE_TEXT if self.app.settings.show_lyrics else LYRICS_OFF_TEXT)
+        elif reason := lyrics.skipped(video.source):
+            self.loaded_id = None
+            self.show_message(reason)
         elif video.id != self.loaded_id:
             self.loaded_id = video.id
             self.show_message(LYRICS_LOADING_TEXT)
@@ -417,7 +431,43 @@ class PickTable(VideoList):
 
 
 class ResultsTable(PickTable):
-    BINDINGS = [Binding("m", "app.more", "More")]
+    """Tab 1: search results; after a pc: search, the shows found or the episodes of the one opened, in the same table."""
+
+    BINDINGS = [
+        Binding("m", "app.more", "More"),
+        Binding("escape,backspace", "app.close_show", "Back to the shows", show=False),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.shows = []  # the shows of the last podcast search
+        self.opened = None  # the show whose episodes are the rows
+
+    def listing_shows(self):
+        return bool(self.shows) and self.opened is None
+
+    def show_shows(self, shows):
+        """One row per show: #, Show, Author."""
+        self.shows, self.opened, self.videos = list(shows), None, []
+        self.set_columns(SHOW_COLUMNS)
+        self.fill(
+            (number_cell(number, False), Text(show.name), Text(show.author))
+            for number, show in enumerate(self.shows, start=1)
+        )
+
+    def show_videos(self, videos, opened, playing, favorite_ids):
+        """Rows of videos: a search's (the shows forgotten), or the episodes of opened."""
+        self.opened = opened
+        if opened is None:
+            self.shows = []
+        self.show(videos, playing, favorite_ids)
+
+    def show(self, videos, playing, favorite_ids):
+        """Video rows; nothing changes while the rows are shows, which have no ▸ or ♥ to follow."""
+        if self.listing_shows():
+            return
+        self.set_columns(VIDEO_COLUMNS)
+        super().show(videos, playing, favorite_ids)
 
 
 class HistoryTable(PickTable):
@@ -674,7 +724,7 @@ class TtyplayerApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=self.settings.show_clock)
         with Horizontal(id="search-row"):
-            yield SearchBox(placeholder="Search (sc: SoundCloud, yt: YouTube) or paste a link…")
+            yield SearchBox(placeholder="Search (sc: SoundCloud, yt: YouTube, pc: podcasts) or paste a link…")
             yield LoadingIndicator()
         with TabbedContent():
             with TabPane("Search", id="search"):
@@ -722,53 +772,117 @@ class TtyplayerApp(App):
             self.lookup(text)
 
     def action_more(self):
-        """The next batch of the last search, after the rows already shown."""
-        if self.searched is None:
-            return
-        self.set_searching(True)
-        self.lookup(self.searched, self.query_one(ResultsTable).videos)
+        """The next batch of the last search (or of the open show's episodes), after the rows already shown."""
+        table = self.query_one(ResultsTable)
+        if table.opened is not None:
+            self.set_searching(True)
+            self.load_episodes(table.opened, table.videos)
+        elif self.searched is not None:
+            self.set_searching(True)
+            self.lookup(self.searched, table.shows if table.listing_shows() else table.videos)
 
     @work(thread=True, exclusive=True)
     def lookup(self, text, shown=None):
-        """Search for text (a leading sc: or yt: picks the source); with shown, for the results after those (as the CLI's m does)."""
-        videos, error = None, None
+        """Search for text (a leading sc:, yt: or pc: picks the source); with shown, for the results after those
+        (as the CLI's m does). Words on podcast find shows, not videos."""
+        found, error = None, None
         source, query = youtube.split_source(text, self.settings.search_source)
+        find = self.resolve_on(source)
         try:
             limit = self.settings.search_limit
             if shown is None:
-                videos = self.resolve(query, limit, source)
+                found = find(query, limit)
             else:
-                videos = unseen(self.resolve(query, len(shown) + limit, source), shown)
-        except youtube.YouTubeError as caught:
+                found = unseen(find(query, len(shown) + limit), shown)
+        except (youtube.YouTubeError, podcasts.PodcastError) as caught:
             error = caught
         if not get_current_worker().is_cancelled:  # a newer search replaced this one
-            heading = "Search" if youtube.is_url(query) else f"{youtube.SOURCE_NAMES[source]} results"
-            self.call_from_thread(self.search_done, text, videos, error, shown, heading)
+            heading = "Search" if youtube.is_url(query) else results_heading(source)
+            self.call_from_thread(self.search_done, text, found, error, shown, heading)
 
-    def search_done(self, text, videos, error, shown, heading):
+    def resolve_on(self, source):
+        return lambda query, limit: self.resolve(query, limit, source)
+
+    def search_done(self, text, found, error, shown, heading):
         self.set_searching(False)
         if error is not None:
-            self.toast(f"YouTube lookup failed: {error}", severity="error")
-        elif not videos:
+            self.toast(lookup_failed(error), severity="error")
+        elif not found:
             self.toast("No more results" if shown else "No videos found", severity="warning")
         elif shown:
-            self.query_one(ResultsTable).show(shown + videos, self.playing_video(), self.favorite_ids)
+            self.show_found(shown + found, self.query_one(ResultsTable).opened)
         else:
             self.searched = text
             self.query_one(TabbedContent).get_tab("search").label = heading
-            self.show_results(videos)
+            self.show_results(found)
 
-    def show_results(self, videos):
+    def show_found(self, found, opened=None):
+        """Rows of shows, or of videos (the episodes of opened, when it is a show), in the Search tab."""
         table = self.query_one(ResultsTable)
-        table.show(videos, self.playing_video(), self.favorite_ids)
+        if isinstance(found[0], podcasts.Show):
+            table.show_shows(found)
+        else:
+            table.show_videos(found, opened, self.playing_video(), self.favorite_ids)
+
+    def show_results(self, found, opened=None):
+        self.show_found(found, opened)
+        table = self.query_one(ResultsTable)
         table.move_cursor(row=0)
         table.focus()
+
+    # --- podcasts -------------------------------------------------------
+
+    def open_show(self, show):
+        """The show's newest episodes in the Search tab, in place of the shows."""
+        self.set_searching(True)
+        self.load_episodes(show)
+
+    @work(thread=True, exclusive=True)
+    def load_episodes(self, show, shown=None):
+        """The show's newest podcasts.EPISODES episodes; with shown, the ones after those."""
+        episodes, error = None, None
+        try:
+            if shown is None:
+                episodes = podcasts.episodes(show.feed_url, podcasts.EPISODES)
+            else:
+                episodes = unseen(podcasts.episodes(show.feed_url, len(shown) + podcasts.EPISODES), shown)
+        except podcasts.PodcastError as caught:
+            error = caught
+        if not get_current_worker().is_cancelled:
+            self.call_from_thread(self.episodes_done, show, episodes, error, shown)
+
+    def episodes_done(self, show, episodes, error, shown):
+        self.set_searching(False)
+        if error is not None:
+            self.toast(lookup_failed(error), severity="error")
+        elif not episodes:
+            self.toast("No more episodes" if shown else "No episodes in this feed", severity="warning")
+        elif shown:
+            self.show_found(shown + episodes, show)
+        else:
+            self.query_one(TabbedContent).get_tab("search").label = f"Episodes of {show.name}"
+            self.show_results(episodes, show)
+
+    def action_close_show(self):
+        """Back from a show's episodes to the shows, the cursor on the one that was open."""
+        table = self.query_one(ResultsTable)
+        if table.opened is None:
+            return
+        row = table.shows.index(table.opened)
+        table.show_shows(table.shows)
+        table.move_cursor(row=row)
+        self.query_one(TabbedContent).get_tab("search").label = results_heading("podcast")
 
     # --- playing --------------------------------------------------------
 
     @on(DataTable.RowSelected, "PickTable")
     def play_from_row(self, event: DataTable.RowSelected):
-        self.play_queue(event.data_table.videos[event.cursor_row :])
+        """Play from the row picked; on a show's row, open its episodes."""
+        table = event.data_table
+        if isinstance(table, ResultsTable) and table.listing_shows():
+            self.open_show(table.shows[event.cursor_row])
+        else:
+            self.play_queue(table.videos[event.cursor_row :])
 
     def play_queue(self, videos, start=0):
         """The queue becomes videos, playing videos[start]."""

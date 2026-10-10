@@ -12,6 +12,7 @@ ttyplayer play ... --video           open a video window as well
 ttyplayer play ... --limit 10        show more search results
 ttyplayer play ... --source soundcloud   search SoundCloud instead of YouTube
 ttyplayer play ... --radio           when the queue runs out, go on with related tracks
+ttyplayer play --source podcast <words...>   queue the newest episodes of the first podcast found
 
 ttyplayer search <words...>          list results with durations
 ttyplayer search --source soundcloud <words...>   the same, on SoundCloud
@@ -25,6 +26,8 @@ ttyplayer favorites --remove 2       drop the second favorite as listed
 ttyplayer favorites --clear          forget all favorites
 ttyplayer playlist ...               your own named playlists (see Playlists below)
 ttyplayer spotify ...                bring Spotify playlists over, found on YouTube (see Spotify below)
+ttyplayer podcast search <words...>  find podcasts (see Podcasts below)
+ttyplayer podcast episodes <n | feed url> [--limit 10]   a podcast's newest episodes, with dates
 ttyplayer tui [--video]              full-screen: search box, results list, now-playing bar
 ttyplayer serve [--host] [--port]    play headless, driven over HTTP from any device (see Server below)
 ttyplayer serve --stream             the same, but the sound goes to the web remote, not the speakers
@@ -36,6 +39,10 @@ ttyplayer version
 Channels and playlists in search results are skipped; a track that cannot be played is reported and skipped.
 
 Search looks on YouTube or SoundCloud. `--source soundcloud` (on `play`, `search` and `playlist add`) picks SoundCloud for one search; `ttyplayer config set search_source soundcloud` makes it the default everywhere. SoundCloud rows carry an `SC` tag in every list, and history, favorites and playlists keep their SoundCloud link. Links from any site yt-dlp knows play as they are.
+
+### Podcasts
+
+Podcasts are the third source. `ttyplayer podcast search the daily` (or `ttyplayer search --source podcast the daily`) lists the shows Apple's podcast directory finds (the iTunes Search API, no account); `ttyplayer podcast episodes 1` lists the newest episodes of the first one, with their dates (a feed URL works too, and `--limit 25` lists more). `ttyplayer play --source podcast the daily` skips the picking: it says which show it found and queues its newest episodes (`--limit`, 5 by default), newest first. The web remote's search, with `search_source` set to `podcast`, likewise lists the first show's newest episodes. In the TUI, start a search with `pc:` (`pc: lex fridman`): the Search tab lists shows, Enter opens a show's episodes in the same table, Enter plays an episode, and Backspace or Esc goes back to the shows. Episodes come straight from the show's RSS feed and mpv plays the audio file itself, so yt-dlp is not involved. They carry a `PC` tag and are kept in history, favorites and playlists like any track; the cover is the episode's or the show's artwork. Lyrics are not looked up for them, and radio stops after one, as after a SoundCloud track.
 
 While ttyplayer plays in one terminal, any other terminal can drive it:
 
@@ -117,7 +124,7 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, `pc:` for podcasts (see Podcasts above), or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results`, `Podcast results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
@@ -182,7 +189,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
 | `show_art` | `true` | the track's cover in the TUI's now-playing panel (needs the `art` extra; without it nothing changes) |
 | `show_lyrics` | `true` | the TUI's Lyrics tab looks the playing track up on LRCLIB; `false` turns the lookups off |
-| `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
+| `search_source` | `youtube` | where a search looks: `youtube`, `soundcloud` or `podcast`; `--source` and the TUI's `sc:` / `yt:` / `pc:` prefix override it once |
 | `radio` | `false` | a new player goes on with related YouTube tracks when its queue runs out, as `play --radio` does |
 | `normalize_loudness` | `false` | mpv evens out loud and quiet tracks (a `loudnorm` filter to −16 LUFS); the stream of `serve --stream` gets it too |
 | `prefetch` | `true` | mpv buffers the queue's next track while the current one plays and goes on to it with no gap (gapless where the source allows); `false` loads each track only when the last one ends |

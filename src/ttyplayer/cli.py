@@ -20,9 +20,11 @@ playlist_app = typer.Typer()
 app.add_typer(playlist_app, name="playlist")
 spotify_app = typer.Typer()
 app.add_typer(spotify_app, name="spotify")
+podcast_app = typer.Typer()
+app.add_typer(podcast_app, name="podcast")
 
 # play, search and playlist add: where a search looks; empty means the search_source setting.
-SOURCE_OPTION = typer.Option("", "--source", help="Search youtube or soundcloud (default: search_source)")
+SOURCE_OPTION = typer.Option("", "--source", help="Search youtube, soundcloud or podcast (default: search_source)")
 shuffler = random.Random()  # playlist play --shuffle; tests swap in a seeded one
 
 # How to install mpv, per sys.platform prefix; the README's Install section and the
@@ -188,12 +190,16 @@ def play(
 
 @app.command()
 def search(query: list[str], limit: int = 5, source: str = SOURCE_OPTION):
-    """Search YouTube or SoundCloud and list the results"""
+    """Search YouTube, SoundCloud or podcasts and list the results (on podcast, the shows)"""
     from ttyplayer import youtube  # yt-dlp loads on use, so doctor runs without it
 
-    videos = lookup(youtube.search, " ".join(query), limit, search_source(source))
-    exit_if_empty(videos)
-    print_videos(videos)
+    source = search_source(source)
+    found = lookup(youtube.search, " ".join(query), limit, source)
+    if source == "podcast":
+        list_shows(found)
+        return
+    exit_if_empty(found)
+    print_videos(found)
 
 
 @app.command(name="history")
@@ -586,6 +592,54 @@ def on_spotify(func, *args):
         fail(youtube_failed(error))
 
 
+@podcast_app.callback()
+def podcast_group():
+    """Find podcasts and list their episodes (play one with play --source podcast, or in the TUI with pc:)"""
+
+
+@podcast_app.command(name="search")
+def podcast_search(query: list[str], limit: int = 5):
+    """Search for podcasts and list the shows; podcast episodes <number> lists one's episodes"""
+    from ttyplayer import podcasts
+
+    list_shows(lookup(podcasts.search_shows, " ".join(query), limit))
+
+
+def list_shows(shows):
+    """Number the shows and remember them for podcast episodes <number>; a one-line message and exit 1 for none."""
+    from ttyplayer import podcasts
+
+    if not shows:
+        fail("No podcasts found")
+    podcasts.remember(shows)
+    for number, show in enumerate(shows, start=1):
+        typer.echo(f"{number:>2}. {show.name}  {show.author}")
+
+
+@podcast_app.command(name="episodes")
+def podcast_episodes(show: str = typer.Argument(..., help="A feed URL, or a number from the last podcast search"), limit: int = 10):
+    """List a podcast's newest episodes, with their dates"""
+    from ttyplayer import podcasts, youtube
+
+    feed_url = show if youtube.is_url(show) else remembered_feed(show)
+    dated = lookup(podcasts.dated_episodes, feed_url, limit)
+    if not dated:
+        fail("No episodes in that feed")
+    for number, (published, video) in enumerate(dated, start=1):
+        date = published.date().isoformat() if published else "----------"
+        typer.echo(f"{number:>2}. {date}  {video.title}  ({format_time(video.duration)})")
+
+
+def remembered_feed(text):
+    """The feed URL of show number text in the last podcast search; a one-line message and exit 1 for anything else."""
+    from ttyplayer import podcasts
+
+    show = podcasts.remembered(int(text)) if text.isdigit() else None
+    if show is None:
+        fail(f"No show number {text} in the last podcast search (ttyplayer podcast search <words>)")
+    return show.feed_url
+
+
 @app.command()
 def pause():
     """Pause or resume the ttyplayer playing in another terminal"""
@@ -634,6 +688,8 @@ def lyrics_command():
     status = remote("status")
     if status.get("idle") or not status.get("title"):
         fail("Nothing is playing")
+    if reason := lyrics.skipped(status.get("source")):
+        fail(reason)
     artist, track = lyrics.guess(status["title"], status.get("uploader"))
     found = lyrics.lookup(artist, track, status.get("duration"))
     if found is None:
@@ -660,11 +716,23 @@ def resolve(target, limit, source=""):
     if youtube.is_url(target_text):
         return lookup(youtube.fetch, target_text)
     source = search_source(source)
+    if source == "podcast":
+        return latest_episodes(target_text, limit)
 
     def more(shown):
         return unseen(lookup(youtube.search, target_text, len(shown) + limit, source), shown)
 
     return pick_from(lookup(youtube.search, target_text, limit, source), more)
+
+
+def latest_episodes(words, limit):
+    """The newest limit episodes of the first show words find, after a line naming the show."""
+    from ttyplayer import podcasts
+
+    show, videos = lookup(podcasts.latest, words, limit)
+    if show is not None:
+        typer.echo(f"Podcast: {show.name}")
+    return videos
 
 
 def search_source(source):
@@ -753,14 +821,16 @@ def print_videos(videos, start=1):
 
 
 def lookup(func, *args):
-    """Run a youtube.* call, turning its errors into a one-line message and exit 1."""
-    from ttyplayer import youtube
+    """Run a youtube.* or podcasts.* call, turning its errors into a one-line message and exit 1."""
+    from ttyplayer import podcasts, youtube
 
     began = time.monotonic()
     try:
         videos = func(*args)
     except youtube.YouTubeError as error:
         fail(youtube_failed(error))
+    except podcasts.PodcastError as error:
+        fail(f"Podcast lookup failed: {error}")
     if player.timing():
         typer.echo(f"lookup took {time.monotonic() - began:.1f}s", err=True)
     return videos

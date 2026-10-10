@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from ttyplayer import favorites, lyrics, playlists, settings, youtube
+from ttyplayer import favorites, lyrics, playlists, podcasts, settings, youtube
 from ttyplayer.utils import video_from_info
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -211,10 +211,11 @@ def run_command(client, body):
 
 
 async def lookup(func, *args):
-    """func(*args) run on a worker thread (a youtube or lyrics lookup); YouTubeError becomes a 502."""
+    """func(*args) run on a worker thread (a youtube, podcast or lyrics lookup); YouTubeError and PodcastError
+    become a 502."""
     try:
         return await asyncio.get_running_loop().run_in_executor(None, func, *args)
-    except youtube.YouTubeError as error:
+    except (youtube.YouTubeError, podcasts.PodcastError) as error:
         raise ApiError(502, error) from None
 
 
@@ -224,11 +225,19 @@ async def resolve(request, first=False):
     if isinstance(body.get("url"), str):
         videos = await lookup(youtube.fetch, body["url"])
     elif isinstance(body.get("query"), str):
-        videos = await lookup(youtube.search, body["query"], *search_args(request))
+        videos = await lookup(search_videos, body["query"], *search_args(request))
         videos = videos[:1] if first else videos
     else:
         raise ApiError(400, 'the body needs a "url" or a "query"')
     return require_videos(videos)
+
+
+def search_videos(query, limit, source):
+    """youtube.search's videos; on podcast, where it finds shows, the newest limit episodes of the first show (as
+    play --source podcast), since the remote lists and queues videos only."""
+    if source == "podcast":
+        return podcasts.latest(query, limit)[1]
+    return youtube.search(query, limit, source)
 
 
 def search_args(request):
@@ -306,7 +315,7 @@ async def get_search(request):
     query = request.query.get("q", "").strip()
     if not query:
         raise ApiError(400, "search needs ?q=")
-    videos = await lookup(youtube.search, query, *search_args(request))
+    videos = await lookup(search_videos, query, *search_args(request))
     return web.json_response([video_json(video) for video in videos])
 
 
@@ -318,6 +327,8 @@ async def get_lyrics(request):
     video = playing_video(request.app[CLIENT])
     if video is None:
         raise ApiError(404, "nothing is playing")
+    if lyrics.skipped(video.source):
+        return web.json_response(lyrics_json(video, None))
     cache = request.app[LYRICS]
     if video.id not in cache:
         try:

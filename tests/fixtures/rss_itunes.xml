@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>Lex Fridman Podcast</title>
+    <link>https://lexfridman.com/podcast/</link>
+    <itunes:author>Lex Fridman</itunes:author>
+    <itunes:image href="https://lexfridman.com/cover.jpg"/>
+    <item>
+      <title>#400 – Older Episode</title>
+      <pubDate>Mon, 02 Oct 2026 18:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.com/lex/400.mp3" length="123" type="audio/mpeg"/>
+      <itunes:duration>1:02:03</itunes:duration>
+    </item>
+    <item>
+      <title>#402 – Newest Episode</title>
+      <pubDate>Thu, 09 Oct 2026 18:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.com/lex/402.mp3" length="123" type="audio/mpeg"/>
+      <itunes:duration>2:30:00</itunes:duration>
+      <itunes:image href="https://lexfridman.com/402.jpg"/>
+    </item>
+    <item>
+      <title>#401 – Middle Episode</title>
+      <pubDate>Mon, 06 Oct 2026 08:00:00 -0400</pubDate>
+      <enclosure url="https://media.example.com/lex/401.m4a" length="123" type="audio/x-m4a"/>
+      <itunes:duration>45:30</itunes:duration>
+    </item>
+    <item>
+      <title>A video episode</title>
+      <pubDate>Wed, 08 Oct 2026 18:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.com/lex/video.mp4" length="123" type="video/mp4"/>
+    </item>
+    <item>
+      <title>A blog post without an enclosure</title>
+      <pubDate>Wed, 08 Oct 2026 19:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>Seconds only</title>
+      <pubDate>Sun, 01 Oct 2026 18:00:00 +0000</pubDate>
+      <enclosure url="https://media.example.com/lex/short.mp3" length="123" type="audio/mpeg"/>
+      <itunes:duration>3600</itunes:duration>
+    </item>
+  </channel>
+</rss>

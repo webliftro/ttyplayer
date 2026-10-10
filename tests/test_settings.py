@@ -96,7 +96,7 @@ def test_update_with_an_unknown_key_names_the_valid_keys(tmp_path):
         ("seek_seconds", "2.5", "seek_seconds must be a whole number, not '2.5'"),
         ("volume_step", "0", "volume_step must be between 1 and 50, not 0"),
         ("volume_step", "51", "volume_step must be between 1 and 50, not 51"),
-        ("search_source", "bandcamp", "search_source must be one of youtube, soundcloud, not 'bandcamp'"),
+        ("search_source", "bandcamp", "search_source must be one of youtube, soundcloud, podcast, not 'bandcamp'"),
     ],
 )
 def test_update_rejects_a_bad_value_and_saves_nothing(tmp_path, key, value, message):

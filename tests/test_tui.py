@@ -24,7 +24,7 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, remote, settings, tui, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, remote, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -260,7 +260,7 @@ async def test_layout_header_search_tabs_panel_footer(clients, served):
         await pilot.pause()
         assert app.query_one(Header).query("HeaderClock")
         search_box = app.query_one(Input)
-        assert search_box.placeholder == "Search (sc: SoundCloud, yt: YouTube) or paste a link…"
+        assert search_box.placeholder == "Search (sc: SoundCloud, yt: YouTube, pc: podcasts) or paste a link…"
         assert app.focused is search_box
         assert search_box.parent is app.query_one(LoadingIndicator).parent
         tabs = app.query_one(TabbedContent)
@@ -2989,3 +2989,141 @@ async def test_a_new_player_follows_the_prefetch_setting(clients, served):
         await pilot.press("enter")
         await pilot.pause()
         assert clients.made[0].prefetch_asked is False
+
+
+# --- podcasts: the pc: prefix, shows, a show's episodes ---------------------------
+
+SHOWS = [
+    podcasts.Show(name="The Daily", author="The New York Times", feed_url="https://feeds.example.com/daily", artwork=None, id=1),
+    podcasts.Show(name="Lex Fridman Podcast", author="Lex Fridman", feed_url="https://lexfridman.com/feed", artwork=None, id=2),
+]
+EPISODES = [
+    Video(id=f"ep{n:09d}", title=f"Episode {n}", uploader="Lex Fridman Podcast", duration=60 * n, source="podcast",
+          link=f"https://media.example.com/{n}.mp3", thumbnail="https://lexfridman.com/cover.jpg")
+    for n in (3, 2, 1)
+]
+
+
+@pytest.fixture
+def fake_podcasts(monkeypatch):
+    """podcasts.search_shows answers SHOWS and podcasts.episodes EPISODES (or raise .error); both record their calls,
+    as does yt-dlp, which a podcast never reaches. Apps get the real resolve, whose youtube.search finds the shows."""
+    calls = []
+
+    def search_shows(query, limit):
+        calls.append(("search", query, limit))
+        return SHOWS
+
+    def episodes(feed_url, limit):
+        calls.append(("episodes", feed_url, limit))
+        if episodes.error:
+            raise episodes.error
+        return EPISODES[:limit]
+
+    episodes.error = None
+    monkeypatch.setattr(podcasts, "search_shows", search_shows)
+    monkeypatch.setattr(podcasts, "episodes", episodes)
+    monkeypatch.setattr(youtube, "_extract", lambda target, **options: calls.append(("yt-dlp", target)) or {})
+    search_shows.calls = episodes.calls = calls
+    return episodes
+
+
+def column_labels(app):
+    return [str(column.label) for column in app.query_one(tui.ResultsTable).columns.values()]
+
+
+async def settle_workers(pilot):
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+@drive
+async def test_pc_lists_shows_enter_opens_episodes_and_backspace_or_escape_returns(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex fridman")
+        assert search_heading(app) == "Podcast results"
+        assert column_labels(app) == ["#", "Show", "Author"]
+        assert rows(app) == [[" 1", "The Daily", "The New York Times"], [" 2", "Lex Fridman Podcast", "Lex Fridman"]]
+        await pilot.press("down", "enter")
+        await settle_workers(pilot)
+        assert search_heading(app) == "Episodes of Lex Fridman Podcast"
+        assert column_labels(app) == ["#", "Title", "Uploader", "Length"]
+        assert rows(app)[0] == [" 1", "PC Episode 3", "Lex Fridman Podcast", "3:00"]
+        assert fake_podcasts.calls == [("search", "lex fridman", app.settings.search_limit), ("episodes", "https://lexfridman.com/feed", podcasts.EPISODES)]
+        for back in ("backspace", "escape"):
+            await pilot.press(back)
+            await pilot.pause()
+            assert search_heading(app) == "Podcast results"
+            assert rows(app)[1] == [" 2", "Lex Fridman Podcast", "Lex Fridman"]
+            assert app.query_one(tui.ResultsTable).cursor_row == 1  # on the show that was open
+            await pilot.press("enter")
+            await settle_workers(pilot)
+        assert clients.made == []  # opening a show plays nothing
+
+
+@drive
+async def test_enter_on_an_episode_plays_it_a_adds_it_and_f_favourites_it(clients, served, fake_podcasts, find_lyrics):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        client = clients.made[0]
+        assert client.queue == EPISODES[1:]
+        assert client.calls[0] == ("play_current", EPISODES[1].id)
+        await pilot.press("up", "a")
+        await pilot.pause()
+        assert client.queue[-1] == EPISODES[0]
+        await pilot.press("f")
+        await pilot.pause()
+        assert favorites.load() == [EPISODES[0]]
+        assert rows(app)[0][1] == "PC Episode 3" + tui.FAVORITE_MARK
+        await show_lyrics_tab(pilot)
+        assert lyrics_message(app) == "No lyrics for podcasts"
+        assert find_lyrics.calls == []
+
+
+@drive
+async def test_m_on_shows_finds_more_shows_and_on_episodes_more_episodes(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await pilot.press("m")
+        await settle_workers(pilot)
+        assert ("No more results", "warning") in toasts(app)  # the fake has no third show
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        await pilot.press("m")
+        await settle_workers(pilot)
+        assert fake_podcasts.calls[-1] == ("episodes", "https://feeds.example.com/daily", 3 + podcasts.EPISODES)
+        assert len(rows(app)) == 3
+
+
+@drive
+async def test_a_failed_feed_says_podcast_lookup_failed_and_keeps_the_shows(clients, served, fake_podcasts):
+    fake_podcasts.error = podcasts.PodcastError("HTTP 404 from lexfridman.com")
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        assert toasts(app) == [("Podcast lookup failed: HTTP 404 from lexfridman.com", "error")]
+        assert search_heading(app) == "Podcast results"
+        assert column_labels(app) == ["#", "Show", "Author"]
+
+
+@drive
+async def test_a_search_after_the_shows_lists_videos_again(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=lambda text, limit, source: tui.resolve(text, limit, source) if source == "podcast" else VIDEOS)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await search(pilot, "lofi")
+        assert search_heading(app) == "YouTube results"
+        assert column_labels(app) == ["#", "Title", "Uploader", "Length"]
+        assert rows(app)[0] == [" 1", "Alpha", "Ann", "1:01"]
+        await pilot.press("backspace")  # no show is open: nothing to go back to
+        await pilot.pause()
+        assert rows(app)[0] == [" 1", "Alpha", "Ann", "1:01"]

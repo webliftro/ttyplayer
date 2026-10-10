@@ -14,7 +14,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 
 ```
 ┌─ ttyplayer ──────────────────────────────────────────────────────── 14:02 ─┐  Header (clock)
-│ 🔍 Search (sc: SoundCloud, yt: YouTube) or paste a link…           ◐     │  search bar + spinner
+│ 🔍 Search (sc: SoundCloud, yt: YouTube, pc: podcasts) or paste a link…   ◐ │  search bar + spinner
 │ ┌ Search ──┬ Queue ──┬ History ──┬ Favorites ──┬ Playlists ──┬ Lyrics ┐ │  TabbedContent (1–6)
 │ │  #  Title                          Uploader          Length           │  DataTable, zebra,
 │ │ ▸1  lofi hip hop radio             Lofi Girl          --:--           │  row cursor
@@ -33,8 +33,13 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 ```
 
 - The search bar is always visible; `/` focuses it from anywhere, Esc leaves it for the table.
-  A query starting with `sc:` searches SoundCloud, `yt:` YouTube, whatever `search_source` says;
-  after a search the Search tab's heading reads `SoundCloud results` or `YouTube results`.
+  A query starting with `sc:` searches SoundCloud, `yt:` YouTube, `pc:` podcasts, whatever `search_source` says;
+  after a search the Search tab's heading reads `SoundCloud results`, `YouTube results` or `Podcast results`.
+- **Podcasts** drill down in the Search tab, as Playlists do in theirs: `pc:` lists shows (`#`, `Show`,
+  `Author`); Enter opens one's newest episodes in the usual columns (tab title `Episodes of <show>`,
+  each title tagged `PC`), and Esc or Backspace goes back to the shows, the cursor on the one that was
+  open. On an episode Enter, `a`, `f` and `A` work as on any result; `m` lists more shows or more episodes.
+  The Lyrics tab says `No lyrics for podcasts` for an episode.
 - Tabs: **Search** (results), **Queue** (what will play, reorderable), **History**, **Favorites**,
   **Playlists**, **Lyrics**. Digits `1`–`6` switch tabs. Every tab but Lyrics is a `DataTable` with the same columns so the eye never
   re-learns the screen: `#`, `Title`, `Uploader`, `Length`. The row being played shows `▸` in `#`.
@@ -130,7 +135,9 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 | Search · History · Favorites row | `a` | add to the queue (starts playing if the queue was empty) |
 | Search · History · Favorites · Queue row | `A` | add to a playlist: a picker of the playlists plus `New playlist…` (then the name modal) |
 | Search · History · Favorites row | `f` | favorite / unfavorite this row |
-| Search | `m` | more results (the next batch, same dedupe as the CLI's `m`) |
+| Search | `m` | more results (the next batch, same dedupe as the CLI's `m`); more shows or more episodes after `pc:` |
+| Search: podcast show row | Enter | open the show's episodes |
+| Search: a show's episodes | Esc / Backspace | back to the shows |
 | Queue row | Enter | jump to this item |
 | Queue row | `d` | remove from the queue |
 | Queue row | `K` / `J` | move up / down |

@@ -1140,6 +1140,11 @@ class MpvClient:
             return self.queue[self.index].thumbnail
         return None
 
+    def current_source(self):
+        if self.queue:
+            return self.queue[self.index].source
+        return None
+
     def upcoming(self):
         """The queue's track after the current one; None at the end."""
         if self.index + 1 < len(self.queue):
@@ -1169,6 +1174,7 @@ class MpvClient:
             "title": self.current_title(),
             "uploader": self.current_uploader(),
             "thumbnail": self.current_thumbnail(),
+            "source": self.current_source(),
             "position": self.state.get("time-pos"),
             "duration": self.state.get("duration"),
             "paused": bool(self.state.get("pause")),

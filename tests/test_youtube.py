@@ -138,7 +138,7 @@ def test_search_defaults_to_youtube(fake_ydl):
 
 
 def test_search_of_an_unknown_source_names_the_valid_ones(fake_ydl):
-    with pytest.raises(ValueError, match="Unknown source 'bandcamp'; valid sources: youtube, soundcloud"):
+    with pytest.raises(ValueError, match="Unknown source 'bandcamp'; valid sources: youtube, soundcloud, podcast"):
         youtube.search("lofi", 3, source="bandcamp")
     assert fake_ydl.calls == []
 
@@ -229,3 +229,19 @@ def test_related_stops_reading_the_mix_once_it_has_enough(lazy_mix):
 def test_fetch_playlist_still_reads_the_whole_playlist(lazy_mix):
     _, videos = youtube.fetch_playlist(f"https://www.youtube.com/watch?v={SEED}&list=RD{SEED}")
     assert len(videos) == lazy_mix.taken == 100
+
+
+def test_search_on_podcast_finds_shows_without_yt_dlp(fake_ydl, monkeypatch):
+    from ttyplayer import podcasts
+
+    show = podcasts.Show(name="The Daily", author="NYT", feed_url="https://a/feed", artwork=None, id=1)
+    asked = []
+    monkeypatch.setattr(podcasts, "search_shows", lambda query, limit: asked.append((query, limit)) or [show])
+    assert youtube.search("the daily", 4, source="podcast") == [show]
+    assert asked == [("the daily", 4)]
+    assert fake_ydl.calls == []
+
+
+def test_pc_prefix_picks_podcasts():
+    assert youtube.split_source("pc: the daily", "youtube") == ("podcast", "the daily")
+    assert youtube.search_key("podcast") == "pc"

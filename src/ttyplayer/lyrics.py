@@ -33,6 +33,7 @@ NOISE = re.compile(
 BRACKETS = re.compile(r"\s*\[[^\]]*\]")  # [anything] is never part of a track's name
 UPLOADER_NOISE = re.compile(r"\s*-\s*Topic$|\s*VEVO$", re.IGNORECASE)
 TAG = re.compile(r"\[(\d+):(\d{1,2}(?:\.\d+)?)\]")  # [mm:ss] or [mm:ss.xx]
+NO_LYRICS = {"podcast": "No lyrics for podcasts"}  # sources never looked up: talk, not songs; why, to show instead
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,11 @@ def clean_uploader(uploader):
 
 def unquote(text):
     return text.strip().strip("\"'“”").strip()
+
+
+def skipped(source):
+    """Why a track of source has no lyrics without a lookup; None when it is looked up."""
+    return NO_LYRICS.get(source)
 
 
 def name(artist, track):

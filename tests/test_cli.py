@@ -1,4 +1,5 @@
 import dataclasses
+import datetime
 import os
 import random
 import shutil
@@ -12,7 +13,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ttyplayer import art, cli, control, favorites, history, lyrics, player, playlists, settings, spotify, utils, youtube
+from ttyplayer import (
+    art, cli, control, favorites, history, lyrics, player, playlists, podcasts, settings, spotify, utils, youtube,
+)
 from ttyplayer.cli import app
 from ttyplayer.models import Video
 
@@ -585,6 +588,15 @@ def test_lyrics_with_the_player_idle_is_one_line_and_exit_1(reply, monkeypatch):
     result = runner.invoke(app, ["lyrics"])
     assert result.exit_code == 1
     assert result.stderr == "Nothing is playing\n"
+    assert lookup.calls == []
+
+
+def test_lyrics_of_a_podcast_are_not_looked_up(monkeypatch):
+    lookup = fake_lookup(None)
+    monkeypatch.setattr(control, "send", fake_send({**LYRICS_STATUS, "source": "podcast"}))
+    monkeypatch.setattr(lyrics, "lookup", lookup)
+    result = runner.invoke(app, ["lyrics"])
+    assert (result.exit_code, result.stderr) == (1, "No lyrics for podcasts\n")
     assert lookup.calls == []
 
 
@@ -1786,5 +1798,125 @@ def test_an_unknown_source_is_one_line_and_exit_1(monkeypatch, tmp_path):
     sources = recording_search(monkeypatch, ONE_VIDEO)
     result = runner.invoke(app, ["search", "--source", "bandcamp", "boards"])
     assert result.exit_code == 1
-    assert result.stderr == "Unknown source 'bandcamp'; valid sources: youtube, soundcloud\n"
+    assert result.stderr == "Unknown source 'bandcamp'; valid sources: youtube, soundcloud, podcast\n"
     assert sources == []
+
+
+# --- podcasts --------------------------------------------------------------------
+
+SHOWS = [
+    podcasts.Show(name="The Daily", author="The New York Times", feed_url="https://feeds.example.com/daily", artwork=None, id=1),
+    podcasts.Show(name="Lex Fridman Podcast", author="Lex Fridman", feed_url="https://lexfridman.com/feed", artwork=None, id=2),
+]
+
+
+def episode(number):
+    return Video(id=f"{number:011d}", title=f"Episode {number}", uploader="The Daily", duration=60 * number,
+                 source="podcast", link=f"https://media.example.com/{number}.mp3")
+
+
+def test_podcast_search_lists_numbered_shows_and_remembers_them(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    asked = []
+    monkeypatch.setattr(podcasts, "search_shows", lambda query, limit: asked.append((query, limit)) or SHOWS)
+    result = runner.invoke(app, ["podcast", "search", "the", "daily", "--limit", "2"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == " 1. The Daily  The New York Times\n 2. Lex Fridman Podcast  Lex Fridman\n"
+    assert asked == [("the daily", 2)]
+    assert podcasts.remembered(2) == SHOWS[1]
+
+
+def test_search_source_podcast_lists_numbered_shows_and_remembers_them(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    asked = []
+    monkeypatch.setattr(podcasts, "search_shows", lambda query, limit: asked.append((query, limit)) or SHOWS)
+    result = runner.invoke(app, ["search", "--source", "podcast", "--limit", "2", "the", "daily"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == " 1. The Daily  The New York Times\n 2. Lex Fridman Podcast  Lex Fridman\n"
+    assert asked == [("the daily", 2)]
+    assert podcasts.remembered(1) == SHOWS[0]
+
+
+def test_search_source_podcast_without_a_show_or_failing_is_one_line(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(podcasts, "search_shows", lambda query, limit: [])
+    result = runner.invoke(app, ["search", "--source", "podcast", "zzz"])
+    assert (result.exit_code, result.stderr) == (1, "No podcasts found\n")
+
+    def fail(query, limit):
+        raise podcasts.PodcastError("HTTP 403 from itunes.apple.com")
+
+    monkeypatch.setattr(podcasts, "search_shows", fail)
+    result = runner.invoke(app, ["search", "--source", "podcast", "zzz"])
+    assert (result.exit_code, result.stderr) == (1, "Podcast lookup failed: HTTP 403 from itunes.apple.com\n")
+
+
+def test_podcast_search_without_a_show_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(podcasts, "search_shows", lambda query, limit: [])
+    result = runner.invoke(app, ["podcast", "search", "zzz"])
+    assert (result.exit_code, result.stderr) == (1, "No podcasts found\n")
+
+
+def test_podcast_errors_are_one_line(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+
+    def fail(*args):
+        raise podcasts.PodcastError("HTTP 403 from itunes.apple.com")
+
+    monkeypatch.setattr(podcasts, "search_shows", fail)
+    result = runner.invoke(app, ["podcast", "search", "x"])
+    assert (result.exit_code, result.stderr) == (1, "Podcast lookup failed: HTTP 403 from itunes.apple.com\n")
+
+
+DATED = [(datetime.datetime(2026, 10, 9, 18, tzinfo=datetime.timezone.utc), episode(2)), (None, episode(1))]
+
+
+@pytest.mark.parametrize("show, feed", [("https://feeds.example.com/daily", "https://feeds.example.com/daily"), ("2", "https://lexfridman.com/feed")])
+def test_podcast_episodes_of_a_feed_or_a_search_number_lists_dated_episodes(show, feed, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    podcasts.remember(SHOWS)
+    asked = []
+    monkeypatch.setattr(podcasts, "dated_episodes", lambda url, limit: asked.append((url, limit)) or DATED)
+    result = runner.invoke(app, ["podcast", "episodes", show])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == " 1. 2026-10-09  Episode 2  (2:00)\n 2. ----------  Episode 1  (1:00)\n"
+    assert asked == [(feed, 10)]
+
+
+def test_podcast_episodes_takes_a_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    asked = []
+    monkeypatch.setattr(podcasts, "dated_episodes", lambda url, limit: asked.append(limit) or DATED)
+    assert runner.invoke(app, ["podcast", "episodes", "https://a.example/feed", "--limit", "3"]).exit_code == 0
+    assert asked == [3]
+
+
+@pytest.mark.parametrize("show", ["7", "daily"])
+def test_podcast_episodes_of_an_unknown_number_fails(show, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    podcasts.remember(SHOWS)
+    result = runner.invoke(app, ["podcast", "episodes", show])
+    assert result.exit_code == 1
+    assert result.stderr.startswith(f"No show number {show} in the last podcast search")
+
+
+def test_play_source_podcast_queues_the_first_shows_latest_episodes(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(history, "history_path", lambda: tmp_path / "h.jsonl")
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    asked = []
+    monkeypatch.setattr(podcasts, "latest", lambda words, limit: asked.append((words, limit)) or (SHOWS[0], [episode(2), episode(1)]))
+    FakeClient.instances = []
+    result = runner.invoke(app, ["play", "--source", "podcast", "--limit", "2", "the", "daily"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "Podcast: The Daily\n"  # no picking: the episodes are queued
+    assert asked == [("the daily", 2)]
+    assert FakeClient.instances[0].queue == [episode(2), episode(1)]
+
+
+def test_play_source_podcast_without_a_show_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(podcasts, "latest", lambda words, limit: (None, []))
+    result = runner.invoke(app, ["play", "--source", "podcast", "zzz"])
+    assert (result.exit_code, result.stderr) == (1, "No videos found\n")

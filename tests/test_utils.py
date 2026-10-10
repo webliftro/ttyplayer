@@ -204,10 +204,10 @@ def test_handle_many_entries_of_a_soundcloud_search_drops_sets_and_users():
     assert [v.id for v in utils.handle_many_entries([user, SC_SEARCH_ENTRY, sound_set])] == ["1234567"]
 
 
-def test_track_extractors_are_the_search_sources():
+def test_track_extractors_are_the_yt_dlp_sources():
     from ttyplayer import youtube
 
-    assert tuple(key.lower() for key in utils.TRACK_EXTRACTORS) == youtube.SOURCES
+    assert tuple(key.lower() for key in utils.TRACK_EXTRACTORS) == youtube.YTDLP_SOURCES
 
 
 def test_a_stored_entry_round_trips_its_source_and_link():
