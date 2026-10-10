@@ -151,12 +151,13 @@ class RemoteClient:
         return self.command("move", [source, target])
 
     def handle_control(self, name):
-        """The control socket's player commands, done on the server; sleep's reply says how the timer stands."""
+        """The control socket's player commands, done on the server; sleep's and radio's replies say how they stand."""
         command, _, text = name.partition(" ")
-        if command == server.SLEEP_COMMAND:
+        if command in server.TEXT_COMMANDS:
             if not self.command(command, text.strip()):
                 return control.failure(f"{command} failed on the server")
-            return control.ok(message=player.sleep_message((self.last_status or {}).get("sleep")))
+            message = player.sleep_message if command == "sleep" else player.radio_message
+            return control.ok(message=message((self.last_status or {}).get(command)))
         if name not in server.CONTROL_COMMANDS:
             return control.failure(f"unknown command {name}")
         return control.ok() if self.command(name) else control.failure(f"{name} failed on the server")
@@ -284,7 +285,8 @@ class RemoteApp(tui.TtyplayerApp):
         self.token = token
         self.sub_title = f"remote: {urlsplit(url).netloc or url}"
 
-    def connect(self, video=False, on_play=None, on_state=None, levels=True):
+    def connect(self, video=False, on_play=None, on_state=None, levels=True, radio=False):
+        """A RemoteClient; levels and radio are the server's own settings there."""
         return RemoteClient(self.url, self.token, on_play=on_play, on_state=on_state, on_error=self.server_error)
 
     def on_mount(self):

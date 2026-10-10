@@ -18,10 +18,11 @@ def test_settings_fields_and_defaults():
         ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10),
         ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
         ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True), ("search_source", "youtube"),
+        ("radio", False),
     ]
     assert settings.KEYS == [
         "show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url", "stream_enabled",
-        "spotify_client_id", "show_levels", "search_source",
+        "spotify_client_id", "show_levels", "search_source", "radio",
     ]
 
 

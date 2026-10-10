@@ -15,9 +15,9 @@ import threading
 import time
 from dataclasses import asdict
 
-from ttyplayer import control
+from ttyplayer import control, history
 from ttyplayer.models import Video
-from ttyplayer.utils import APP_NAME, WINDOWS, format_time
+from ttyplayer.utils import APP_NAME, WINDOWS, format_time, unseen
 
 if WINDOWS:
     import msvcrt
@@ -45,6 +45,12 @@ SLEEP_FADE_SECONDS = 5  # how long the sleep timer takes to fade the volume out
 SLEEP_FADE_STEPS = 10  # volume steps in that fade
 SLEEP_FORMS = "30m, 1h, 1h30m, 90 (seconds), end or off"
 SLEEP_PATTERN = re.compile(r"(\d+)|(?:(\d+)h)?(?:(\d+)m)?", re.ASCII)  # seconds, or hours and/or minutes
+RADIO_BATCH = 5  # related tracks the radio appends each time the queue runs out
+RADIO_HISTORY = 50  # recent plays the radio does not play again
+RADIO_SWITCHES = {"on": True, "off": False}  # `radio on|off`; toggle flips it
+RADIO_FORMS = "on, off or toggle"
+RADIO_MARK = "∞"
+RADIO_NEEDS_YOUTUBE = "Radio needs a YouTube track to go on from"
 
 # What each key does, by the key's name: the character typed, or the arrow's direction.
 KEYS = {
@@ -164,6 +170,31 @@ def sleep_message(sleep):
     return "Sleeping after this track" if left == "end" else f"Sleeping in {left}"
 
 
+def radio_text(radio):
+    """∞ (∞ fetching… while the radio looks up tracks) for status()["radio"]; "" while it is off."""
+    if radio == "fetching":
+        return f"{RADIO_MARK} fetching…"
+    return RADIO_MARK if radio else ""
+
+
+def radio_message(radio):
+    """The `ttyplayer radio` reply for status()["radio"]."""
+    if radio == "fetching":
+        return "Radio on, fetching related tracks"
+    return "Radio on" if radio else "Radio off"
+
+
+def related_tracks(video_id):
+    """youtube.related, imported on use: yt-dlp loads only when the radio needs it."""
+    from ttyplayer import youtube
+
+    return youtube.related(video_id)
+
+
+def recent_plays():
+    return history.load(limit=RADIO_HISTORY)
+
+
 def macos():
     return sys.platform == "darwin"
 
@@ -200,6 +231,8 @@ def status_line(status):
     state = "Paused" if status["paused"] else "Playing"
     if sleep := sleep_text(status.get("sleep")):
         state += f"  {sleep}"
+    if radio := radio_text(status.get("radio")):
+        state += f"  {radio}"
     volume = volume_meter(status["volume"], status["muted"])
     # The meter goes before the title, so a narrow terminal cuts the title, not the meter.
     line = f"{position} / {duration}  {state}  {volume}  {status['title']}"
@@ -335,10 +368,15 @@ class MpvClient:
     sleep_ends_at = None  # epoch time that timer fires at
     sleep_after_track = False  # `sleep end`: stop when the current track ends
     sleep_cancelled = None  # that timer's Event, set by the next sleep() or quit(): its fade stops and restores the volume
+    radio = False  # at the end of the queue, go on with tracks related to the last one
+    radio_fetching = False  # a radio lookup runs on its own thread; any track that starts meanwhile ends the wait
+    radio_worker = None  # that thread, the last one started: only its result is still wanted
     timer = threading.Timer  # tests swap in fakes for both
+    related = staticmethod(related_tracks)  # (video_id) -> [Video]; the radio's lookup, run off the reader thread
+    recent = staticmethod(recent_plays)  # () -> [Video] the radio skips
     fade_wait = staticmethod(threading.Event.wait)  # (cancelled, seconds): a step's pause, cut short by a cancel
 
-    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True):
+    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True, radio=False):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
         self.on_play = on_play
@@ -346,6 +384,7 @@ class MpvClient:
         # the terminal itself.
         self.on_state = on_state
         self.pcm = pcm
+        self.radio = radio
         self.headless_pcm = pcm is not None
         self.show_levels = levels and not self.headless_pcm
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
@@ -559,6 +598,7 @@ class MpvClient:
     # --- lifecycle ------------------------------------------------------
 
     def quit(self):
+        self.radio = False  # a lookup still running drops what it finds
         self._disarm_sleep()
         with self.fade_lock:  # a fade, even of a cancelled timer, restores the volume before mpv goes
             pass
@@ -639,6 +679,8 @@ class MpvClient:
             interrupt_main()  # run()'s Ctrl-C path quits and restores the terminal
         elif name.partition(" ")[0] == "sleep":
             return self.sleep_control(name.removeprefix("sleep").strip())
+        elif name.partition(" ")[0] == "radio":
+            return self.radio_control(name.removeprefix("radio").strip())
         elif name == "status":
             return control.ok(**self.status())
         elif name == "queue":
@@ -655,6 +697,67 @@ class MpvClient:
             except ValueError as error:
                 return control.failure(str(error))
         return control.ok(message=sleep_message(self.sleep_status()))
+
+    def radio_control(self, text):
+        """`radio on|off|toggle`, or with no text leave it; the reply's message says how it stands."""
+        if text == "toggle":
+            self.set_radio(not self.radio)
+        elif text in RADIO_SWITCHES:
+            self.set_radio(RADIO_SWITCHES[text])
+        elif text:
+            return control.failure(f"Radio takes {RADIO_FORMS}, not {text!r}")
+        return control.ok(message=radio_message(self.radio_status()))
+
+    # --- radio ------------------------------------------------------------
+
+    def set_radio(self, on):
+        """Turn the radio on or off; off during a lookup, the player goes idle at once."""
+        self._edit(self._set_radio, on)
+
+    def _set_radio(self, on):
+        self.radio = on
+        if not on and self.radio_fetching:
+            self.radio_fetching = False
+            self.idle = True
+        return True
+
+    def radio_status(self):
+        return "fetching" if self.radio_fetching else self.radio
+
+    def _start_radio(self):
+        """At the end of the queue with the radio on: look up what follows the last track, on a worker thread."""
+        seed = self.queue[self.index] if self.queue else None
+        if not (self.radio and seed):
+            return False
+        if seed.source != "youtube":
+            self.error = RADIO_NEEDS_YOUTUBE
+            return False
+        self.radio_fetching = True
+        self.radio_worker = threading.Thread(target=self._fetch_radio, args=(seed,), daemon=True)
+        self.radio_worker.start()
+        return True
+
+    def _fetch_radio(self, seed):
+        """The worker: hand the first RADIO_BATCH unplayed related tracks to append(), as a remote queue does."""
+        from ttyplayer.youtube import YouTubeError
+
+        try:
+            videos, failed = self.related(seed.id), None
+        except YouTubeError as error:
+            videos, failed = [], str(error)
+        shown = self.recent()
+        with self.queue_lock:
+            if not (self.radio and self.radio_fetching and self.radio_worker is threading.current_thread()):
+                return  # turned off, quit, something else started playing, or a newer lookup took over meanwhile
+            self.radio_fetching = False
+            self.idle = True
+            fresh = unseen(videos, shown + self.queue)[:RADIO_BATCH]
+            if not fresh:
+                self.error = f"Radio: {failed or 'no related tracks to play'}"
+        if fresh:
+            self.append(fresh)
+        else:
+            self.notify()
 
     # --- sleep timer ------------------------------------------------------
 
@@ -727,6 +830,16 @@ class MpvClient:
     def add(self, video: Video):
         self.queue.append(video)
 
+    def append(self, videos):
+        """Add videos to the end of the queue; when nothing plays, play the first of them."""
+        with self.queue_lock:
+            first = len(self.queue)
+            self.queue.extend(videos)
+        if self.idle:
+            self.jump(first)
+        else:
+            self.notify()  # the UIs' queue follows
+
     def load(self, url):
         self.send(["loadfile", url])
 
@@ -780,6 +893,7 @@ class MpvClient:
         self.index = index
         video = self.queue[index]
         self.idle = False
+        self.radio_fetching = False
         self.started_in = None
         self.loaded_at = time.monotonic()
         self.load(video.url)
@@ -796,7 +910,8 @@ class MpvClient:
         return self._next_or_idle()
 
     def _next_or_idle(self):
-        if not self._play_index(self.index + 1):
+        """Play the next track; past the last one the radio looks for more, else the player goes idle."""
+        if not (self._play_index(self.index + 1) or self._start_radio()):
             self.idle = True
         return True
 
@@ -896,6 +1011,7 @@ class MpvClient:
             "stream": self.headless_pcm,
             "levels": self.levels,
             "sleep": self.sleep_status(),
+            "radio": self.radio_status(),
         }
 
     def notify(self):

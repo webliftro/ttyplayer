@@ -26,14 +26,18 @@ src/ttyplayer/
   remote.py    ttyplayer tui --remote: RemoteClient answers TtyplayerApp's MpvClient calls over the
                server's /api/* (urllib) and mirrors /ws (aiohttp, own thread); RemoteApp is the TUI
                with it as the player and no control socket.
-  youtube.py   is_url, search(query, limit, source), fetch -> list[Video], fetch_playlist -> (title, list[Video]).
+  youtube.py   is_url, search(query, limit, source), fetch -> list[Video], fetch_playlist -> (title, list[Video]),
+               related(video_id, limit=10) -> list[Video]: the RD<id> mix (the one place its URL is built),
+               the seed dropped; radio mode's source. A mix pages on without end, so yt-dlp reads only its
+               first 2 * limit + 1 entries (fetch_playlist(url, end) -> playlistend).
                SOURCES = ("youtube", "soundcloud") is the one list of search sources (settings checks
                search_source against it); PREFIXES maps each source's two letters (yt, sc), which are both
                yt-dlp's search key (ytsearchN:, scsearchN:) and the TUI's sc:/yt: prefix (split_source).
                Wraps yt-dlp errors in YouTubeError. Every entry list goes through
                utils.handle_many_entries, so only videos come back (see utils.is_video).
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
-               handle_control for the control socket.
+               handle_control for the control socket; append(videos), the one "add to the end, play if
+               idle" path (the server's /api/queue and radio mode use it); radio mode (see below).
   control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
   history.py   JSON lines record of what was played; load() newest first, one per video.
   favorites.py JSON lines list the user curates; add() dedupes by id, remove(n) by listed position,
@@ -42,7 +46,7 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source), settings_path, load, save,
+               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
@@ -98,10 +102,30 @@ key loop (main thread)         listener thread
   seek/change_volume/            handle_message(message):
   toggle_pause -> send()           property-change -> state, notify()
                                    playback-restart -> started_in (first one after loadfile)
-                                   end-file eof    -> next(), or notify() at the end
+                                   end-file eof    -> next(), or at the end radio (below) or idle, notify()
                                    end-file error  -> error = "Could not play <title>: <file_error>",
                                                       then as eof
                                  notify(): on_state(status()) if set, else render()
+```
+
+## Radio mode
+
+`MpvClient.radio` (the `radio` setting, `play --radio`, or `radio on|off|toggle` on the control
+channel at run time) decides what happens when the queue runs out. `_next_or_idle()`, the branch an
+eof or a failed load takes past the last track, calls `_start_radio()` under `queue_lock`:
+
+```
+radio off, or empty queue      -> idle, as before
+last track not from youtube    -> error = RADIO_NEEDS_YOUTUBE, idle
+else                           -> radio_fetching = True (status()["radio"] == "fetching"; idle stays False,
+                                  so the bars keep the last track), a worker thread runs _fetch_radio(seed)
+_fetch_radio (worker thread)   -> youtube.related(seed.id) (never on the reader thread), history.load(50)
+                                  -> under queue_lock: dropped if the radio was turned off, quit() ran or
+                                     a track started meanwhile (_play_index clears radio_fetching), or a
+                                     newer lookup took over (radio_worker is no longer this thread);
+                                     else unseen(related, recent + queue)[:RADIO_BATCH]
+                                  -> append(fresh): the path /api/queue takes (idle -> jump to the first)
+                                  -> nothing fresh or YouTubeError: error = "Radio: …", idle, notify()
 ```
 
 ## TUI

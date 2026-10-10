@@ -100,8 +100,9 @@ class FakeClient:
 
     instances = []
 
-    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True):
+    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True, radio=False):
         self.video = video
+        self.radio = radio
         self.pcm = pcm
         self.headless_pcm = pcm is not None
         self.levels = levels
@@ -129,6 +130,26 @@ def test_start_mpv_follows_the_show_levels_setting(saved, levels, monkeypatch, t
         settings.update("show_levels", saved)
     monkeypatch.setattr(player, "MpvClient", FakeClient)
     assert cli.start_mpv(False).levels is levels
+
+
+@pytest.mark.parametrize("saved, flag, radio", [(None, False, False), (None, True, True), ("true", False, True)])
+def test_start_mpv_turns_the_radio_on_with_the_flag_or_the_radio_setting(saved, flag, radio, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    if saved:
+        settings.update("radio", saved)
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    assert cli.start_mpv(False, radio=flag).radio is radio
+
+
+def test_play_radio_starts_the_player_with_the_radio_on(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(youtube, "fetch", lambda url: [Video(id="a" * 11, title="Song", uploader="u", duration=1)])
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    monkeypatch.setattr(history, "history_path", lambda: tmp_path / "h.jsonl")
+    FakeClient.instances = []
+    assert runner.invoke(app, ["play", "--radio", "https://youtu.be/x"]).exit_code == 0
+    assert runner.invoke(app, ["play", "https://youtu.be/x"]).exit_code == 0
+    assert [client.radio for client in FakeClient.instances] == [True, False]
 
 
 def test_play_queues_the_picks_in_order_and_records_history(monkeypatch, tmp_path):
@@ -534,6 +555,24 @@ def test_sleep_reaches_the_players_sleep(monkeypatch):
     assert calls == ["end"]
 
 
+@pytest.mark.parametrize("args, sent", [(["radio"], "radio"), (["radio", "on"], "radio on"), (["radio", "off"], "radio off")])
+def test_radio_sends_its_state_and_prints_the_players_line(args, sent, monkeypatch):
+    send = fake_send({"ok": True, "message": "Radio on"})
+    monkeypatch.setattr(control, "send", send)
+    result = runner.invoke(app, args)
+    assert (result.exit_code, result.output) == (0, "Radio on\n")
+    assert send.names == [sent]
+
+
+def test_radio_reaches_the_players_radio(monkeypatch):
+    fake_player = player.MpvClient.__new__(player.MpvClient)  # no mpv; set_radio() only records
+    calls = []
+    fake_player.set_radio = calls.append
+    monkeypatch.setattr(control, "send", lambda name, path=None: fake_player.handle_control(name))
+    assert runner.invoke(app, ["radio", "on"]).exit_code == 0
+    assert calls == [True]
+
+
 def test_status_shows_the_sleep_timer(monkeypatch):
     monkeypatch.setattr(player.time, "time", lambda: 1000.0)
     reply = {**STATUS, "index": 1, "total": 1, "sleep": {"ends_at": 1600.0}}
@@ -653,10 +692,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):

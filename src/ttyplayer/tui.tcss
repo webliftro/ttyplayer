@@ -101,7 +101,7 @@ NowPlaying.-no-levels .np-level {
     width: auto;
 }
 
-#np-sleep {
+#np-sleep, #np-radio {
     width: auto;
     padding-left: 2;
 }

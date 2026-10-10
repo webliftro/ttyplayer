@@ -24,16 +24,16 @@ SECRET_KEY = "server_token"  # the one setting the API never shows nor changes
 SHUTDOWN_TIMEOUT = 1  # seconds aiohttp waits for open requests when the server stops
 TOKEN_BYTES = 24
 
-# The /api/command and /ws command names: handle_control's own (sleep with its text, "30m"), then MpvClient methods
-# taking a number, a 0-based queue row, two rows, or nothing. COMMANDS is all of them, as /api/commands lists them.
+# The /api/command and /ws command names: handle_control's own (sleep and radio with their text, "30m", "on"), then
+# MpvClient methods taking a number, a 0-based queue row, two rows, or nothing. COMMANDS is all of them, as /api/commands lists them.
 CONTROL_COMMANDS = {"pause", "next", "prev", "stop", "mute"}
-SLEEP_COMMAND = "sleep"
+TEXT_COMMANDS = {"sleep": '"30m", "end" or "off"', "radio": '"on", "off" or "toggle"'}  # name -> example values
 VALUE_COMMANDS = {"seek": "seek", "volume": "change_volume"}  # name -> MpvClient method
 ROW_COMMANDS = {"jump": "jump", "remove": "remove"}
 PAIR_COMMANDS = {"move": "move"}  # [source, target]
 PLAIN_COMMANDS = {"clear_others": "clear_others"}
 COMMANDS = sorted(
-    CONTROL_COMMANDS | {SLEEP_COMMAND} | VALUE_COMMANDS.keys() | ROW_COMMANDS.keys() | PAIR_COMMANDS.keys() | PLAIN_COMMANDS.keys()
+    CONTROL_COMMANDS | TEXT_COMMANDS.keys() | VALUE_COMMANDS.keys() | ROW_COMMANDS.keys() | PAIR_COMMANDS.keys() | PLAIN_COMMANDS.keys()
 )
 
 
@@ -184,9 +184,9 @@ def run_command(client, body):
     value = body.get("value")
     if name in CONTROL_COMMANDS:
         client.handle_control(name)
-    elif name == SLEEP_COMMAND:
+    elif name in TEXT_COMMANDS:
         if not isinstance(value, str):
-            raise ApiError(400, f'{name} needs a text value, like "30m", "end" or "off"')
+            raise ApiError(400, f"{name} needs a text value, like {TEXT_COMMANDS[name]}")
         reply = client.handle_control(f"{name} {value}")
         if not reply["ok"]:
             raise ApiError(400, reply["error"])
@@ -250,17 +250,6 @@ def play_videos(client, videos):
     client.play_current()
 
 
-def append_videos(client, videos):
-    """Add videos to the end of the queue; when nothing plays, play the first of them."""
-    with client.queue_lock:
-        first = len(client.queue)
-        client.queue.extend(videos)
-    if client.idle:
-        client.jump(first)
-    else:
-        client.notify()  # the remotes' queue follows
-
-
 def live_settings(request):
     return request.app[SETTINGS]["current"]
 
@@ -307,7 +296,7 @@ async def post_play(request):
 @routes.post("/api/queue")
 async def post_queue(request):
     client = request.app[CLIENT]
-    append_videos(client, await resolve(request))
+    client.append(await resolve(request))
     return web.json_response(full_status(client))
 
 

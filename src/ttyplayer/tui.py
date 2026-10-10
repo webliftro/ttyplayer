@@ -57,6 +57,7 @@ COMMANDS = [
     ("Previous", "prev", "Play the previous track in the queue"),
     ("Mute", "toggle_mute", "Mute or unmute"),
     ("Sleep…", "sleep", f"Stop after a while or at the track's end: {player.SLEEP_FORMS}"),
+    ("Radio", "radio", "Turn radio on or off: related tracks follow when the queue runs out"),
 ]
 SLEEP_PREFILL = "30m"
 
@@ -141,6 +142,7 @@ class NowPlaying(Vertical):
         with Horizontal(classes="np-line"):
             yield Static(id="np-volume")
             yield Static(id="np-sleep")
+            yield Static(id="np-radio")
             yield Static(id="np-next", markup=False)
             yield Static(id="np-timing")
         yield LevelMeter("L", id="np-level-left", classes="np-level")
@@ -168,6 +170,7 @@ class NowPlaying(Vertical):
         )
         self.query_one("#np-volume", Static).update(player.volume_meter(status["volume"], status["muted"]))
         self.query_one("#np-sleep", Static).update(player.sleep_text(status.get("sleep")))
+        self.query_one("#np-radio", Static).update(player.radio_text(status.get("radio")))
         self.query_one("#np-next", Static).update(queue_text(status))
         self.query_one("#np-timing", Static).update(timing_text(status))
 
@@ -472,6 +475,7 @@ class TtyplayerApp(App):
         Binding("P", "save_queue", "Save queue"),
         Binding("t", "next_theme", "Next theme", show=False),
         Binding("S", "settings", "Settings"),
+        Binding("R", "radio", "Radio"),
         # Not a priority binding: the search box must be able to take a typed q.
         Binding("q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
@@ -624,7 +628,11 @@ class TtyplayerApp(App):
             return self.client
         try:
             self.client = self.client_factory(
-                self.video, on_play=self.on_play, on_state=self.on_player_state, levels=self.settings.show_levels
+                self.video,
+                on_play=self.on_play,
+                on_state=self.on_player_state,
+                levels=self.settings.show_levels,
+                radio=self.settings.radio,
             )
         except FileNotFoundError:
             self.toast("mpv is not installed. Install it with: brew install mpv", severity="error")
@@ -962,6 +970,14 @@ class TtyplayerApp(App):
                 self.toast(replies[-1], severity="information")
 
         self.push_screen(NameScreen("Sleep timer", SLEEP_PREFILL, arm, placeholder=player.SLEEP_FORMS), armed)
+
+    def action_radio(self):
+        """Radio: turn it on or off in the player (started for it if need be); a toast says how it stands."""
+        client = self.ensure_client()
+        if client is None:
+            return
+        reply = client.handle_control("radio toggle")
+        self.toast(reply["message"] if reply["ok"] else reply["error"], severity="information" if reply["ok"] else "error")
 
     def action_next_theme(self):
         themes = sorted(self.available_themes)

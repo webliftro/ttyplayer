@@ -87,6 +87,8 @@ class FakeClient:
     def notify(self):
         self.calls.append("notify")
 
+    append = player.MpvClient.append  # the real one, over this fake's queue, jump() and notify()
+
 
 @pytest.fixture
 def fake():
@@ -258,6 +260,25 @@ def test_status_json_carries_the_sleep_timer(fake):
     assert api(fake, "GET", "/api/status")[1]["sleep"] == {"after": "track"}
 
 
+@pytest.mark.parametrize("value, sent", [("on", "radio on"), ("toggle", "radio toggle"), ("", "radio ")])
+def test_radio_hands_its_text_to_handle_control(fake, value, sent):
+    status, body = api(fake, "POST", "/api/command", json={"name": "radio", "value": value})
+    assert status == 200
+    assert fake.calls == [sent]
+    assert body == server.full_status(fake)
+
+
+def test_radio_needs_a_text_value(fake):
+    status, reply = api(fake, "POST", "/api/command", json={"name": "radio", "value": True})
+    assert (status, reply) == (400, {"error": 'radio needs a text value, like "on", "off" or "toggle"'})
+    assert "radio" in server.COMMANDS
+
+
+def test_status_json_carries_the_radio(fake):
+    fake.status = lambda: {"index": 1, "idle": False, "radio": "fetching"}
+    assert api(fake, "GET", "/api/status")[1]["radio"] == "fetching"
+
+
 def test_clear_others_keeps_only_the_current_track(fake):
     status, body = api(fake, "POST", "/api/command", json={"name": "clear_others"})
     assert status == 200
@@ -270,7 +291,7 @@ def test_commands_lists_the_command_table(fake):
 
 
 # A value each command takes, so every name in the table is exercised.
-COMMAND_VALUES = {"seek": 5, "volume": -5, "jump": 0, "remove": 0, "move": [0, 1], "sleep": "30m"}
+COMMAND_VALUES = {"seek": 5, "volume": -5, "jump": 0, "remove": 0, "move": [0, 1], "sleep": "30m", "radio": "toggle"}
 
 
 @pytest.mark.parametrize("name", server.COMMANDS)
@@ -798,7 +819,7 @@ def test_the_page_links_its_script_style_and_manifest_and_nothing_inline():
 
 def test_the_page_sends_only_commands_the_server_knows():
     used = set(re.findall(r'command\("(\w+)"', remote_js()))
-    assert used == {"pause", "next", "prev", "mute", "volume", "jump", "remove", "clear_others", "sleep"}
+    assert used == {"pause", "next", "prev", "mute", "volume", "jump", "remove", "clear_others", "sleep", "radio"}
     assert used <= set(server.COMMANDS)
 
 
@@ -861,6 +882,15 @@ def test_the_page_shows_the_sleep_timer_and_its_button_arms_or_cancels_it():
     assert re.fullmatch(r"zz (10:00|9:5\d)", sleep[4]["text"]) and sleep[4]["label"] == "Sleep off"
     assert posted[1] == [["/api/command", {"name": "sleep", "value": "30m"}]]
     assert posted[3] == [["/api/command", {"name": "sleep", "value": "off"}]]
+
+
+def test_the_page_shows_the_radio_and_its_button_toggles_it():
+    shown = run_page([status(VIDEOS[:2], 1, radio=False), "radio", status(None, 1, radio="fetching"),
+                      status(None, 1, radio=True)], shown="radio")
+    assert shown == [{"label": "Radio off", "pressed": "false"}] * 2 + [
+        {"label": "∞ fetching…", "pressed": "true"}, {"label": "∞ Radio on", "pressed": "true"}]
+    posted = [step["posted"] for step in run_page([status(VIDEOS[:2], 1), "radio"], shown=None)]
+    assert posted[1] == [["/api/command", {"name": "radio", "value": "toggle"}]]
 
 
 def test_listen_here_shows_only_when_the_server_streams():

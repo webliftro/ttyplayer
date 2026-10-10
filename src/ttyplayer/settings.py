@@ -29,6 +29,7 @@ class Settings:
     spotify_client_id: str = ""  # the user's own Spotify app, for spotify login (public by design: PKCE)
     show_levels: bool = True  # the level meter: mpv's level filter and the TUI's two bars
     search_source: str = "youtube"  # where a search looks: one of youtube.SOURCES
+    radio: bool = False  # a new player goes on with related tracks when its queue runs out
 
 
 DEFAULTS = Settings()

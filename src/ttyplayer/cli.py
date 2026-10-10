@@ -163,13 +163,19 @@ def check_control_dir():
 
 
 @app.command()
-def play(target: list[str], video: bool = False, limit: int = 5, source: str = SOURCE_OPTION):
+def play(
+    target: list[str],
+    video: bool = False,
+    limit: int = 5,
+    source: str = SOURCE_OPTION,
+    radio: bool = typer.Option(False, "--radio", help="When the queue runs out, go on with related tracks (default: radio)"),
+):
     """Play a YouTube link or playlist, or search and pick what to play.
 
     Keys while playing: space pause, left/right or , . seek, up/down or - + volume,
     n next, p previous, q quit.
     """
-    start_playback(resolve(target, limit, source), video)
+    start_playback(resolve(target, limit, source), video, radio)
 
 
 @app.command()
@@ -603,6 +609,12 @@ def sleep_command(spec: str = typer.Argument("", help=f"{player.SLEEP_FORMS}; no
 
 
 @app.command()
+def radio(state: str = typer.Argument("", help=f"{player.RADIO_FORMS}; none shows it")):
+    """Keep the playing ttyplayer going with related tracks when its queue runs out, or stop that"""
+    typer.echo(remote(f"radio {state}".strip())["message"])
+
+
+@app.command()
 def status():
     """Show what the playing ttyplayer is playing"""
     typer.echo(player.status_line(remote("status")))
@@ -682,24 +694,26 @@ def show_more(videos, more):
     videos.extend(fresh)
 
 
-def start_playback(videos, with_video):
+def start_playback(videos, with_video, radio=False):
     exit_if_empty(videos)
-    client = start_mpv(with_video)
+    client = start_mpv(with_video, radio=radio)
     for video in videos:
         client.add(video)
     client.play_current()
     client.run()
 
 
-def start_mpv(with_video, on_state=None, pcm=None):
-    """An MpvClient that keeps history, or a one-line message and exit 1 when mpv cannot start."""
+def start_mpv(with_video, on_state=None, pcm=None, radio=False):
+    """An MpvClient that keeps history (radio on with radio or the radio setting), or a one-line message and exit 1 when mpv cannot start."""
+    current = load_settings()
     try:
         return player.MpvClient(
             with_video,
             on_play=history.record,
             on_state=on_state,
             pcm=pcm,
-            levels=load_settings().show_levels,
+            levels=current.show_levels,
+            radio=radio or current.radio,
         )
     except FileNotFoundError:
         fail(f"mpv is not installed. {mpv_install_hint()}")

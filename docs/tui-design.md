@@ -24,7 +24,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 │ ┌ Now playing ──────────────────────────────────────────────────────────┐
 │ │ ▶  Never Gonna Give You Up · Rick Astley                        [2/5] │  title bold accent
 │ │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  1:23 / 3:33 │  ProgressBar
-│ │ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  Up next: lofi hip hop radio  started in 2.4s │  volume · sleep · queue · timing
+│ │ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  ∞  Up next: lofi hip hop radio  started in 2.4s │  volume · sleep · radio · queue · timing
 │ │ L ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │  level meter (show_levels)
 │ │ R ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │
 │ └───────────────────────────────────────────────────────────────────────┘
@@ -49,11 +49,16 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   present. Idle it reads
   `Nothing playing — press / to search` (dim). It is built only from `MpvClient.status()`:
   `title`, `uploader`, `position`, `duration`, `paused`, `index`, `total`, `up_next`, `volume`,
-  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`.
+  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`, `radio`.
 - After the volume, `zz 27:13` (`zz end` for `sleep end`) while a sleep timer is armed, from
   `player.sleep_text(status["sleep"])`; empty otherwise. It refreshes with each status, like the
   time. The palette's **Sleep…** opens a one-line modal prefilled with `30m` (`player.parse_sleep()`'s
   error stays under the box; `off` cancels; Esc leaves the timer alone) and toasts the player's reply.
+- After the sleep timer, `∞` while radio mode is on and `∞ fetching…` while the player looks up
+  related tracks at the end of the queue (the panel keeps the last track meanwhile), from
+  `player.radio_text(status["radio"])`; empty while it is off. `R` (palette **Radio**) sends
+  `radio toggle` through `handle_control`, the control socket's path, and toasts the reply
+  (`Radio on` / `Radio off`); the `radio` setting is what a new player starts with.
 - The last two lines are the level meter: `L` and `R` bars of the volume meter's cells
   (`player.level_meter()`), as wide as the panel, empty at −60 dBFS, full at 0 dBFS, in `$accent`.
   `levels` is `None` while paused (and before mpv has measured): the bars are empty, not hidden, so

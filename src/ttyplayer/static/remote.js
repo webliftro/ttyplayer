@@ -196,6 +196,9 @@ function renderNowPlaying() {
   $("mute").setAttribute("aria-pressed", String(Boolean(state.muted)));
   $("listen-row").hidden = !state.stream;
   $("sleep").textContent = state.sleep ? "Sleep off" : `Sleep ${SLEEP_FOR}`;
+  // radio is false, true or "fetching" while the player looks up related tracks.
+  $("radio").textContent = state.radio === "fetching" ? "∞ fetching…" : state.radio ? "∞ Radio on" : "Radio off";
+  $("radio").setAttribute("aria-pressed", String(Boolean(state.radio)));
   renderProgress();
   renderSleep();
 }
@@ -423,6 +426,7 @@ function wire() {
   $("next").addEventListener("click", () => command("next"));
   $("mute").addEventListener("click", () => command("mute"));
   $("sleep").addEventListener("click", () => command("sleep", state.sleep ? "off" : SLEEP_FOR));
+  $("radio").addEventListener("click", () => command("radio", "toggle"));
   $("volume").addEventListener("input", () => {
     volumeHeld = true;
     $("volume-value").textContent = $("volume").value;

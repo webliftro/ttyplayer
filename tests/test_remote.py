@@ -194,6 +194,18 @@ def test_handle_control_sleep_arms_the_servers_timer_and_replies_its_line(served
     assert served.posts() == [("/api/command", {"name": "sleep", "value": value}) for value in ("20m", "", "off", "soon")]
 
 
+def test_handle_control_radio_switches_the_servers_radio_and_replies_its_line(served, connect):
+    client = connected(connect(served.url))
+    assert client.handle_control("radio on") == {"ok": True, "message": "Radio on"}
+    assert served.player.radio is True
+    assert client.status()["radio"] is True
+    assert client.handle_control("radio toggle") == {"ok": True, "message": "Radio off"}
+    assert client.handle_control("radio") == {"ok": True, "message": "Radio off"}
+    assert client.handle_control("radio loud") == {"ok": False, "error": "radio failed on the server"}
+    assert client.errors == ["Radio takes on, off or toggle, not 'loud'"]
+    assert served.posts() == [("/api/command", {"name": "radio", "value": value}) for value in ("on", "toggle", "", "loud")]
+
+
 def test_move_reorders_the_servers_queue_and_the_current_track_stays_current(served, connect):
     served.player.queue[:] = VIDEOS
     served.player.jump(0)

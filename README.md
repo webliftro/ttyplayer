@@ -11,6 +11,7 @@ ttyplayer play <words...>            search, pick one or more results, play them
 ttyplayer play ... --video           open a video window as well
 ttyplayer play ... --limit 10        show more search results
 ttyplayer play ... --source soundcloud   search SoundCloud instead of YouTube
+ttyplayer play ... --radio           when the queue runs out, go on with related tracks
 
 ttyplayer search <words...>          list results with durations
 ttyplayer search --source soundcloud <words...>   the same, on SoundCloud
@@ -46,10 +47,14 @@ ttyplayer stop                       quit the player
 ttyplayer sleep 30m                  Sleeping in 30:00 (also 1h, 1h30m, 90 seconds)
 ttyplayer sleep end                  stop when the current track ends
 ttyplayer sleep off                  cancel it (no argument: show it)
+ttyplayer radio on                   go on with related tracks when the queue runs out
+ttyplayer radio off                  stop at the end of the queue again (no argument: show it)
 ttyplayer status                     1:23 / 4:56  Playing  <title>
 ```
 
 When the sleep timer runs out, the volume fades to nothing over 5 seconds and the player stops as if `q` was pressed; the volume is put back first, so the next play starts at the old level. Paused or idle, it stops at once. `ttyplayer status`, the TUI and the web remote show `zz 27:13` (or `zz end`) while a timer is armed.
+
+Radio mode keeps the music going: when the last queued track ends, ttyplayer looks up YouTube's mix for it, skips what you played recently (the last 50 in history) and what is already queued, appends the next 5 tracks and plays them; at their end it does it again. `play --radio` turns it on for one run, `ttyplayer radio on|off` for the running player, and `ttyplayer config set radio true` for every new player. While it looks tracks up, `ttyplayer status`, the TUI and the web remote show `∞ fetching…` (a second or two), else `∞` while it is on. Radio goes on only from a YouTube track: after a SoundCloud one it says so and stops, as does a lookup that fails or finds nothing new.
 
 ## Playlists
 
@@ -111,7 +116,7 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
@@ -126,6 +131,7 @@ Under the volume, the panel's level meter shows two bars, `L` and `R`, that foll
 | anywhere | `t` | next theme (remembered for next time) |
 | table | `P` | save the queue as a playlist (asks for a name; an existing playlist of that name is replaced) |
 | table | `S` | settings: Enter flips a true / false one, `esc` closes |
+| table | `R` | radio on / off (`∞` in the panel; `∞ fetching…` while it looks up related tracks) |
 | table | `q` | quit and stop mpv (in the search box it is just a letter) |
 | table | `space` | pause / resume |
 | table | `n` / `p` | next / previous |
@@ -170,6 +176,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `spotify_client_id` | *none* | the Client ID of your own Spotify app, which `ttyplayer spotify login` needs (see Spotify above) |
 | `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
 | `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
+| `radio` | `false` | a new player goes on with related YouTube tracks when its queue runs out, as `play --radio` does |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
@@ -212,7 +219,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | GET | `/api/status` | the player's status, plus `queue` (the videos) and `index` (1-based) |
 | POST | `/api/play` | `{"url": "…"}` or `{"query": "…"}`: the link's videos, or the first search result, replace the queue and play |
 | POST | `/api/queue` | `{"url": "…"}` or `{"query": "…"}`: appended to the queue (played at once when nothing plays) |
-| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"sleep"\|"seek"\|"volume"\|"jump"\|"remove"\|"move"\|"clear_others", "value"?}`; `sleep` takes the text `ttyplayer sleep` does (`"30m"`, `"end"`, `"off"`), `seek` and `volume` a number of seconds / steps, `jump` and `remove` a 0-based queue row, `move` two (`[from, to]`; the current track stays current); `clear_others` keeps only the current track → the new status |
+| POST | `/api/command` | `{"name": "pause"\|"next"\|"prev"\|"stop"\|"mute"\|"sleep"\|"radio"\|"seek"\|"volume"\|"jump"\|"remove"\|"move"\|"clear_others", "value"?}`; `sleep` takes the text `ttyplayer sleep` does (`"30m"`, `"end"`, `"off"`), `radio` `"on"`, `"off"` or `"toggle"`, `seek` and `volume` a number of seconds / steps, `jump` and `remove` a 0-based queue row, `move` two (`[from, to]`; the current track stays current); `clear_others` keeps only the current track → the new status |
 | GET | `/api/commands` | the command names `/api/command` takes |
 | GET | `/api/search?q=…` | the search results (`search_limit` of them) |
 | GET | `/api/favorites` | the favorites, newest first |

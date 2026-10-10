@@ -121,7 +121,7 @@ button.icon { border: none; background: none; font-size: 1.25rem; }
 }
 .transport .primary { width: calc(var(--transport) * 1.25); height: calc(var(--transport) * 1.25); font-size: 2rem; }
 
-.listen-row, .sleep-row { display: flex; justify-content: center; margin-top: 0.75rem; }
+.listen-row, .sleep-row { display: flex; justify-content: center; gap: 0.5rem; margin-top: 0.75rem; }
 .connection { text-align: center; min-height: 1.25rem; margin-top: 0.25rem; }
 
 /* --- search and the lists --- */

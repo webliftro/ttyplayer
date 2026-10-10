@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from ttyplayer import control, player, utils
+from ttyplayer import control, player, utils, youtube
 from ttyplayer.models import Video
 
 # Unix sockets and termios: the Windows paths are tested on every OS with WINDOWS patched.
@@ -242,6 +242,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "stream": False,
         "levels": None,
         "sleep": None,
+        "radio": False,
     }
 
 
@@ -2067,3 +2068,202 @@ def test_handle_control_sleep_with_no_text_shows_the_armed_timer(monkeypatch):
     assert client.handle_control("sleep") == {"ok": True, "message": "Sleeping in 60:00"}
     assert client.handle_control("status")["sleep"] == {"ends_at": 4600.0}
     assert len(client.timers) == 1
+
+
+# --- radio ----------------------------------------------------------------
+
+MIX = [Video(id=f"r{n}", title=f"Related {n}", uploader="u", duration=60) for n in range(8)]
+
+
+class FakeRelated:
+    """Stands in for youtube.related: records the seed and the thread it ran on; waits for release() when held."""
+
+    def __init__(self, videos=MIX, error=None, held=False):
+        self.videos, self.error = videos, error
+        self.seeds, self.threads = [], []
+        self.gate = threading.Event()
+        if not held:
+            self.gate.set()
+
+    def __call__(self, video_id):
+        self.seeds.append(video_id)
+        self.threads.append(threading.current_thread())
+        assert self.gate.wait(2)
+        if self.error:
+            raise self.error
+        return list(self.videos)
+
+    def release(self):
+        self.gate.set()
+
+
+def radio_client(monkeypatch, videos=(A, B), related=None, recent=()):
+    """make_remote_client on its last track with radio on, a fake related() and recent plays."""
+    client = make_remote_client(list(videos), monkeypatch)
+    client.radio = True
+    client.related = related or FakeRelated()
+    client.recent = lambda: list(recent)
+    client.index = len(client.queue) - 1
+    client.idle = False
+    client.states = []
+    client.on_state = client.states.append
+    return client
+
+
+def end_track(client):
+    """The eof of the current track, then the radio's lookup, if one started, to its end."""
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    if client.radio_worker:
+        client.radio_worker.join(2)
+
+
+def test_radio_appends_a_batch_of_related_tracks_and_plays_the_first(monkeypatch):
+    client = radio_client(monkeypatch)
+    end_track(client)
+    assert client.related.seeds == ["b"]
+    assert ids(client) == ["a", "b", "r0", "r1", "r2", "r3", "r4"]
+    assert len(client.queue) - 2 == player.RADIO_BATCH
+    assert (client.index, client.idle, client.loaded) == (2, False, [MIX[0].url])
+    assert client.status()["up_next"] == "Related 1"
+    assert client.status()["radio"] is True
+
+
+def test_radio_looks_up_on_a_worker_thread_and_status_says_fetching_meanwhile(monkeypatch):
+    related = FakeRelated(held=True)
+    client = radio_client(monkeypatch, related=related)
+    client.handle_message({"event": "end-file", "reason": "eof"})  # returns while the lookup waits
+    assert client.status()["radio"] == "fetching"
+    assert client.states[-1]["radio"] == "fetching"
+    assert client.status()["idle"] is False  # the bar keeps the last track, marked fetching
+    related.release()
+    client.radio_worker.join(2)
+    assert related.threads[0] is not threading.current_thread()
+    assert client.status()["radio"] is True
+    assert client.loaded == [MIX[0].url]
+
+
+def test_radio_skips_recent_plays_and_what_is_queued(monkeypatch):
+    related = FakeRelated([A, MIX[0], B, MIX[1], MIX[0], MIX[2]])
+    client = radio_client(monkeypatch, related=related, recent=[MIX[1]])
+    end_track(client)
+    assert ids(client) == ["a", "b", "r0", "r2"]
+
+
+@pytest.mark.parametrize(
+    "related, error",
+    [
+        (FakeRelated(videos=[]), "Radio: no related tracks to play"),
+        (FakeRelated(videos=[A, B]), "Radio: no related tracks to play"),
+        (FakeRelated(error=youtube.YouTubeError("HTTP Error 403: Forbidden")), "Radio: HTTP Error 403: Forbidden"),
+    ],
+)
+def test_radio_with_nothing_to_play_reports_once_and_goes_idle(related, error, monkeypatch):
+    client = radio_client(monkeypatch, related=related)
+    end_track(client)
+    assert ids(client) == ["a", "b"]
+    assert (client.idle, client.loaded, client.status()["radio"]) == (True, [], True)
+    assert client.status()["error"] == error
+    assert client.states[-1]["error"] == error
+
+
+def test_radio_needs_a_youtube_track(monkeypatch):
+    track = Video(id="1234567", title="SC", uploader="u", duration=60, source="soundcloud", link="https://sc/x")
+    client = radio_client(monkeypatch, videos=[A, track])
+    end_track(client)
+    assert client.related.seeds == []
+    assert (client.idle, client.status()["error"]) == (True, player.RADIO_NEEDS_YOUTUBE)
+
+
+def test_without_radio_the_end_of_the_queue_goes_idle_and_looks_nothing_up(monkeypatch):
+    client = radio_client(monkeypatch)
+    client.radio = False
+    end_track(client)
+    assert (client.idle, client.related.seeds, client.status()["radio"]) == (True, [], False)
+
+
+def test_radio_goes_on_after_a_last_track_that_failed_to_load(monkeypatch):
+    client = radio_client(monkeypatch)
+    client.handle_message(FAILED)
+    client.radio_worker.join(2)
+    assert client.loaded == [MIX[0].url]
+
+
+@pytest.mark.parametrize("change", ["off", "prev"])
+def test_radio_drops_its_lookup_when_turned_off_or_another_track_starts(change, monkeypatch):
+    related = FakeRelated(held=True)
+    client = radio_client(monkeypatch, related=related)
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    if change == "off":
+        client.set_radio(False)
+        assert (client.idle, client.status()["radio"]) == (True, False)
+    else:
+        client.prev()
+    related.release()
+    client.radio_worker.join(2)
+    assert ids(client) == ["a", "b"]
+    assert client.loaded == ([] if change == "off" else [A.url])
+
+
+def test_radio_drops_a_stale_lookup_that_ends_after_a_newer_one_started(monkeypatch):
+    old, new = FakeRelated(MIX[:4], held=True), FakeRelated(MIX[4:], held=True)
+    lookups = iter([old, new])
+    client = radio_client(monkeypatch, related=lambda video_id: next(lookups)(video_id))
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    stale = client.radio_worker
+    client.prev()
+    client.jump(1)
+    client.handle_message({"event": "end-file", "reason": "eof"})  # a newer lookup, the old one still out
+    old.release()
+    stale.join(2)
+    assert ids(client) == ["a", "b"]
+    assert client.status()["radio"] == "fetching"
+    new.release()
+    client.radio_worker.join(2)
+    assert ids(client) == ["a", "b", "r4", "r5", "r6", "r7"]
+    assert client.loaded[-1] == MIX[4].url
+
+
+@pytest.mark.parametrize(
+    "command, radio, message",
+    [
+        ("radio on", True, "Radio on"),
+        ("radio off", False, "Radio off"),
+        ("radio toggle", True, "Radio on"),
+        ("radio", False, "Radio off"),
+    ],
+)
+def test_handle_control_radio_switches_it_and_reports(command, radio, message, monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    assert client.handle_control(command) == {"ok": True, "message": message}
+    assert client.status()["radio"] is radio
+
+
+def test_handle_control_radio_refuses_anything_else(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    assert client.handle_control("radio loud") == {"ok": False, "error": "Radio takes on, off or toggle, not 'loud'"}
+
+
+def test_quit_turns_the_radio_off_so_a_lookup_still_running_drops_its_tracks(monkeypatch):
+    related = FakeRelated(held=True)
+    client = radio_client(monkeypatch, related=related)
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    ready_to_quit(client)
+    client.quit()
+    related.release()
+    client.radio_worker.join(2)
+    assert ids(client) == ["a", "b"]
+    assert client.sent[-1] == ["quit"]  # nothing was loaded after it
+
+
+@pytest.mark.parametrize(
+    "radio, text, message",
+    [(False, "", "Radio off"), (True, "∞", "Radio on"), ("fetching", "∞ fetching…", "Radio on, fetching related tracks")],
+)
+def test_radio_text_and_message(radio, text, message):
+    assert player.radio_text(radio) == text
+    assert player.radio_message(radio) == message
+
+
+def test_status_line_shows_the_radio_after_the_state():
+    assert "Playing  ∞  🔊" in player.status_line({**TIMED, "radio": True})
+    assert "Playing  ∞ fetching…  🔊" in player.status_line({**TIMED, "radio": "fetching"})

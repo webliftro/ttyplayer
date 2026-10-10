@@ -34,9 +34,9 @@ class YouTubeError(Exception):
     """yt-dlp could not resolve the target: no network, bad link, private video."""
 
 
-def _extract(target):
+def _extract(target, **options):
     try:
-        return YoutubeDL(OPTIONS).extract_info(target, download=False)
+        return YoutubeDL({**OPTIONS, **options}).extract_info(target, download=False)
     except DownloadError as error:
         raise YouTubeError(_clean(str(error))) from error
 
@@ -72,12 +72,26 @@ def fetch(url) -> list[Video]:
     return fetch_playlist(url)[1]
 
 
-def fetch_playlist(url) -> tuple[str | None, list[Video]]:
-    """fetch(url) plus the playlist's title; the title is None for a single video link."""
-    info = _extract(url)
+def fetch_playlist(url, end=None) -> tuple[str | None, list[Video]]:
+    """fetch(url) plus the playlist's title; the title is None for a single video link.
+
+    end, if given, stops yt-dlp after that many playlist entries instead of paging through all of them.
+    """
+    info = _extract(url, playlistend=end)
     if "entries" in info:
         return info.get("title"), handle_many_entries(info["entries"])
     return None, [video_from_info(info)]
+
+
+def related(video_id, limit=10) -> list[Video]:
+    """Up to limit tracks YouTube's mix for video_id lists after it: the radio's next batch.
+
+    A mix pages on and on, so yt-dlp reads only 2 * limit + 1 entries: room for the seed and the odd
+    non-video, and (limit=10 → 21) still inside the first page of ~25.
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+    _, videos = fetch_playlist(url, end=2 * limit + 1)
+    return [video for video in videos if video.id != video_id][:limit]
 
 
 def is_url(text):

@@ -42,7 +42,7 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
 | GET | `/api/status` | `status()` as JSON (+ `queue`: list, `index`) |
 | POST | `/api/play` | `{"query": "…"}` or `{"url": "…"}` → resolves and replaces the queue |
 | POST | `/api/queue` | `{"url"|"query"}` → appends |
-| POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"sleep"|"seek"|"volume"|"jump"|"remove"|"move"|"clear_others", "value"?}` → the new status; `sleep` takes `ttyplayer sleep`'s text (`"30m"`, `"end"`, `"off"`; a bad one is a 400 with `parse_sleep()`'s error) and goes through `handle_control("sleep <text>")`, as the control socket's does; `jump`/`remove` take a 0-based queue row, `move` two (`[from, to]`) |
+| POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"sleep"|"radio"|"seek"|"volume"|"jump"|"remove"|"move"|"clear_others", "value"?}` → the new status; `sleep` takes `ttyplayer sleep`'s text (`"30m"`, `"end"`, `"off"`; a bad one is a 400 with `parse_sleep()`'s error) and goes through `handle_control("sleep <text>")`, as the control socket's does; `radio` takes `"on"`, `"off"` or `"toggle"` (`""` only reports) the same way, `handle_control("radio <text>")`; the status JSON's `radio` is `false`, `true` or `"fetching"`; `jump`/`remove` take a 0-based queue row, `move` two (`[from, to]`) |
 | GET | `/api/commands` | the command table's names (the page's and the server's tests both read it) |
 | GET | `/api/favorites` | the favorites, newest first; each video carries `url`, what its Play/Queue send |
 | POST | `/api/favorites/{id}` | toggles: unfavorites, or favorites the video in the body → the favorites |
@@ -59,7 +59,8 @@ All POSTs are idempotent-ish and reply with the new status.
 
 One static page (vanilla JS, no framework, no build): search box, results, queue, big now-playing
 card (title, uploader, progress bar, time, volume slider, play/pause/next/prev/mute, `zz 27:13` and a
-Sleep 30m / Sleep off button for the sleep timer), favorites and
+Sleep 30m / Sleep off button for the sleep timer, a Radio button that sends `radio toggle` and reads
+`Radio off`, `∞ Radio on` or `∞ fetching…` from the status), favorites and
 playlists lists. Dark/light follows the phone. Works from the phone's browser and as a home-screen
 app (manifest). The page talks WS for state and `fetch` for actions.
 

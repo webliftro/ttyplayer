@@ -1,4 +1,10 @@
+import itertools
+import json
+from pathlib import Path
+
 import pytest
+from yt_dlp import YoutubeDL
+from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import DownloadError
 
 from ttyplayer import youtube
@@ -154,3 +160,72 @@ def test_every_source_has_a_prefix_and_a_name():
 )
 def test_split_source_reads_a_two_letter_prefix(text, source, query):
     assert youtube.split_source(text, "soundcloud") == (source, query)
+
+
+# --- related: the radio's next tracks --------------------------------------
+
+MIX = json.loads((Path(__file__).parent / "fixtures" / "mix.json").read_text(encoding="utf-8"))
+SEED = "dQw4w9WgXcQ"
+
+
+def test_related_lists_the_mix_of_the_video(fake_ydl):
+    fake_ydl.info = MIX
+    youtube.related(SEED)
+    assert fake_ydl.calls == [(f"https://www.youtube.com/watch?v={SEED}&list=RD{SEED}", False)]
+
+
+def test_related_drops_the_seed_and_what_is_not_a_video_and_keeps_at_most_limit(fake_ydl):
+    fake_ydl.info = MIX
+    videos = youtube.related(SEED, limit=3)
+    assert [video.title for video in videos] == ["Mix track 1", "Mix track 2", "Mix track 3"]
+    assert all(video.id != SEED and video.source == "youtube" for video in videos)
+    assert len(youtube.related(SEED)) == 10
+
+
+def test_related_passes_on_youtube_errors(fake_ydl):
+    fake_ydl.error = DownloadError("ERROR: HTTP Error 403: Forbidden")
+    with pytest.raises(youtube.YouTubeError, match="HTTP Error 403"):
+        youtube.related(SEED)
+
+
+
+class LazyMixIE(InfoExtractor):
+    """A long mix yielded one entry at a time, as YouTube's pages on: counts how many entries yt-dlp takes."""
+
+    _VALID_URL = r"https://www\.youtube\.com/watch\?v=(?P<id>[\w-]{11})&list=RD"
+    taken = 0
+
+    def _entries(self, video_id):
+        for n in range(100):
+            LazyMixIE.taken += 1
+            entry_id = video_id if n == 0 else f"mix{n:08d}"
+            yield self.url_result(f"https://www.youtube.com/watch?v={entry_id}", "Youtube", entry_id, f"Track {n}")
+
+    def _real_extract(self, url):
+        video_id = self._match_id(url)
+        return self.playlist_result(self._entries(video_id), f"RD{video_id}", "Mix")
+
+
+@pytest.fixture
+def lazy_mix(monkeypatch):
+    """The real YoutubeDL and its playlist processing, over the mix above."""
+
+    def ydl(options):
+        real = YoutubeDL(options, auto_init=False)
+        real.add_info_extractor(LazyMixIE())
+        return real
+
+    LazyMixIE.taken = 0
+    monkeypatch.setattr(youtube, "YoutubeDL", ydl)
+    return LazyMixIE
+
+
+def test_related_stops_reading_the_mix_once_it_has_enough(lazy_mix):
+    videos = youtube.related(SEED)
+    assert [video.title for video in videos] == [f"Track {n}" for n in range(1, 11)]
+    assert lazy_mix.taken <= 21
+
+
+def test_fetch_playlist_still_reads_the_whole_playlist(lazy_mix):
+    _, videos = youtube.fetch_playlist(f"https://www.youtube.com/watch?v={SEED}&list=RD{SEED}")
+    assert len(videos) == lazy_mix.taken == 100

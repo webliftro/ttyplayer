@@ -36,9 +36,10 @@ VIDEOS = [
 class FakeClient(player.MpvClient):
     """Stands in for MpvClient: the real queue edits and status(), never mpv; records the calls."""
 
-    def __init__(self, video=False, on_play=None, on_state=None, levels=True):
+    def __init__(self, video=False, on_play=None, on_state=None, levels=True, radio=False):
         self.video = video
         self.show_levels = levels
+        self.radio = radio
         self.on_play = on_play
         self.on_state = on_state
         self.queue_lock = threading.RLock()
@@ -132,8 +133,8 @@ def served(monkeypatch):
 def clients():
     made = []
 
-    def factory(video=False, on_play=None, on_state=None, levels=True):
-        made.append(FakeClient(video, on_play, on_state, levels))
+    def factory(video=False, on_play=None, on_state=None, levels=True, radio=False):
+        made.append(FakeClient(video, on_play, on_state, levels, radio))
         return made[-1]
 
     factory.made = made
@@ -1563,7 +1564,7 @@ async def test_palette_provider_offers_every_command_and_runs_its_action(clients
         hits = [hit async for hit in provider.discover()]
         assert [hit.text for hit in hits] == [
             "Search…", "Playlists", "Save queue as playlist…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute",
-            "Sleep…",
+            "Sleep…", "Radio",
         ]
         ran = []
         for _, action, _ in tui.COMMANDS:
@@ -1716,6 +1717,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["spotify_client_id", "", "(default )"],
             ["show_levels", "true", "(default true)"],
             ["search_source", "youtube", "(default youtube)"],
+            ["radio", "false", "(default false)"],
         ]
         await pilot.press("escape")
         await pilot.pause()
@@ -2375,3 +2377,41 @@ async def test_sleep_with_nothing_playing_says_so_in_the_dialog(clients, served)
         await pilot.pause()
         assert str(app.screen.query_one("#name-error", Static).render()) == "Nothing is playing"
         assert clients.made == []
+
+
+# --- radio ----------------------------------------------------------------
+
+
+@drive
+async def test_the_panel_shows_the_radio_and_while_it_fetches(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        for radio, shown in [(True, "∞"), ("fetching", "∞ fetching…"), (False, "")]:
+            app.on_player_state(status(radio=radio))
+            await pilot.pause()
+            assert text(app, "#np-radio") == shown
+
+
+@drive
+async def test_capital_r_toggles_the_players_radio_and_says_so(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        client = await queued(pilot, "enter")
+        client.handle_control = functools.partial(player.MpvClient.handle_control, client)  # the real radio wiring
+        await pilot.press("R")
+        await pilot.pause()
+        assert client.radio is True
+        assert text(app, "#np-radio") == "∞"
+        await pilot.press("R")
+        await pilot.pause()
+        assert client.radio is False
+        assert text(app, "#np-radio") == ""
+        assert toasts(app) == [("Radio on", "information"), ("Radio off", "information")]
+
+
+@drive
+async def test_the_radio_setting_starts_the_player_with_the_radio_on(clients, served):
+    app = make_app_with(clients, settings.Settings(radio=True))
+    async with run(app) as pilot:
+        await queued(pilot, "enter")
+        assert clients.made[-1].radio is True
