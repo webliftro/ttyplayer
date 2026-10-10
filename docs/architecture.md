@@ -59,6 +59,11 @@ src/ttyplayer/
                video_entry, read_entries, append_entries, write_entries for the JSON lines files.
 ```
 
+Outside the package, `scripts/brew_formula.py <version>` prints the Homebrew formula for a release
+(standard library only): the sdist of ttyplayer and of each runtime dependency, followed from the
+wheel's Requires-Dist through PyPI's JSON with the versions `uv.lock` pins. `release.yml` runs it
+after the PyPI upload and commits the result to the `webliftro/homebrew-tap` tap.
+
 Dependencies point one way:
 
 ```
