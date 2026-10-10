@@ -3,8 +3,9 @@
 
 Usage: python3 -I scripts/brew_formula.py <version> > Formula/ttyplayer.rb
 
-Every runtime dependency becomes a `resource` pointing at its sdist (Homebrew builds them in the
-formula's virtualenv, native ones included). The dependency list is the released wheel's
+Every runtime dependency, the EXTRAS' too, becomes a `resource` pointing at its sdist (Homebrew
+builds them in the formula's virtualenv, native ones included), but for those in BREW_FORMULAS,
+which Homebrew ships as a formula of its own: those become a `depends_on`. The dependency list is the released wheel's
 Requires-Dist, followed recursively through PyPI, with each version pinned to uv.lock when it
 records one and the latest release otherwise. Markers are evaluated for Homebrew's Python on macOS.
 Standard library only.
@@ -22,6 +23,9 @@ PROJECT = "ttyplayer"
 DESC = "Modern YouTube player for the terminal"
 PYTHON = "3.13"
 LOCK = Path(__file__).resolve().parent.parent / "uv.lock"
+EXTRAS = frozenset({"art"})  # the formula installs what install.sh installs: ttyplayer[art]
+# PyPI project -> the Homebrew formula that provides it, built and bottled by Homebrew.
+BREW_FORMULAS = {"pillow": "pillow"}
 
 # The marker environment of python@3.13 on a Mac; `extra` is filled in per requested extra.
 MARKER_ENV = {
@@ -51,7 +55,7 @@ class Ttyplayer < Formula
   license "{license}"
 
   depends_on "mpv"
-  depends_on "python@{python}"
+{formulas}  depends_on "python@{python}"
   # Only `ttyplayer serve --stream` uses ffmpeg, and doctor reports it as optional.
   depends_on "ffmpeg" => :optional
 {resources}
@@ -190,19 +194,27 @@ def sdist(release):
     raise FormulaError(f"{info['name']} {info['version']} has no sdist on PyPI; Homebrew needs one to build it")
 
 
-def resources(requires_dist, fetch, pins):
-    """The sorted sdists of every runtime dependency, followed recursively."""
-    extras, releases = {}, {}
-    todo = list(requirements(requires_dist))
+def resources(requires_dist, fetch, pins, extras=frozenset()):
+    """The sorted sdists of every runtime dependency, followed recursively, but for BREW_FORMULAS'."""
+    return dependencies(requires_dist, fetch, pins, extras)[0]
+
+
+def dependencies(requires_dist, fetch, pins, root_extras=frozenset()):
+    """(sorted sdists, sorted Homebrew formulas) of every runtime dependency of the root with root_extras."""
+    extras, releases, formulas = {}, {}, set()
+    todo = list(requirements(requires_dist, root_extras))
     while todo:
         name, wanted = todo.pop()
+        if name in BREW_FORMULAS:
+            formulas.add(BREW_FORMULAS[name])
+            continue
         if name == PROJECT or (name in extras and wanted <= extras[name]):
             continue
         extras[name] = extras.get(name, frozenset()) | wanted
         if name not in releases:
             releases[name] = fetch(name, pins.get(name))
         todo.extend(requirements(releases[name]["info"]["requires_dist"], extras[name]))
-    return sorted(sdist(release) for release in releases.values())
+    return sorted(sdist(release) for release in releases.values()), sorted(formulas)
 
 
 def formula(version, fetch=fetch_json, pins=None):
@@ -210,13 +222,14 @@ def formula(version, fetch=fetch_json, pins=None):
     release = fetch(PROJECT, version)
     info = release["info"]
     _, url, sha256 = sdist(release)
-    deps = resources(info["requires_dist"], fetch, lock_pins() if pins is None else pins)
+    deps, formulas = dependencies(info["requires_dist"], fetch, lock_pins() if pins is None else pins, EXTRAS)
     return TEMPLATE.format(
         desc=DESC,
         homepage=info["project_urls"]["Homepage"],
         url=url,
         sha256=sha256,
         license=info["license_expression"],
+        formulas="".join(f'  depends_on "{name}"\n' for name in formulas),
         python=PYTHON,
         resources="".join(RESOURCE.format(name=name, url=url, sha256=sha256) for name, url, sha256 in deps),
     )

@@ -30,7 +30,7 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from ttyplayer import control, favorites, history, player, playlists, youtube
+from ttyplayer import art, control, favorites, history, player, playlists, youtube
 from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
@@ -124,34 +124,82 @@ class LevelMeter(Static):
         return player.level_meter(self.label, self.level, self.size.width)
 
 
-class NowPlaying(Vertical):
-    """Three lines built from MpvClient.status(), then the level meter's two; show() is the only writer."""
+class Art(Vertical):
+    """The playing track's thumbnail, a fixed column left of the panel's lines, blank while there is none.
+
+    show() runs on the app thread; the bytes are fetched and decoded on a worker thread, and a result
+    for a track that is no longer the playing one is dropped.
+    """
+
+    video_id = None  # the track whose art is shown or loading
+
+    def compose(self) -> ComposeResult:
+        if self.app.image_widget:
+            yield self.app.image_widget()
+
+    def image(self):
+        return self.query_one(self.app.image_widget)
+
+    def show(self, video):
+        """Show video's thumbnail, loading it first; blank for None (idle) or a video without one."""
+        video_id = video.id if video else None
+        if video_id == self.video_id:
+            return
+        self.video_id = video_id
+        if not self.app.image_widget:
+            return
+        self.image().image = None
+        if video and video.thumbnail and self.display:
+            self.load(video_id, video.thumbnail)
+
+    def hide(self, hidden):
+        self.display = not hidden
+        self.video_id = None  # shown again, the next show() loads the playing track's art
+
+    @work(thread=True, exclusive=True, group="art")
+    def load(self, video_id, url):
+        image = art.decode(art.fetch(url))
+        if image is not None and not get_current_worker().is_cancelled:
+            self.app.call_from_thread(self.put, video_id, image)
+
+    def put(self, video_id, image):
+        if video_id == self.video_id:
+            self.image().image = image
+
+
+class NowPlaying(Horizontal):
+    """The art column, then three lines built from MpvClient.status() and the level meter's two;
+    show() is the only writer."""
 
     BORDER_TITLE = "Now playing"
 
     def compose(self) -> ComposeResult:
-        yield Static(IDLE_TEXT, id="np-idle", markup=False)
-        with Horizontal(classes="np-line"):
-            yield Static(id="np-state")
-            yield Static(id="np-title", markup=False)
-            yield Static(id="np-uploader", markup=False)
-            yield Static(id="np-position")
-        with Horizontal(classes="np-line"):
-            yield ProgressBar(id="np-progress", show_percentage=False, show_eta=False)
-            yield Static(id="np-time")
-        with Horizontal(classes="np-line"):
-            yield Static(id="np-volume")
-            yield Static(id="np-sleep")
-            yield Static(id="np-radio")
-            yield Static(id="np-next", markup=False)
-            yield Static(id="np-timing")
-        yield LevelMeter("L", id="np-level-left", classes="np-level")
-        yield LevelMeter("R", id="np-level-right", classes="np-level")
+        yield Art()
+        with Vertical(id="np-text"):
+            yield Static(IDLE_TEXT, id="np-idle", markup=False)
+            with Horizontal(classes="np-line"):
+                yield Static(id="np-state")
+                yield Static(id="np-title", markup=False)
+                yield Static(id="np-uploader", markup=False)
+                yield Static(id="np-position")
+            with Horizontal(classes="np-line"):
+                yield ProgressBar(id="np-progress", show_percentage=False, show_eta=False)
+                yield Static(id="np-time")
+            with Horizontal(classes="np-line"):
+                yield Static(id="np-volume")
+                yield Static(id="np-sleep")
+                yield Static(id="np-radio")
+                yield Static(id="np-next", markup=False)
+                yield Static(id="np-timing")
+            yield LevelMeter("L", id="np-level-left", classes="np-level")
+            yield LevelMeter("R", id="np-level-right", classes="np-level")
 
     def on_mount(self):
         self.show(None)
 
-    def show(self, status):
+    def show(self, status, video=None):
+        """status from MpvClient.status(), and the playing video for the art (None when idle)."""
+        self.query_one(Art).show(video)
         idle = status is None or status["idle"]
         self.set_class(idle, "-idle")
         left, right = (not idle and status.get("levels")) or (None, None)
@@ -176,6 +224,10 @@ class NowPlaying(Vertical):
 
     def show_levels(self, shown):
         self.set_class(not shown, "-no-levels")
+
+    def show_art(self, shown):
+        """The art column follows show_art; without the art extra it is never there."""
+        self.query_one(Art).hide(not (shown and self.app.image_widget))
 
 
 class SearchBox(Input):
@@ -525,6 +577,8 @@ class TtyplayerApp(App):
         self.client = None
         self.remote = None
         self.closing = False
+        # Before the app runs: textual_image asks the terminal what it can draw when it is imported.
+        self.image_widget = art.image_widget() if art.available() else None  # None: no art column
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=self.settings.show_clock)
@@ -553,6 +607,7 @@ class TtyplayerApp(App):
         self.show_history()
         self.show_playlists()
         self.query_one(NowPlaying).show_levels(self.settings.show_levels)
+        self.query_one(NowPlaying).show_art(self.settings.show_art)
         self.query_one(SearchBox).focus()
 
     def on_unmount(self):
@@ -706,7 +761,7 @@ class TtyplayerApp(App):
         if self.history_stale:
             self.history_stale = False
             self.show_history()
-        self.query_one(NowPlaying).show(status)
+        self.query_one(NowPlaying).show(status, self.playing_video())
         self.mark_playing()
         self.show_queue()
         self.toast_player_error(status and status.get("error"))
@@ -1027,8 +1082,8 @@ class TtyplayerApp(App):
         self.toast(unknown, severity="warning")
 
     def change_setting(self, key, value):
-        """Set key to value for this app and in the file; the clock, the level meter, the loudness filter
-        and the seek and volume keys follow at once."""
+        """Set key to value for this app and in the file; the clock, the level meter, the art column, the
+        loudness filter and the seek and volume keys follow at once."""
         self.settings = dataclasses.replace(self.settings, **{key: value})
         try:
             config.change(key, value)
@@ -1038,6 +1093,8 @@ class TtyplayerApp(App):
             self.show_clock()
         if key == "show_levels":
             self.show_levels()
+        if key == "show_art":
+            self.show_art()
         if key == "normalize_loudness" and self.client:
             self.client.set_normalize(value)
         if key in ("seek_seconds", "volume_step"):
@@ -1055,6 +1112,12 @@ class TtyplayerApp(App):
         self.screen_stack[0].query_one(NowPlaying).show_levels(self.settings.show_levels)
         if self.client:
             self.client.set_levels(self.settings.show_levels)
+
+    def show_art(self):
+        """The panel's art column follows show_art, the playing track's art loading when it comes back."""
+        now = self.screen_stack[0].query_one(NowPlaying)
+        now.show_art(self.settings.show_art)
+        now.query_one(Art).show(self.playing_video())
 
     def action_settings(self):
         if not isinstance(self.screen, SettingsScreen):

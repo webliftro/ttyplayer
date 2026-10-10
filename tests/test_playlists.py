@@ -204,3 +204,13 @@ def test_an_old_playlist_line_without_source_loads_as_youtube():
     playlists.create("old")
     playlists.playlist_path("old").write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "added_at": "2026-01-01T00:00:00+00:00"}\n')
     assert playlists.load("old") == [A]
+
+
+T = Video(id="t", title="Cover", uploader="u", duration=1, thumbnail="https://i.ytimg.com/vi/t/hqdefault.jpg")
+
+
+def test_a_playlist_keeps_each_tracks_thumbnail_and_an_old_line_has_none():
+    playlists.replace("art", [T])
+    assert playlists.load("art") == [T]
+    playlists.playlist_path("art").write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10}\n')
+    assert playlists.load("art")[0].thumbnail is None

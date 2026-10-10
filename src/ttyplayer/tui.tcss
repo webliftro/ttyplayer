@@ -30,6 +30,22 @@ NowPlaying {
     padding: 0 1;
 }
 
+Art {
+    width: 10;
+    height: 100%;
+    margin-right: 1;
+    background: $panel;
+}
+
+Art > * {
+    width: auto;  /* both auto: textual_image fits the image in the column, keeping its shape */
+    height: auto;
+}
+
+#np-text {
+    width: 1fr;
+}
+
 NowPlaying #np-idle {
     display: none;
     text-style: dim;

@@ -219,3 +219,42 @@ def test_a_stored_entry_without_source_loads_as_youtube():
     old = {"id": "dQw4w9WgXcQ", "title": "Song", "uploader": "Band", "duration": 212, "played_at": "2026-01-01T00:00:00+00:00"}
     video = utils.video_from_info(old)
     assert (video.source, video.link) == ("youtube", None)
+
+
+def thumbs(*widths):
+    return [{"url": f"https://i.example/{width}.jpg", "width": width} for width in widths]
+
+
+@pytest.mark.parametrize(
+    "fields, thumbnail",
+    [
+        ({"thumbnails": thumbs(168, 480, 336, 1280)}, "https://i.example/480.jpg"),
+        ({"thumbnails": thumbs(720, 1280)}, "https://i.example/1280.jpg"),
+        ({"thumbnails": [{"url": "https://i.example/a.jpg"}, {"url": "https://i.example/b.jpg"}]}, "https://i.example/b.jpg"),
+        ({"thumbnails": [{"url": "https://i.example/a.jpg"}, *thumbs(120)]}, "https://i.example/120.jpg"),
+        ({"thumbnails": [], "thumbnail": "https://i.example/one.jpg"}, "https://i.example/one.jpg"),
+        ({}, "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"),
+    ],
+)
+def test_video_from_info_picks_the_widest_thumbnail_up_to_480(fields, thumbnail):
+    entry = {"id": "dQw4w9WgXcQ", "title": "Song", **fields}
+    assert utils.video_from_info(entry).thumbnail == thumbnail
+
+
+def test_a_soundcloud_entry_without_artwork_has_no_thumbnail():
+    entry = {"id": "1234567", "ie_key": "Soundcloud", "title": "Song", "url": "https://soundcloud.com/a/b"}
+    assert utils.video_from_info(entry).thumbnail is None
+    artwork = {**entry, "thumbnail": "https://i1.sndcdn.com/artworks-x-t500x500.jpg"}
+    assert utils.video_from_info(artwork).thumbnail == "https://i1.sndcdn.com/artworks-x-t500x500.jpg"
+
+
+def test_a_stored_entry_round_trips_its_thumbnail():
+    video = utils.video_from_info({"id": "dQw4w9WgXcQ", "thumbnails": thumbs(336)})
+    entry = utils.video_entry(video, "played_at")
+    assert entry["thumbnail"] == "https://i.example/336.jpg"
+    assert utils.stored_video(entry) == video
+
+
+def test_a_stored_entry_from_before_thumbnails_has_none():
+    old = {"id": "dQw4w9WgXcQ", "title": "Song", "uploader": "Band", "duration": 212, "source": "youtube", "link": None}
+    assert utils.stored_video(old).thumbnail is None

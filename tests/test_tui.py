@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import datetime
 import functools
 import importlib.resources
@@ -23,7 +24,7 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import control, favorites, history, player, playlists, remote, settings, tui, youtube
+from ttyplayer import art, control, favorites, history, player, playlists, remote, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -120,6 +121,12 @@ def settings_file(monkeypatch, tmp_path):
     path = tmp_path / "settings.toml"
     monkeypatch.setattr(settings, "settings_path", lambda: path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_art(monkeypatch):
+    """No art extra, whatever this venv has: the panel's widths stay the same; the art tests opt in."""
+    monkeypatch.setattr(art, "available", lambda: False)
 
 
 @pytest.fixture
@@ -1784,6 +1791,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["stream_enabled", "false", "(default false)"],
             ["spotify_client_id", "", "(default )"],
             ["show_levels", "true", "(default true)"],
+            ["show_art", "true", "(default true)"],
             ["search_source", "youtube", "(default youtube)"],
             ["radio", "false", "(default false)"],
             ["normalize_loudness", "false", "(default false)"],
@@ -2539,3 +2547,209 @@ async def test_the_radio_setting_starts_the_player_with_the_radio_on(clients, se
     async with run(app) as pilot:
         await queued(pilot, "enter")
         assert clients.made[-1].radio is True
+
+
+# --- album art --------------------------------------------------------------
+
+ART = [dataclasses.replace(video, thumbnail=f"https://i.ytimg.com/vi/{video.id}/hqdefault.jpg") for video in VIDEOS]
+
+
+class FakeImage(Static):
+    """Stands in for textual_image's Image widget: holds what it was given."""
+
+    image = None
+
+
+class FakeFetch:
+    """Stands in for art.fetch: answers each url, after its gate opens if it has one; records the calls."""
+
+    def __init__(self, answer=b"image bytes"):
+        self.answer = answer
+        self.calls = []
+        self.gates = {}
+
+    def __call__(self, url):
+        self.calls.append(url)
+        if url in self.gates:
+            self.gates[url].wait(5)
+        return self.answer
+
+
+@pytest.fixture
+def with_art(monkeypatch):
+    """The art extra as installed, with a fake fetcher and image widget; decode returns what it got."""
+    fetch = FakeFetch()
+    monkeypatch.setattr(art, "available", lambda: True)
+    monkeypatch.setattr(art, "image_widget", lambda: FakeImage)
+    monkeypatch.setattr(art, "fetch", fetch)
+    monkeypatch.setattr(art, "decode", lambda data: data and ("decoded", data))
+    return fetch
+
+
+def art_image(app):
+    return app.query_one(tui.Art).query_one(app.image_widget).image
+
+
+async def play_art(pilot, row=0):
+    """Search, play the given row of ART, and let its art load."""
+    await search(pilot)
+    await pilot.press(*["down"] * row, "enter")
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+@drive
+async def test_the_art_column_sits_left_of_the_lines_and_the_panel_keeps_its_height(clients, served, with_art):
+    app = make_app(clients, resolve=lambda text, limit, source: ART)
+    async with run(app) as pilot:
+        await pilot.pause()
+        column, lines = app.query_one(tui.Art), app.query_one("#np-text")
+        now = app.query_one(tui.NowPlaying)
+        assert (column.display, column.size.width, column.size.height) == (True, 10, 5)
+        assert column.region.right < lines.region.x and column.region.y == lines.region.y
+        assert now.region.height == 7
+        assert art_image(app) is None  # idle: blank
+        await play_art(pilot)
+        assert with_art.calls == [ART[0].thumbnail]
+        assert art_image(app) == ("decoded", b"image bytes")
+        assert now.region.height == 7 and column.size == (10, 5)
+        clients.made[0].jump(1)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert with_art.calls == [ART[0].thumbnail, ART[1].thumbnail]
+        assert now.region.height == 7 and column.size == (10, 5)
+        clients.made[0].idle = True
+        clients.made[0].notify()
+        await pilot.pause()
+        assert art_image(app) is None
+        assert now.region.height == 7 and column.size == (10, 5)
+
+
+@drive
+async def test_the_art_column_is_as_tall_as_the_panel_without_levels(clients, served, with_art):
+    app = make_app_with(clients, settings.Settings(show_levels=False))
+    async with run(app) as pilot:
+        await pilot.pause()
+        assert app.query_one(tui.NowPlaying).region.height == 5
+        assert app.query_one(tui.Art).size == (10, 3)
+
+
+@drive
+async def test_the_art_is_blank_while_loading_and_a_stale_result_is_dropped(clients, served, with_art):
+    first, second = threading.Event(), threading.Event()
+    with_art.gates = {ART[0].thumbnail: first, ART[1].thumbnail: second}
+    app = make_app(clients, resolve=lambda text, limit, source: ART)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert art_image(app) is None  # loading
+        client = clients.made[0]
+        client.jump(1)  # the track changed while its art was on the way
+        await pilot.pause()
+        first.set()
+        await asyncio.to_thread(time.sleep, 0.1)
+        await pilot.pause()
+        assert art_image(app) is None  # the first track's art came too late
+        second.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert art_image(app) == ("decoded", b"image bytes")
+
+
+@drive
+async def test_a_failed_fetch_or_a_track_without_a_thumbnail_leaves_the_column_blank(clients, served, with_art):
+    with_art.answer = None
+    tracks = [ART[0], VIDEOS[1]]
+    app = make_app(clients, resolve=lambda text, limit, source: tracks)
+    async with run(app) as pilot:
+        await play_art(pilot)
+        assert art_image(app) is None
+        clients.made[0].jump(1)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert with_art.calls == [ART[0].thumbnail]  # VIDEOS[1] has no thumbnail: nothing to fetch
+        assert art_image(app) is None
+        assert app.query_one(tui.Art).size == (10, 5)
+
+
+@drive
+async def test_without_the_art_extra_there_is_no_column_and_nothing_is_fetched(clients, served, monkeypatch):
+    fetch = FakeFetch()
+    monkeypatch.setattr(art, "fetch", fetch)
+    app = make_app(clients, resolve=lambda text, limit, source: ART)
+    async with run(app) as pilot:
+        await play_art(pilot)
+        assert app.image_widget is None
+        assert app.query_one(tui.Art).display is False
+        assert not app.query_one(tui.Art).children
+        assert app.query_one("#np-text").region.x == app.query_one(tui.NowPlaying).content_region.x
+        assert app.query_one(tui.NowPlaying).region.height == 7
+        assert fetch.calls == []
+
+
+@drive
+async def test_show_art_false_hides_the_column_and_the_settings_screen_brings_it_back(clients, served, with_art):
+    settings.save(settings.Settings(show_art=False))
+    app = make_app(clients, resolve=lambda text, limit, source: ART)
+    async with run(app) as pilot:
+        await play_art(pilot)
+        column = app.query_one(tui.Art)
+        assert column.display is False
+        assert with_art.calls == []
+        assert app.query_one("#np-text").region.x == app.query_one(tui.NowPlaying).content_region.x
+        app.change_setting("show_art", True)  # what Enter on its Settings row does
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert column.display is True and column.size == (10, 5)
+        assert with_art.calls == [ART[0].thumbnail]
+        assert art_image(app) == ("decoded", b"image bytes")
+        app.change_setting("show_art", False)
+        await pilot.pause()
+        assert column.display is False
+        assert settings.load().show_art is False
+        assert app.query_one(tui.NowPlaying).region.height == 7
+
+
+@drive
+async def test_enter_on_show_art_in_the_settings_screen_toggles_the_column(clients, served, with_art):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await open_settings(pilot)
+        app.screen.query_one(DataTable).move_cursor(row=settings.KEYS.index("show_art"))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert settings.load().show_art is False
+        assert app.screen_stack[0].query_one(tui.Art).display is False
+
+
+@drive
+async def test_the_real_image_widget_shows_a_2x2_png(clients, served, monkeypatch):
+    pytest.importorskip("PIL")
+    pytest.importorskip("textual_image")
+    from textual_image.widget import Image
+
+    monkeypatch.setattr(art, "available", lambda: True)
+    monkeypatch.setattr(art, "fetch", FakeFetch(answer=png_2x2()))
+    app = make_app(clients, resolve=lambda text, limit, source: ART)
+    async with run(app) as pilot:
+        await pilot.pause()
+        assert app.image_widget is Image
+        height = app.query_one(tui.NowPlaying).region.height
+        await play_art(pilot)
+        image = art_image(app)
+        assert image.size == (2, 2)
+        column = app.query_one(tui.Art)
+        assert column.size == (10, 5)
+        assert 0 < column.query_one(Image).size.width <= 10 and 0 < column.query_one(Image).size.height <= 5
+        assert app.query_one(tui.NowPlaying).region.height == height == 7
+
+
+def png_2x2():
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (2, 2), "red").save(out, "PNG")
+    return out.getvalue()

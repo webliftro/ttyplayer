@@ -1,4 +1,5 @@
 import concurrent.futures
+import dataclasses
 import json
 import os
 import socket
@@ -250,6 +251,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "ok": True,
         "title": "Second",
         "uploader": "u",
+        "thumbnail": None,
         "position": 83.5,
         "duration": 296.0,
         "paused": True,
@@ -267,6 +269,14 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "sleep": None,
         "radio": False,
     }
+
+
+def test_status_names_the_current_tracks_thumbnail(monkeypatch):
+    cover = dataclasses.replace(B, thumbnail="https://i.ytimg.com/vi/b/hqdefault.jpg")
+    client = make_remote_client([A, cover], monkeypatch)
+    assert client.status()["thumbnail"] is None
+    client.index = 1
+    assert client.status()["thumbnail"] == cover.thumbnail
 
 
 def test_handle_control_status_before_mpv_reports_anything(monkeypatch):
@@ -1885,9 +1895,9 @@ def test_handle_control_queue_lists_the_queued_videos(monkeypatch):
     assert client.handle_control("queue") == {
         "ok": True,
         "videos": [
-            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration, "source": "youtube", "link": None},
-            {"id": B.id, "title": B.title, "uploader": B.uploader, "duration": B.duration, "source": "youtube", "link": None},
-            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration, "source": "youtube", "link": None},
+            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration, "source": "youtube", "link": None, "thumbnail": None},
+            {"id": B.id, "title": B.title, "uploader": B.uploader, "duration": B.duration, "source": "youtube", "link": None, "thumbnail": None},
+            {"id": A.id, "title": A.title, "uploader": A.uploader, "duration": A.duration, "source": "youtube", "link": None, "thumbnail": None},
         ],
         "index": 2,
     }

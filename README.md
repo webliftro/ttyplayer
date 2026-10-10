@@ -120,6 +120,8 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
+Looks: left of those lines the panel shows the playing track's cover, its YouTube thumbnail or SoundCloud artwork, in a 10-column box. Terminals that draw pictures (Kitty, WezTerm, iTerm2 and other Sixel ones) show the real image; elsewhere, Terminal.app for one, it is a mosaic of colored half-blocks. Covers come with the `art` extra, which the install scripts include; `ttyplayer doctor` says whether you have it. Each cover is downloaded once and kept in the data dir's `art` folder (the 200 most recent). `ttyplayer config set show_art false`, or Enter on `show_art` in the Settings screen, removes the box.
+
 | Where | Key | Action |
 |---|---|---|
 | table | `↑` / `↓` | move through the list (volume is `-` / `+`) |
@@ -175,6 +177,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `stream_enabled` | `false` | `ttyplayer serve` streams the sound to the web remote instead of playing it, as `--stream` does |
 | `spotify_client_id` | *none* | the Client ID of your own Spotify app, which `ttyplayer spotify login` needs (see Spotify above) |
 | `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
+| `show_art` | `true` | the track's cover in the TUI's now-playing panel (needs the `art` extra; without it nothing changes) |
 | `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
 | `radio` | `false` | a new player goes on with related YouTube tracks when its queue runs out, as `play --radio` does |
 | `normalize_loudness` | `false` | mpv evens out loud and quiet tracks (a `loudnorm` filter to −16 LUFS); the stream of `serve --stream` gets it too |
@@ -188,7 +191,7 @@ ttyplayer config set <key> <value>   change it: ttyplayer config set show_clock 
 ttyplayer config path                where the file is
 ```
 
-In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock and the level meter show or hide at once, the loudness filter goes in or out of the running mpv); Enter on a number asks for a new one, checked as `config set` checks it; the others are set with `ttyplayer config set`. A `seek_seconds` / `volume_step` changed there applies from the next key press, and the help shows the new step.
+In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock, the level meter and the cover show or hide at once, the loudness filter goes in or out of the running mpv); Enter on a number asks for a new one, checked as `config set` checks it; the others are set with `ttyplayer config set`. A `seek_seconds` / `volume_step` changed there applies from the next key press, and the help shows the new step.
 
 ## Server
 
@@ -328,6 +331,8 @@ uv tool install ttyplayer
 ```
 
 Instead of winget, `scoop install mpv` (from the `extras` bucket) or `choco install mpv` work too.
+
+For covers in the TUI, as the install scripts set up, install `'ttyplayer[art]'` in place of `ttyplayer` (it adds Pillow and textual-image).
 
 `uv tool install ttyplayer` installs from PyPI once ttyplayer is published there. Until then install straight from GitHub:
 

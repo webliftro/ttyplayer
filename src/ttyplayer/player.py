@@ -1009,6 +1009,11 @@ class MpvClient:
             return self.queue[self.index].uploader
         return None
 
+    def current_thumbnail(self):
+        if self.queue:
+            return self.queue[self.index].thumbnail
+        return None
+
     def up_next(self):
         if self.index + 1 < len(self.queue):
             return self.queue[self.index + 1].title
@@ -1030,6 +1035,7 @@ class MpvClient:
         return {
             "title": self.current_title(),
             "uploader": self.current_uploader(),
+            "thumbnail": self.current_thumbnail(),
             "position": self.state.get("time-pos"),
             "duration": self.state.get("duration"),
             "paused": bool(self.state.get("pause")),

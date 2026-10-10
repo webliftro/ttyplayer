@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import re
@@ -13,6 +14,7 @@ WINDOWS = sys.platform == "win32"  # the one platform test; modules import it, t
 VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")  # channel (UC…, 24) and playlist ids are longer
 # yt-dlp's key for a single track of each of youtube.SOURCES; a test keeps the two in step.
 TRACK_EXTRACTORS = ("Youtube", "Soundcloud")
+THUMBNAIL_WIDTH = 480  # the widest thumbnail worth fetching for a 10-cell column
 
 
 def data_path(filename):
@@ -59,7 +61,29 @@ def video_from_info(entry):
         source=source,
         # a SoundCloud search entry's url is an API one; webpage_url is the page people share
         link=None if source == "youtube" else entry.get("link") or entry.get("webpage_url") or entry.get("url"),
+        thumbnail=thumbnail_url(entry, source),
     )
+
+
+def stored_video(entry):
+    """The Video of a line video_entry() wrote: its thumbnail as saved, None in a line from before thumbnails."""
+    return dataclasses.replace(video_from_info(entry), thumbnail=entry.get("thumbnail"))
+
+
+def thumbnail_url(entry, source):
+    """A yt-dlp entry's cover: the widest of its thumbnails up to THUMBNAIL_WIDTH (else the last one),
+    else its thumbnail, else for YouTube the hqdefault.jpg every video id has; None without one."""
+    thumbnails = [each for each in entry.get("thumbnails") or [] if each.get("url")]
+    narrow = [each for each in thumbnails if (each.get("width") or THUMBNAIL_WIDTH + 1) <= THUMBNAIL_WIDTH]
+    if narrow:
+        return max(narrow, key=lambda each: each["width"])["url"]
+    if thumbnails:
+        return thumbnails[-1]["url"]
+    if entry.get("thumbnail"):
+        return entry["thumbnail"]
+    if source == "youtube":
+        return f"https://i.ytimg.com/vi/{entry['id']}/hqdefault.jpg"
+    return None
 
 
 def video_entry(video, stamp):
@@ -71,6 +95,7 @@ def video_entry(video, stamp):
         "duration": video.duration,
         "source": video.source,
         "link": video.link,
+        "thumbnail": video.thumbnail,
         stamp: datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 

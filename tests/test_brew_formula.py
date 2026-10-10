@@ -32,7 +32,11 @@ def release(name, version, requires=(), sdist=True):
 
 # A small PyPI: {name: {version: release}}; the last version listed is the latest.
 PYPI = {
-    "ttyplayer": {"1.0.0": release("ttyplayer", "1.0.0", ["aiohttp>=3.10", "textual>=8", "pytest; extra == 'dev'"])},
+    "ttyplayer": {"1.0.0": release("ttyplayer", "1.0.0", [
+        "aiohttp>=3.10", "textual>=8", "pytest; extra == 'dev'", "textual-image>=0.14.1; extra == 'art'", "pillow>=12.3; extra == 'art'"
+    ])},
+    "textual-image": {"0.14.1": release("textual-image", "0.14.1", ["pillow", "rich"])},
+    "rich": {"14.0.0": release("rich", "14.0.0")},
     "aiohttp": {"3.14.4": release("aiohttp", "3.14.4", ["Yarl<2,>=1.17", 'brotli; platform_python_implementation == "CPython" and extra == "speedups"'])},
     "yarl": {"1.0.0": release("yarl", "1.0.0"), "1.22.0": release("yarl", "1.22.0", ["idna>=2.0"])},
     "idna": {"3.20": release("idna", "3.20")},
@@ -62,6 +66,15 @@ def test_resources_follow_requirements_extras_and_markers():
     names = [name for name, _, _ in brew_formula.resources(PYPI["ttyplayer"]["1.0.0"]["info"]["requires_dist"], FakePypi(), {})]
     # Sorted; dev extras, Windows-only and old-Python requirements dropped; markdown-it-py[linkify] adds linkify-it-py.
     assert names == ["aiohttp", "idna", "linkify-it-py", "markdown-it-py", "mdurl", "textual", "yarl"]
+
+
+def test_the_formula_takes_the_art_extra_with_homebrews_pillow():
+    deps, formulas = brew_formula.dependencies(PYPI["ttyplayer"]["1.0.0"]["info"]["requires_dist"], FakePypi(), {}, {"art"})
+    assert [name for name, _, _ in deps] == [
+        "aiohttp", "idna", "linkify-it-py", "markdown-it-py", "mdurl", "rich", "textual", "textual-image", "yarl"
+    ]
+    assert formulas == ["pillow"]  # BREW_FORMULAS: a depends_on, never a resource
+    assert brew_formula.EXTRAS == {"art"} and brew_formula.BREW_FORMULAS == {"pillow": "pillow"}
 
 
 def test_resources_pass_the_sdist_url_and_sha_through():

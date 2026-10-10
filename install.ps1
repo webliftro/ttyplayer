@@ -20,6 +20,7 @@ $UvInstallCommand = 'powershell -ExecutionPolicy ByPass -c "irm https://astral.s
 $MpvInstallCommand = "winget install -e --id shinchiro.mpv"
 $AppInstallerUrl = "https://apps.microsoft.com/detail/9NBLGGH4NNS1"
 $RepoGitUrl = "git+https://github.com/webliftro/ttyplayer"
+$Extras = "[art]"  # the optional parts every install gets: album art in the TUI
 $UvBin = Join-Path $HOME ".local\bin"
 # shinchiro.mpv's installer puts mpv.exe in {autopf}\MPV Player and leaves PATH alone.
 $MpvDirName = "MPV Player"
@@ -118,11 +119,11 @@ function Test-Checkout {
 
 function Install-Ttyplayer {
     if (Test-Checkout) {
-        Invoke-RequiredStep "uv tool install --force ."
+        Invoke-RequiredStep "uv tool install --force '.$Extras'"
     }
-    elseif (-not (Invoke-Step "uv tool install --force ttyplayer")) {
+    elseif (-not (Invoke-Step "uv tool install --force 'ttyplayer$Extras'")) {
         Write-Info "no ttyplayer release on PyPI yet; installing from GitHub"
-        Invoke-RequiredStep "uv tool install --force $RepoGitUrl"
+        Invoke-RequiredStep "uv tool install --force 'ttyplayer$Extras @ $RepoGitUrl'"
     }
     if (-not $DryRun) {
         $env:Path = "$(uv tool dir --bin);$env:Path"

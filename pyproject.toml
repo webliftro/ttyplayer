@@ -25,6 +25,9 @@ dependencies = [
     "yt-dlp>=2026.8.19",
 ]
 
+[project.optional-dependencies]
+art = ["textual-image>=0.14.1", "pillow>=12.3"]  # album art in the TUI's panel
+
 [project.urls]
 Homepage = "https://github.com/webliftro/ttyplayer"
 Repository = "https://github.com/webliftro/ttyplayer"
@@ -39,4 +42,5 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "ttyplayer[art]",  # so the art tests run against the real textual_image
 ]

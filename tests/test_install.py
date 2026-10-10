@@ -54,7 +54,7 @@ def test_install_sh_is_valid_posix_sh():
 def test_install_sh_installs_everything_missing(tmp_path, os_name):
     result = run_install(tmp_path, ROOT, fakes=["brew"], os_name=os_name)
     assert result.returncode == 0, result.stderr
-    assert commands(result) == [UV_INSTALL, MPV_COMMANDS[os_name], "uv tool install --force .", "ttyplayer doctor"]
+    assert commands(result) == [UV_INSTALL, MPV_COMMANDS[os_name], "uv tool install --force '.[art]'", "ttyplayer doctor"]
 
 
 @posix_only
@@ -62,13 +62,13 @@ def test_install_sh_installs_everything_missing(tmp_path, os_name):
 def test_install_sh_skips_uv_and_mpv_when_present(tmp_path, os_name):
     result = run_install(tmp_path, ROOT, fakes=["uv", "mpv"], os_name=os_name)
     assert result.returncode == 0, result.stderr
-    assert commands(result) == ["uv tool install --force .", "ttyplayer doctor"]
+    assert commands(result) == ["uv tool install --force '.[art]'", "ttyplayer doctor"]
 
 
 @posix_only
 def test_install_sh_outside_a_checkout_installs_from_pypi(tmp_path):
     result = run_install(tmp_path, tmp_path, fakes=["uv", "mpv"], os_name="debian")
-    assert commands(result) == ["uv tool install --force ttyplayer", "ttyplayer doctor"]
+    assert commands(result) == ["uv tool install --force 'ttyplayer[art]'", "ttyplayer doctor"]
 
 
 @posix_only
@@ -119,6 +119,34 @@ def test_install_sh_uses_sudo_only_for_the_package_manager():
     assert len(sudo_lines) == len(cli.MPV_INSTALL["linux"])
     for line, command in zip(sudo_lines, cli.MPV_INSTALL["linux"], strict=True):
         assert f'echo "{command}"' in line
+
+
+@pytest.mark.parametrize("script, variable", [(INSTALL_SH, "$EXTRAS"), (INSTALL_PS1, "$Extras")])
+def test_install_scripts_name_the_art_extra_in_one_place(script, variable):
+    text = script.read_text()
+    assert text.count("[art]") == 1
+    # a checkout, PyPI, then GitHub: each install line takes the extra from that one place
+    for target in (f"'.{variable}'", f"'ttyplayer{variable}'", f"'ttyplayer{variable} @ "):
+        assert f"uv tool install --force {target}" in text
+
+
+@posix_only
+def test_install_sh_falls_back_to_github_with_the_extra_as_one_argument(tmp_path):
+    # Not a dry run: a fake uv records its arguments one per line and has no PyPI release to give.
+    bin_dir = fake_commands(tmp_path / "bin", "mpv", "ttyplayer")
+    (bin_dir / "grep").symlink_to(shutil.which("grep"))
+    log = tmp_path / "uv.log"
+    (bin_dir / "uv").write_text(
+        f'#!/bin/sh\nfor arg; do echo "$arg"; done >> {log}\necho -- >> {log}\n'
+        f'[ "$4" = "ttyplayer[art]" ] && exit 1\necho {bin_dir}\n'
+    )
+    (bin_dir / "uv").chmod(0o755)
+    env = {"PATH": str(bin_dir), "HOME": str(tmp_path), "TTYPLAYER_INSTALL_OS": "debian"}
+    result = subprocess.run([shutil.which("sh"), str(INSTALL_SH)], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = log.read_text().split("--\n")
+    assert calls[0].splitlines() == ["tool", "install", "--force", "ttyplayer[art]"]
+    assert calls[1].splitlines() == ["tool", "install", "--force", "ttyplayer[art] @ git+https://github.com/webliftro/ttyplayer"]
 
 
 def test_install_ps1_installs_the_doctor_winget_command():

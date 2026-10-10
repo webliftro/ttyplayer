@@ -46,17 +46,25 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio), settings_path, load, save,
+               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, …), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
                expired, and one Retry-After wait on a 429), user_playlists, playlist(ref) -> (name, [Track]),
                import_tracks: youtube.search per track, playlists.add of the first hit. SpotifyError.
-  models.py    Video dataclass: id, title, uploader, duration, source ("youtube" by default) and link (the
-               page URL yt-dlp reported, for every other source). url is the only place that builds a URL:
+  art.py       Album art for the TUI's panel: fetch(url) -> bytes | None (urllib, 3 s, never raises) through a
+               disk cache under data_path("art") (sha1 of the URL, 0600, the 200 most recently used kept),
+               decode(bytes) -> PIL image | None, available() (the art extra: Pillow and textual-image),
+               image_widget() (textual_image's Image, imported before the app runs). The only module that
+               imports PIL or textual_image, and only inside those functions.
+  models.py    Video dataclass: id, title, uploader, duration, source ("youtube" by default), link (the
+               page URL yt-dlp reported, for every other source) and thumbnail (the cover's URL or None). url is the only place that builds a URL:
                the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title.
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
-               video_entry, read_entries, append_entries, write_entries for the JSON lines files.
+               thumbnail_url, the one choice of a cover: the widest thumbnail up to 480 px, else the last,
+               else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries,
+               append_entries, write_entries for the JSON lines files, stored_video for a line read back
+               (its thumbnail as saved, None in a line from before thumbnails).
 ```
 
 Outside the package, `scripts/brew_formula.py <version>` prints the Homebrew formula for a release

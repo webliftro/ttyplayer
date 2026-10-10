@@ -157,3 +157,14 @@ def test_an_old_favorite_without_source_loads_as_youtube(tmp_path):
     path = tmp_path / "favorites.jsonl"
     path.write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "favorited_at": "2026-01-01T00:00:00+00:00"}\n')
     assert favorites.load(path) == [A]
+
+
+T = Video(id="t", title="Cover", uploader="u", duration=1, thumbnail="https://i.ytimg.com/vi/t/hqdefault.jpg")
+
+
+def test_a_thumbnail_round_trips_and_an_old_line_has_none(tmp_path):
+    path = tmp_path / "favorites.jsonl"
+    favorites.add(T, path)
+    assert favorites.load(path) == [T]
+    path.write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "source": "youtube"}\n')
+    assert favorites.load(path)[0].thumbnail is None

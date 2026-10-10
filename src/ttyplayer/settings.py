@@ -34,6 +34,7 @@ class Settings:
     stream_enabled: bool = False  # serve streams the sound to the web remote instead of playing it
     spotify_client_id: str = ""  # the user's own Spotify app, for spotify login (public by design: PKCE)
     show_levels: bool = True  # the level meter: mpv's level filter and the TUI's two bars
+    show_art: bool = True  # the track's thumbnail in the TUI's panel (with the art extra installed)
     search_source: str = "youtube"  # where a search looks: one of youtube.SOURCES
     radio: bool = False  # a new player goes on with related tracks when its queue runs out
     normalize_loudness: bool = False  # mpv's loudnorm filter evens out loud and quiet tracks

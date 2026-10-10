@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import random
 import shutil
@@ -11,7 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ttyplayer import cli, control, favorites, history, player, playlists, settings, spotify, utils, youtube
+from ttyplayer import art, cli, control, favorites, history, player, playlists, settings, spotify, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
 
@@ -708,10 +709,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
@@ -764,7 +765,7 @@ def test_doctor_runs_without_yt_dlp(tmp_path):
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, encoding="utf-8", env=env)
     assert result.returncode == 1, result.stderr
     lines = result.stdout.splitlines()
-    assert len(lines) == 7
+    assert len(lines) == 8
     assert lines[2].startswith("✗ yt-dlp")
 
 
@@ -814,6 +815,7 @@ def healthy(monkeypatch, tmp_path):
     monkeypatch.setattr(shutil, "which", lambda name: f"/opt/bin/{name}")
     monkeypatch.setattr(subprocess, "run", answer_version)
     monkeypatch.setattr(control, "private_dir", lambda directory: None)
+    monkeypatch.setattr(art, "available", lambda: True)
 
 
 def test_doctor_all_green(monkeypatch, tmp_path):
@@ -821,13 +823,22 @@ def test_doctor_all_green(monkeypatch, tmp_path):
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert len(lines) == 7
+    assert len(lines) == 8
     assert all(line.startswith("✓ ") for line in lines)
     assert f"✓ ttyplayer {metadata.version('ttyplayer')}" in lines
     assert any(line.startswith("✓ yt-dlp 20") for line in lines)
     assert f"✓ {VERSIONS['mpv']}" in lines
     assert f"✓ {VERSIONS['ffmpeg']}" in lines
     assert f"✓ data dir {tmp_path / 'ttyplayer'}" in lines
+    assert "✓ album art" in lines
+
+
+def test_doctor_without_the_art_extra_shows_how_to_get_it_and_passes(monkeypatch, tmp_path):
+    healthy(monkeypatch, tmp_path)
+    monkeypatch.setattr(art, "available", lambda: False)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "- album art not installed: uv tool install 'ttyplayer[art]'" in result.output.splitlines()
 
 
 def test_doctor_without_ffmpeg_shows_a_dash_row_and_passes(monkeypatch, tmp_path):
@@ -1435,7 +1446,11 @@ def test_playlist_save_queue_replaces_the_playlist_with_the_queue(data_home, mon
     assert result.exit_code == 0, result.output
     assert result.output == "Saved 2 videos to chill\n"
     assert send.names == ["queue"]
-    assert playlists.load("chill") == [ONE, Video(id="2", title="Two", uploader="u", duration=None)]
+    # the queue's entries name no thumbnail, so each gets its video id's hqdefault.jpg, which the playlist keeps
+    assert playlists.load("chill") == [
+        dataclasses.replace(ONE, thumbnail="https://i.ytimg.com/vi/1/hqdefault.jpg"),
+        Video(id="2", title="Two", uploader="u", duration=None, thumbnail="https://i.ytimg.com/vi/2/hqdefault.jpg"),
+    ]
 
 
 def test_playlist_save_queue_creates_a_new_playlist(data_home, monkeypatch):

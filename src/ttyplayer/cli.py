@@ -10,7 +10,7 @@ from importlib import metadata
 
 import typer
 
-from ttyplayer import control, favorites, history, player, playlists, settings
+from ttyplayer import art, control, favorites, history, player, playlists, settings
 from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen, video_from_info
 
 app = typer.Typer()
@@ -84,6 +84,7 @@ def doctor_checks():
     yield check_yt_dlp()
     yield check_mpv()
     yield check_ffmpeg()
+    yield check_art()
     yield check_data_dir()
     yield check_control_dir()
 
@@ -109,6 +110,13 @@ def check_ffmpeg():
     if path is None:
         return None, f"ffmpeg not found on PATH; only serve --stream needs it. {ffmpeg_install_hint()}"
     return check_version("ffmpeg", path, flag="-version")
+
+
+def check_art():
+    """The art extra is optional too: missing, the TUI's panel has no art column."""
+    if art.available():
+        return True, "album art"
+    return None, f"album art not installed: {art.INSTALL_HINT}"
 
 
 def check_version(name, path, flag="--version"):

@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -472,9 +472,10 @@ def test_search_and_favorites_give_each_video_the_url_of_its_site(monkeypatch, f
 
 
 def test_posting_a_favorite_toggles_it(fake, favorites_file):
-    video = page_video(VIDEOS[1])
-    assert api(fake, "POST", "/api/favorites/v1", json=video) == (200, [video])
-    assert favorites.load() == [VIDEOS[1]]
+    # the page's video names no thumbnail, so the favorite gets its id's hqdefault.jpg (utils.thumbnail_url)
+    stored = replace(VIDEOS[1], thumbnail="https://i.ytimg.com/vi/v1/hqdefault.jpg")
+    assert api(fake, "POST", "/api/favorites/v1", json=page_video(VIDEOS[1])) == (200, [page_video(stored)])
+    assert favorites.load() == [stored]
     assert api(fake, "POST", "/api/favorites/v1") == (200, [])  # no body needed to unfavorite
     assert favorites.load() == []
 

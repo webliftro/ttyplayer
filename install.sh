@@ -15,6 +15,7 @@ set -eu
 UV_INSTALL_URL="https://astral.sh/uv/install.sh"
 HOMEBREW_INSTALL="/bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
 REPO_GIT_URL="git+https://github.com/webliftro/ttyplayer"
+EXTRAS="[art]"  # the optional parts every install gets: album art in the TUI
 MPV_INSTALL_DOCS="https://mpv.io/installation/"
 
 DRY_RUN="${TTYPLAYER_INSTALL_DRY_RUN:-0}"
@@ -109,10 +110,10 @@ in_checkout() {
 
 install_ttyplayer() {
     if in_checkout; then
-        run "uv tool install --force ."
-    elif ! run "uv tool install --force ttyplayer"; then
+        run "uv tool install --force '.$EXTRAS'"
+    elif ! run "uv tool install --force 'ttyplayer$EXTRAS'"; then
         say "no ttyplayer release on PyPI yet; installing from GitHub"
-        run "uv tool install --force $REPO_GIT_URL"
+        run "uv tool install --force 'ttyplayer$EXTRAS @ $REPO_GIT_URL'"
     fi
     if [ "$DRY_RUN" != 1 ]; then
         PATH="$(uv tool dir --bin):$PATH"

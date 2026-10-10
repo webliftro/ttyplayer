@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from ttyplayer.models import Video
-from ttyplayer.utils import append_entries, data_path, read_entries, video_entry, video_from_info, write_entries
+from ttyplayer.utils import append_entries, data_path, read_entries, stored_video, video_entry, write_entries
 
 
 def favorites_path() -> Path:
@@ -57,7 +57,7 @@ def clear(path: Path | None = None) -> int:
 def load(path: Path | None = None, limit: int | None = None) -> list[Video]:
     """Most recently added first, each video once, at most `limit` of them (all if None)."""
     path = path or favorites_path()
-    videos = [video_from_info(entry) for entry in _entries(path)]
+    videos = [stored_video(entry) for entry in _entries(path)]
     return videos[:limit]
 
 

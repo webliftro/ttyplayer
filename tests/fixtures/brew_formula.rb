@@ -8,6 +8,7 @@ class Ttyplayer < Formula
   license "MIT"
 
   depends_on "mpv"
+  depends_on "pillow"
   depends_on "python@3.13"
   # Only `ttyplayer serve --stream` uses ffmpeg, and doctor reports it as optional.
   depends_on "ffmpeg" => :optional
@@ -37,9 +38,19 @@ class Ttyplayer < Formula
     sha256 "mdurl-0.1.2-sha"
   end
 
+  resource "rich" do
+    url "https://files.example/rich-14.0.0.tar.gz"
+    sha256 "rich-14.0.0-sha"
+  end
+
   resource "textual" do
     url "https://files.example/textual-8.2.0.tar.gz"
     sha256 "textual-8.2.0-sha"
+  end
+
+  resource "textual-image" do
+    url "https://files.example/textual-image-0.14.1.tar.gz"
+    sha256 "textual-image-0.14.1-sha"
   end
 
   resource "yarl" do

@@ -88,3 +88,14 @@ def test_an_old_line_without_source_loads_as_youtube(tmp_path):
     path.write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "played_at": "2026-01-01T00:00:00+00:00"}\n')
     assert history.load(path) == [A]
     assert history.load(path)[0].url == "https://www.youtube.com/watch?v=a"
+
+
+T = Video(id="t", title="Cover", uploader="u", duration=1, thumbnail="https://i.ytimg.com/vi/t/hqdefault.jpg")
+
+
+def test_a_thumbnail_round_trips_and_an_old_line_has_none(tmp_path):
+    path = tmp_path / "history.jsonl"
+    history.record(T, path)
+    assert history.load(path) == [T]
+    path.write_text('{"id": "a", "title": "First", "uploader": "u", "duration": 10, "source": "youtube"}\n')
+    assert history.load(path)[0].thumbnail is None

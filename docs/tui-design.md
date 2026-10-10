@@ -22,11 +22,11 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 │ │  3  …                                                                 │
 │ └───────────────────────────────────────────────────────────────────────┘
 │ ┌ Now playing ──────────────────────────────────────────────────────────┐
-│ │ ▶  Never Gonna Give You Up · Rick Astley                        [2/5] │  title bold accent
-│ │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  1:23 / 3:33 │  ProgressBar
-│ │ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  ∞  Up next: lofi hip hop radio  started in 2.4s │  volume · sleep · radio · queue · timing
-│ │ L ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │  level meter (show_levels)
-│ │ R ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │
+│ │ ▓▓▓▓▓▓▓▓▓▓ ▶  Never Gonna Give You Up · Rick Astley             [2/5] │  art (show_art) · title bold accent
+│ │ ▓▓▓▓▓▓▓▓▓▓ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  1:23 / 3:33 │  ProgressBar
+│ │ ▓▓▓▓▓▓▓▓▓▓ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  ∞  Up next: lofi hip…  started 2.4s │  volume · sleep · radio · queue · timing
+│ │ ▓▓▓▓▓▓▓▓▓▓ L ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │  level meter (show_levels)
+│ │ ▓▓▓▓▓▓▓▓▓▓ R ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │
 │ └───────────────────────────────────────────────────────────────────────┘
 │ space Pause  n Next  p Prev  a Add  f Fav  / Search  ? Help  q Quit      │  Footer (from BINDINGS)
 └──────────────────────────────────────────────────────────────────────────┘
@@ -59,6 +59,18 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   `player.radio_text(status["radio"])`; empty while it is off. `R` (palette **Radio**) sends
   `radio toggle` through `handle_control`, the control socket's path, and toasts the reply
   (`Radio on` / `Radio off`); the `radio` setting is what a new player starts with.
+- Left of the lines, the art column (`Art`): the playing track's thumbnail, 10 cells wide and as
+  tall as the panel's lines (five, three without levels), on `$panel`, one cell before the text.
+  `textual_image`'s `Image` widget draws it: the real picture over the Kitty graphics protocol (TGP)
+  or Sixel where the terminal answers for one (Kitty, WezTerm, iTerm2, …), else a mosaic of colored
+  half-cells (Terminal.app), fitted to the column with its shape kept. The widget class is imported
+  before the app runs (`art.image_widget()`), because that import asks the terminal what it can draw.
+  When the playing video's id changes the column goes blank and a worker thread loads `Video.thumbnail`
+  through `art.fetch` (the disk cache, else the network, 3 s) and `art.decode`; a result for a track
+  that is no longer playing is dropped, and only the app thread touches the widget. It stays blank
+  while loading, idle, for a track without a thumbnail, or when the fetch fails. The column is not
+  there at all (the lines take the whole width) without the `art` extra (`art.available()`) or with
+  `show_art = false`; either way the panel's height and lines are the same.
 - The last two lines are the level meter: `L` and `R` bars of the volume meter's cells
   (`player.level_meter()`), as wide as the panel, empty at −60 dBFS, full at 0 dBFS, in `$accent`.
   `levels` is `None` while paused (and before mpv has measured): the bars are empty, not hidden, so
@@ -66,7 +78,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   playing. `show_levels = false` hides both lines (the panel shrinks to three) and, in a running TUI,
   takes the filter out of mpv at once (`af remove`).
 - Settings the TUI reads (the `S` modal lists every key with its value and default): `show_clock`,
-  `theme`, `search_limit`, `search_source`, `remote_url`, `show_levels`, `radio`, `normalize_loudness`
+  `theme`, `search_limit`, `search_source`, `remote_url`, `show_levels`, `show_art` (Enter in the modal
+  hides or shows the art column at once), `radio`, `normalize_loudness`
   (a new player starts with the loudness filter; Enter in the modal sends `set_normalize`, `af pre` /
   `af remove @norm`), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
   bindings (`step_bindings()`, from `player.keys()`'s numbers) when a table mounts and again when

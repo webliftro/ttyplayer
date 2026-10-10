@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from ttyplayer.models import Video
-from ttyplayer.utils import append_entries, data_path, read_entries, video_entry, video_from_info
+from ttyplayer.utils import append_entries, data_path, read_entries, stored_video, video_entry
 
 
 def history_path() -> Path:
@@ -32,7 +32,7 @@ def load(path: Path | None = None, limit: int = 20) -> list[Video]:
         if entry["id"] in seen:
             continue
         seen.add(entry["id"])
-        videos.append(video_from_info(entry))
+        videos.append(stored_video(entry))
         if len(videos) == limit:
             break
     return videos
