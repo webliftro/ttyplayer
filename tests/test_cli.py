@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import sys
 import tomllib
-import types
 import zipfile
 from importlib import metadata
 from pathlib import Path
@@ -12,7 +11,6 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from conftest import posix_only
 from ttyplayer import cli, control, favorites, history, player, playlists, settings, spotify, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
@@ -102,9 +100,10 @@ class FakeClient:
 
     instances = []
 
-    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False, levels=True):
+    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True):
         self.video = video
-        self.headless_pcm = headless_pcm
+        self.pcm = pcm
+        self.headless_pcm = pcm is not None
         self.levels = levels
         self.on_play = on_play
         self.on_state = on_state
@@ -865,7 +864,8 @@ def test_mpv_install_hint_per_platform(platform, hint):
             "Install it with: sudo apt-get install -y ffmpeg (or: sudo dnf install -y ffmpeg-free, "
             "sudo pacman -S --noconfirm ffmpeg, sudo apk add ffmpeg)",
         ),
-        ("win32", "Install it from https://ffmpeg.org/download.html"),
+        ("win32", "Install it with: winget install -e --id Gyan.FFmpeg (or: scoop install ffmpeg, choco install ffmpeg)"),
+        ("sunos5", "Install it from https://ffmpeg.org/download.html"),
     ],
 )
 def test_ffmpeg_install_hint_per_platform(platform, hint):
@@ -1525,24 +1525,22 @@ def stream_fakes(monkeypatch, serve_fakes):
 
     monkeypatch.setattr(stream, "Streamer", FakeStreamer)
     monkeypatch.setattr(stream, "find_ffmpeg", lambda: "/opt/bin/ffmpeg")
-    monkeypatch.setattr(FakeServeClient, "process", types.SimpleNamespace(stdout="mpv-stdout"), raising=False)
+    monkeypatch.setattr(stream, "WINDOWS", False)
     return stream
 
 
-@posix_only
 def test_serve_stream_pipes_mpv_into_ffmpeg_and_stops_mpv_before_ffmpeg(stream_fakes, serve_fakes):
     result = runner.invoke(app, ["serve", "--stream"])
     assert result.exit_code == 0, result.output
     assert "Streaming: no sound plays here" in result.output
     [client] = FakeClient.instances
-    assert client.headless_pcm is True
+    assert isinstance(client.pcm, stream_fakes.StdoutPipe)
     assert serve_log == [
-        ("streamer.start", "mpv-stdout", "/opt/bin/ffmpeg"), "remote.serve", ("server.start", "127.0.0.1", 7700),
+        ("streamer.start", client.pcm, "/opt/bin/ffmpeg"), "remote.serve", ("server.start", "127.0.0.1", 7700),
         "waiting", "server.stop", "remote.stop", "client.quit", "streamer.stop",
     ]  # fmt: skip
 
 
-@posix_only
 def test_serve_streams_when_stream_enabled_is_set(stream_fakes, serve_fakes):
     settings.save(settings.Settings(stream_enabled=True, server_token="kept"))
     assert runner.invoke(app, ["serve"]).exit_code == 0
@@ -1557,7 +1555,6 @@ def test_serve_without_stream_changes_nothing(stream_fakes, serve_fakes):
     assert not [entry for entry in serve_log if "streamer" in str(entry)]
 
 
-@posix_only
 def test_serve_stream_without_ffmpeg_says_how_to_install_it_and_starts_nothing(monkeypatch, stream_fakes, serve_fakes):
     monkeypatch.setattr(stream_fakes, "find_ffmpeg", lambda: None)
     result = runner.invoke(app, ["serve", "--stream"])
@@ -1566,15 +1563,24 @@ def test_serve_stream_without_ffmpeg_says_how_to_install_it_and_starts_nothing(m
     assert FakeClient.instances == [] and serve_log == []
 
 
-def test_serve_stream_on_windows_refuses(monkeypatch, stream_fakes, serve_fakes):
-    monkeypatch.setattr(cli, "WINDOWS", True)
+def test_serve_stream_on_windows_streams_through_a_named_pipe(monkeypatch, stream_fakes, serve_fakes, fake_winapi):
+    monkeypatch.setattr(stream_fakes, "WINDOWS", True)
+    result = runner.invoke(app, ["serve", "--stream"])
+    assert result.exit_code == 0, result.output
+    [client] = FakeClient.instances
+    assert isinstance(client.pcm, stream_fakes.NamedPipe)
+    assert serve_log[0] == ("streamer.start", client.pcm, "/opt/bin/ffmpeg")
+
+
+def test_serve_stream_whose_pipe_name_is_taken_says_so_and_starts_nothing(monkeypatch, stream_fakes, serve_fakes, fake_winapi):
+    monkeypatch.setattr(stream_fakes, "WINDOWS", True)
+    fake_winapi.taken = True
     result = runner.invoke(app, ["serve", "--stream"])
     assert result.exit_code == 1
-    assert result.stderr == "serve --stream needs macOS or Linux: mpv cannot hand its sound to ffmpeg on Windows\n"
+    assert result.stderr == "Cannot create the pipe mpv streams through: Access is denied\n"
     assert FakeClient.instances == [] and serve_log == []
 
 
-@posix_only
 def test_serve_stream_when_ffmpeg_cannot_start_stops_mpv(monkeypatch, stream_fakes, serve_fakes):
     def broken(pcm, ffmpeg):
         raise PermissionError(13, "Permission denied")

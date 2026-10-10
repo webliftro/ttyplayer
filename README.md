@@ -232,7 +232,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 ttyplayer serve --stream --host 0.0.0.0
 ```
 
-It needs ffmpeg, which nothing else in ttyplayer does (`ttyplayer doctor` shows whether it is there), and runs on macOS and Linux, not Windows:
+It needs ffmpeg, which nothing else in ttyplayer does (`ttyplayer doctor` shows whether it is there):
 
 | System | Install ffmpeg |
 |---|---|
@@ -241,6 +241,7 @@ It needs ffmpeg, which nothing else in ttyplayer does (`ttyplayer doctor` shows 
 | Fedora | `sudo dnf install -y ffmpeg-free` |
 | Arch | `sudo pacman -S --noconfirm ffmpeg` |
 | Alpine | `sudo apk add ffmpeg` |
+| Windows | `winget install -e --id Gyan.FFmpeg` (or `scoop install ffmpeg`, `choco install ffmpeg`) |
 
 The stream is gated by the same token as the API and is plain HTTP; the security notes below apply to it too.
 

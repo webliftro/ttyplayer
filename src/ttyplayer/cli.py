@@ -11,7 +11,7 @@ from importlib import metadata
 import typer
 
 from ttyplayer import control, favorites, history, player, playlists, settings
-from ttyplayer.utils import APP_NAME, WINDOWS, data_path, format_time, parse_picks, unseen, video_from_info
+from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen, video_from_info
 
 app = typer.Typer()
 config_app = typer.Typer()
@@ -38,7 +38,7 @@ MPV_INSTALL = {
     ],
     "win32": ["winget install -e --id shinchiro.mpv", "scoop install mpv", "choco install mpv"],
 }
-# The same for ffmpeg, which only serve --stream needs (and which streams on macOS and Linux only).
+# The same for ffmpeg, which only serve --stream needs.
 FFMPEG_INSTALL = {
     "darwin": ["brew install ffmpeg"],
     "linux": [
@@ -47,6 +47,7 @@ FFMPEG_INSTALL = {
         "sudo pacman -S --noconfirm ffmpeg",
         "sudo apk add ffmpeg",
     ],
+    "win32": ["winget install -e --id Gyan.FFmpeg", "scoop install ffmpeg", "choco install ffmpeg"],
 }
 
 
@@ -279,7 +280,7 @@ def serve(
     port = port or current.server_port
     ffmpeg = stream_ffmpeg() if stream or current.stream_enabled else None
     hub = server.Broadcaster()
-    client = start_mpv(False, on_state=hub, headless_pcm=bool(ffmpeg))
+    client = start_mpv(False, on_state=hub, pcm=pcm_source() if ffmpeg else None)
     streamer = start_streamer(client, ffmpeg) if ffmpeg else None
     remote = control.serve(client.handle_control)
     try:
@@ -307,12 +308,20 @@ def stream_ffmpeg():
     """The ffmpeg serve --stream encodes with, or a one-line message and exit 1 when it cannot stream."""
     from ttyplayer import stream  # asyncio loads only for this mode
 
-    if WINDOWS:
-        fail("serve --stream needs macOS or Linux: mpv cannot hand its sound to ffmpeg on Windows")
     ffmpeg = stream.find_ffmpeg()
     if ffmpeg is None:
         fail(f"serve --stream needs ffmpeg, which is not on PATH. {ffmpeg_install_hint()}")
     return ffmpeg
+
+
+def pcm_source():
+    """The stream.PcmSource mpv writes into for serve --stream, or a one-line message and exit 1."""
+    from ttyplayer import stream
+
+    try:
+        return stream.pcm_source()
+    except OSError as error:
+        fail(f"Cannot create the pipe mpv streams through: {error.strerror or error}")
 
 
 def start_streamer(client, ffmpeg):
@@ -320,7 +329,7 @@ def start_streamer(client, ffmpeg):
     from ttyplayer import stream
 
     try:
-        return stream.Streamer(client.process.stdout, ffmpeg)
+        return stream.Streamer(client.pcm, ffmpeg)
     except OSError as error:
         client.quit()
         fail(f"Cannot start ffmpeg at {ffmpeg}: {error.strerror or error}")
@@ -682,14 +691,14 @@ def start_playback(videos, with_video):
     client.run()
 
 
-def start_mpv(with_video, on_state=None, headless_pcm=False):
+def start_mpv(with_video, on_state=None, pcm=None):
     """An MpvClient that keeps history, or a one-line message and exit 1 when mpv cannot start."""
     try:
         return player.MpvClient(
             with_video,
             on_play=history.record,
             on_state=on_state,
-            headless_pcm=headless_pcm,
+            pcm=pcm,
             levels=load_settings().show_levels,
         )
     except FileNotFoundError:

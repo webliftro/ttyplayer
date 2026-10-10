@@ -1,22 +1,25 @@
 """ttyplayer serve --stream: what mpv plays, encoded to Opus by ffmpeg, for many listeners at once.
 
-mpv writes raw PCM to its stdout (MpvClient(headless_pcm=True)); a pacer thread hands it on to
-ffmpeg at the speed it plays, and silence while mpv has none (paused, between tracks), so the
-stream never stalls; one reader thread splits ffmpeg's Ogg output into pages and offers
-each page to every listener. A listener that falls behind loses pages, never the others' sound.
+mpv writes raw PCM into a PcmSource (MpvClient(pcm=pcm_source())): its stdout on macOS and Linux,
+a named pipe ttyplayer creates on Windows, where select polls sockets alone. A pacer thread hands
+that PCM on to ffmpeg at the speed it plays, and silence while mpv has none (paused, between
+tracks), so the stream never stalls; one reader thread splits ffmpeg's Ogg output into pages and
+offers each page to every listener. A listener that falls behind loses pages, never the others' sound.
 Late listeners first get the stream's header pages, which an Opus decoder needs before any audio.
-Linux and macOS only: next_chunk polls mpv's pipe with select, which Windows offers for sockets
-alone, so cli.stream_ffmpeg refuses the mode there.
 """
 
 import asyncio
 import os
+import secrets
 import select
 import shutil
 import struct
 import subprocess
+import sys
 import threading
 import time
+
+from ttyplayer.utils import WINDOWS
 
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -27,11 +30,13 @@ SILENCE = bytes(PCM_CHUNK)
 MAX_LAG = 0.5  # seconds behind the clock (ffmpeg or the machine stalled) after which the clock starts over
 STOP_TIMEOUT = 2  # seconds ffmpeg gets to exit before it is killed
 BACKLOG = 250  # Ogg pages (20 ms each, so 5 s) a listener may fall behind before its new pages are dropped
+PIPE_BUFFER = 65536  # bytes mpv may write ahead into the Windows pipe, as much as into a Unix one
+CONNECT_TIMEOUT = 5  # seconds a track may sound before mpv must have opened the Windows pipe
 
-# The mpv options that make it write PCM, in the format ffmpeg reads, to its stdout instead of a sound card.
+# The mpv options that make it write PCM, in the format ffmpeg reads, instead of to a sound card;
+# --ao-pcm-file, where it goes, comes from the PcmSource.
 MPV_PCM_OPTIONS = [
     "--ao=pcm",
-    "--ao-pcm-file=/dev/stdout",
     "--ao-pcm-waveheader=no",
     "--audio-format=s16",
     f"--audio-samplerate={SAMPLE_RATE}",
@@ -53,6 +58,148 @@ def ffmpeg_argv(path):
 
 def find_ffmpeg():
     return shutil.which("ffmpeg")
+
+
+# --- where mpv's PCM comes in -------------------------------------------------
+
+
+class PcmSource:
+    """Where mpv writes its PCM (--ao-pcm-file) and the pacer reads it; pcm_source() picks one per OS."""
+
+    popen_stdout = None  # what mpv's stdout must be for it
+
+    def mpv_target(self):
+        """The path mpv writes to."""
+        raise NotImplementedError
+
+    def attach(self, client):
+        """mpv started under client, a player.MpvClient."""
+
+    def read_ready(self):
+        """Whether read() has PCM now, without waiting."""
+        raise NotImplementedError
+
+    def read(self, size):
+        """Up to size bytes of PCM, waiting for at least one; b"" once mpv closed its end."""
+        raise NotImplementedError
+
+    def close(self):
+        raise NotImplementedError
+
+
+class StdoutPipe(PcmSource):
+    """macOS and Linux: mpv writes to its own stdout, a pipe to ttyplayer polled with select."""
+
+    popen_stdout = subprocess.PIPE
+    pipe = None
+
+    def mpv_target(self):
+        return "/dev/stdout"
+
+    def attach(self, client):
+        self.pipe = client.process.stdout
+
+    def read_ready(self):
+        return bool(select.select([self.pipe], [], [], 0)[0])
+
+    def read(self, size):
+        return os.read(self.pipe.fileno(), size)
+
+    def close(self):
+        if self.pipe:
+            close_quietly(self.pipe)
+
+
+class NamedPipe(PcmSource):
+    """Windows: an inbound named pipe ttyplayer creates under a random name and mpv opens as a file.
+
+    mpv opens the file when a track starts playing and may close it when playback stops, so the
+    pipe waits for it without blocking, and is made anew each time mpv closes it. Only once a track
+    has sounded for CONNECT_TIMEOUT with the pipe still unopened does the wait fail (TimeoutError).
+    One instance, created as the name's first: a process that took the name first makes it fail,
+    never shares it.
+    """
+
+    clock = staticmethod(time.monotonic)
+    sounding = staticmethod(lambda: False)  # attach() puts in the MpvClient's
+
+    def __init__(self):
+        import _winapi  # Windows only
+
+        self.winapi = _winapi
+        self.name = rf"\\.\pipe\ttyplayer-pcm-{os.getpid()}-{secrets.token_hex(8)}"
+        self.handle = self.connecting = self.unopened_since = None
+        self.open()
+
+    def open(self):
+        """Create the pipe and start waiting for mpv to open it."""
+        winapi = self.winapi
+        self.handle = winapi.CreateNamedPipe(
+            self.name,
+            winapi.PIPE_ACCESS_INBOUND | winapi.FILE_FLAG_FIRST_PIPE_INSTANCE | winapi.FILE_FLAG_OVERLAPPED,
+            winapi.PIPE_WAIT,  # byte mode, the default
+            1, 0, PIPE_BUFFER, 0, winapi.NULL,
+        )  # fmt: skip
+        self.connecting = winapi.ConnectNamedPipe(self.handle, overlapped=True)
+
+    def mpv_target(self):
+        return self.name
+
+    def attach(self, client):
+        self.sounding = client.sounding
+
+    def read_ready(self):
+        if self.connecting is not None:
+            if self.winapi.WaitForSingleObject(self.connecting.event, 0) != self.winapi.WAIT_OBJECT_0:
+                self.check_unopened()
+                return False  # mpv has not opened it: nothing plays yet
+            self.connecting.GetOverlappedResult(True)
+            self.connecting = self.unopened_since = None
+        try:
+            available, _ = self.winapi.PeekNamedPipe(self.handle)
+        except BrokenPipeError:  # mpv closed it (playback stopped, or mpv quit), and it is drained
+            self.reopen()
+            return False
+        return available > 0
+
+    def read(self, size):
+        try:
+            reading, _ = self.winapi.ReadFile(self.handle, size, overlapped=True)
+            reading.GetOverlappedResult(True)
+        except BrokenPipeError:
+            self.reopen()
+            return b""
+        return bytes(reading.getbuffer())
+
+    def check_unopened(self):
+        """Raise TimeoutError once a track has sounded CONNECT_TIMEOUT and mpv has not opened the pipe."""
+        if not self.sounding():
+            self.unopened_since = None  # idle, loading or paused: mpv need not open it yet
+        elif self.unopened_since is None:
+            self.unopened_since = self.clock()
+        elif self.clock() - self.unopened_since > CONNECT_TIMEOUT:
+            raise TimeoutError(f"mpv did not open the pipe {self.name} within {CONNECT_TIMEOUT} s of playing")
+
+    def reopen(self):
+        self.close()
+        self.open()
+
+    def close(self):
+        """Stop waiting for mpv, wait until Windows let go of that wait, then close the pipe (if reopen() made one)."""
+        if self.connecting is not None:
+            self.connecting.cancel()
+            try:
+                self.connecting.GetOverlappedResult(True)  # its OVERLAPPED must outlive the cancel
+            except OSError:
+                pass  # ERROR_OPERATION_ABORTED, or the connect failed: either way it is over
+            self.connecting = None
+        if self.handle is not None:
+            self.winapi.CloseHandle(self.handle)
+            self.handle = None
+
+
+def pcm_source():
+    return NamedPipe() if WINDOWS else StdoutPipe()
 
 
 # --- Ogg pages ----------------------------------------------------------------
@@ -115,7 +262,7 @@ class Listener:
 
 
 class Streamer:
-    """Runs ffmpeg on pcm (mpv's stdout) and fans its pages out to the listeners until stop()."""
+    """Runs ffmpeg on pcm (a PcmSource mpv writes to) and fans its pages out to the listeners until stop()."""
 
     def __init__(self, pcm, ffmpeg="ffmpeg", clock=time.monotonic, sleep=time.sleep):
         self.pcm = pcm
@@ -132,7 +279,7 @@ class Streamer:
         self.reader.start()
 
     def pace(self):
-        """Hand ffmpeg a chunk of pcm each time the last one has played, until mpv's stdout ends.
+        """Hand ffmpeg a chunk of pcm each time the last one has played, until mpv's PCM ends.
 
         mpv's pcm output does not wait for a sound card, so without this it would race through each
         track and the listeners would get minutes of sound at once. Behind by more than MAX_LAG,
@@ -152,6 +299,8 @@ class Streamer:
                 self.process.stdin.write(chunk)
                 self.process.stdin.flush()
                 sent += len(chunk)
+        except TimeoutError as error:  # mpv never opened its pipe: the listeners would hear silence forever
+            print(f"Streaming stopped: {error}", file=sys.stderr)
         except (OSError, ValueError):
             pass  # ffmpeg, or mpv's pipe, closed under it: stop() is running
         finally:
@@ -159,12 +308,11 @@ class Streamer:
 
     def next_chunk(self):
         """mpv's next PCM, whole frames only, if it has some ready; else silence; b"" once mpv quit."""
-        fd = self.pcm.fileno()
-        if not select.select([fd], [], [], 0)[0]:
+        if not self.pcm.read_ready():
             return SILENCE
-        chunk = os.read(fd, PCM_CHUNK)
+        chunk = self.pcm.read(PCM_CHUNK)
         while chunk and len(chunk) % FRAME:  # silence after half a frame would shift every later sample
-            more = os.read(fd, FRAME - len(chunk) % FRAME)
+            more = self.pcm.read(FRAME - len(chunk) % FRAME)
             if not more:
                 break
             chunk += more
@@ -214,7 +362,7 @@ class Streamer:
             listener.offer(None)
 
     def stop(self):
-        """Stop ffmpeg (after mpv quit: its stdout already ended) and the two threads."""
+        """Stop ffmpeg (after mpv quit: its PCM already ended), the two threads, and pcm."""
         close_quietly(self.process.stdin)
         try:
             self.process.wait(timeout=STOP_TIMEOUT)
@@ -224,6 +372,7 @@ class Streamer:
         self.pacer.join(timeout=1)
         self.reader.join(timeout=1)
         close_quietly(self.process.stdout)
+        self.pcm.close()
 
 
 def close_quietly(pipe):

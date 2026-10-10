@@ -65,16 +65,16 @@ TERMINAL_ARROWS = {"[D": "left", "[C": "right", "[A": "up", "[B": "down"}  # aft
 CONSOLE_ARROWS = {"K": "left", "M": "right", "H": "up", "P": "down"}  # after \xe0 or \x00
 
 
-def build_argv(video, socket_path, headless_pcm=False, levels=True):
-    """mpv's command line; headless_pcm writes the sound to its stdout for ttyplayer serve --stream, not to speakers.
+def build_argv(video, socket_path, pcm_target=None, levels=True):
+    """mpv's command line; pcm_target, a PcmSource's path, takes the sound as PCM for ttyplayer serve --stream, not speakers.
 
-    levels adds the level meter's filter, except under headless_pcm.
+    levels adds the level meter's filter, except with a pcm_target.
     """
     argv = ["mpv", "--idle", "--no-terminal", f"--input-ipc-server={socket_path}"]
-    if headless_pcm:
+    if pcm_target:
         from ttyplayer.stream import MPV_PCM_OPTIONS  # asyncio loads only for serve --stream
 
-        argv += MPV_PCM_OPTIONS
+        argv += [*MPV_PCM_OPTIONS, f"--ao-pcm-file={pcm_target}"]
     elif levels:
         argv.append(f"--af={LEVELS_FILTER}")
     if not video:
@@ -327,7 +327,8 @@ class MpvClient:
     request_id = 0  # of the last command sent
     poller = None
     volume_writer = None  # macOS only
-    headless_pcm = False  # no local sound: process.stdout carries it as PCM for serve --stream (see stream.py)
+    pcm = None  # the stream.PcmSource mpv writes its sound into for serve --stream, instead of playing it
+    headless_pcm = False  # whether there is one: no local sound
     show_levels = False  # whether mpv runs the level filter (never under headless_pcm)
     levels = None  # [left, right] peak dBFS while a track plays with show_levels, else None
     sleep_timer = None  # the threading.Timer of `sleep <duration>`; it also runs the fade, under fade_lock
@@ -337,24 +338,27 @@ class MpvClient:
     timer = threading.Timer  # tests swap in fakes for both
     fade_wait = staticmethod(threading.Event.wait)  # (cancelled, seconds): a step's pause, cut short by a cancel
 
-    def __init__(self, video=False, on_play=None, on_state=None, headless_pcm=False, levels=True):
+    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
         self.on_play = on_play
         # on_state(status) replaces the printed status line, for a UI that owns
         # the terminal itself.
         self.on_state = on_state
-        self.headless_pcm = headless_pcm
-        self.show_levels = levels and not headless_pcm
+        self.pcm = pcm
+        self.headless_pcm = pcm is not None
+        self.show_levels = levels and not self.headless_pcm
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
             self.process = subprocess.Popen(
-                build_argv(video, self.socket_path, headless_pcm, levels), stdout=subprocess.PIPE if headless_pcm else None
+                build_argv(video, self.socket_path, pcm and pcm.mpv_target(), levels), stdout=pcm and pcm.popen_stdout
             )
         except FileNotFoundError:
             self._remove_socket_dir()
             raise
+        if pcm:
+            pcm.attach(self)
         self.ipc = connect(self.socket_path)
         if self.ipc is None:
             self.process.kill()
@@ -480,6 +484,10 @@ class MpvClient:
 
     def playing(self):
         return not self.idle and not self.state.get("pause")
+
+    def sounding(self):
+        """Whether mpv is sending a track's sound out now: playing, and past the track's first playback-restart."""
+        return self.playing() and self.loaded_at is None
 
     def poll_volume(self):
         """Refresh the volumes while a track is loaded.

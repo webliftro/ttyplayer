@@ -75,7 +75,7 @@ TUI code does not change; the factory does.
 
 **Decision (stream-spike, 2026-10-09): ship candidate (3), the headless "music box" mode.**
 `ttyplayer serve --stream` (or `stream_enabled = true`) starts mpv with `--ao=pcm` writing raw PCM
-to its stdout, so **nothing plays on the server**; ffmpeg encodes it to Ogg Opus and `/stream`
+into a pipe to ttyplayer (see the two PCM sources below), so **nothing plays on the server**; ffmpeg encodes it to Ogg Opus and `/stream`
 serves it to every listener. Candidates (1) and (2) are not built.
 
 | | (1) mpv encodes | (2) virtual device + ffmpeg capture | (3) `mpv --ao=pcm` → ffmpeg → `/stream` |
@@ -110,6 +110,20 @@ so a listener's stream never stalls and never bursts. One reader thread splits f
 Ogg pages and offers each to every listener's bounded queue (5 s); a slow listener loses pages, the
 others do not notice. The Opus header pages are kept and sent first to every listener who joins
 later. Stopping the server stops mpv first (its pipe ends), then ffmpeg.
+
+**Two PCM sources (stream-windows, 2026-10-10).** The pacer reads mpv through a `stream.PcmSource`;
+`stream.pcm_source()` picks one per OS. On macOS and Linux it is `StdoutPipe`: mpv writes to
+`/dev/stdout`, a pipe polled with `select`, as measured above. Windows has neither `/dev/stdout`
+nor `select` on pipes, so `NamedPipe` creates an inbound pipe `\\.\pipe\ttyplayer-pcm-<pid>-<random>`
+(stdlib `_winapi`, one instance, created as the name's first so a squatter makes it fail rather
+than share it), gives mpv that path, and polls it with `PeekNamedPipe`. mpv opens the file only
+once a track plays and may close it when playback stops, so the pipe waits for mpv without
+blocking (silence meanwhile) and is created anew whenever mpv closes it. The wait is bounded by
+track time, not wall time: once a track has sounded (past its `playback-restart`, not paused) for
+`CONNECT_TIMEOUT` (5 s) with the pipe still unopened, the pacer prints one line
+(`Streaming stopped: mpv did not open the pipe …`) and the stream ends, rather than sending
+silence forever. Closing the pipe cancels a pending connect and waits for Windows to finish it
+before the handle closes.
 
 **For the developer (needs macOS, speakers, two devices):**
 

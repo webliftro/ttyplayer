@@ -68,9 +68,9 @@ def test_build_argv_adds_the_level_filter_unless_levels_is_off():
     assert not [arg for arg in without if arg.startswith("--af")]
 
 
-def test_build_argv_headless_pcm_has_no_level_filter():
-    assert player.build_argv(False, "/tmp/x.sock", headless_pcm=True) == player.build_argv(
-        False, "/tmp/x.sock", headless_pcm=True, levels=False
+def test_build_argv_with_a_pcm_target_has_no_level_filter():
+    assert player.build_argv(False, "/tmp/x.sock", pcm_target="/dev/stdout") == player.build_argv(
+        False, "/tmp/x.sock", pcm_target="/dev/stdout", levels=False
     )
 
 
@@ -892,6 +892,20 @@ def test_idle_follows_playing_and_the_end_of_the_queue(monkeypatch):
     assert client.idle is True
     client.prev()
     assert client.idle is False
+
+
+def test_sounding_is_from_a_tracks_playback_restart_while_not_paused(monkeypatch):
+    client = make_remote_client([A, B], monkeypatch)
+    assert not client.sounding()  # idle
+    client.play_current()
+    assert not client.sounding()  # loading
+    client.handle_message({"event": "playback-restart"})
+    assert client.sounding()
+    client.handle_message({"event": "property-change", "name": "pause", "data": True})
+    assert not client.sounding()
+    client.handle_message({"event": "property-change", "name": "pause", "data": False})
+    client.handle_message({"event": "end-file", "reason": "eof"})
+    assert not client.sounding()  # B loading
 
 
 def test_handle_control_status_sees_queue_edits(monkeypatch):
