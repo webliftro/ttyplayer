@@ -1,6 +1,6 @@
 [project]
 name = "ttyplayer"
-version = "0.10.0"
+version = "0.11.0"
 description = "ttyplayer: a modern YouTube player for the terminal — search, queue, and play audio or video via mpv"
 readme = "README.md"
 requires-python = ">=3.13"
