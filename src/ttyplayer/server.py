@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 
 from aiohttp import WSCloseCode, WSMsgType, web
 
-from ttyplayer import favorites, playlists, settings, youtube
+from ttyplayer import favorites, lyrics, playlists, settings, youtube
 from ttyplayer.utils import video_from_info
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -93,6 +93,7 @@ CLIENT = web.AppKey("client", object)
 SETTINGS = web.AppKey("settings", dict)  # {"current": Settings}: PATCH replaces what it holds
 HUB = web.AppKey("hub", Broadcaster)
 STREAMER = web.AppKey("streamer", object)  # a stream.Streamer under serve --stream, else None
+LYRICS = web.AppKey("lyrics", dict)  # video id -> the /api/lyrics reply of a track that has lyrics
 
 
 def ensure_token(current, path=None):
@@ -210,7 +211,7 @@ def run_command(client, body):
 
 
 async def lookup(func, *args):
-    """func(*args) from youtube, run on a worker thread; YouTubeError becomes a 502."""
+    """func(*args) run on a worker thread (a youtube or lyrics lookup); YouTubeError becomes a 502."""
     try:
         return await asyncio.get_running_loop().run_in_executor(None, func, *args)
     except youtube.YouTubeError as error:
@@ -307,6 +308,35 @@ async def get_search(request):
         raise ApiError(400, "search needs ?q=")
     videos = await lookup(youtube.search, query, *search_args(request))
     return web.json_response([video_json(video) for video in videos])
+
+
+@routes.get("/api/lyrics")
+async def get_lyrics(request):
+    """The playing track's lyrics, as the TUI's Lyrics tab finds them; synced and plain are null when it has none."""
+    if not live_settings(request).show_lyrics:
+        raise ApiError(404, "lyrics are off")
+    video = playing_video(request.app[CLIENT])
+    if video is None:
+        raise ApiError(404, "nothing is playing")
+    cache = request.app[LYRICS]
+    if video.id not in cache:
+        try:
+            found = await lookup(lyrics.fetch, video.id, video.title, video.uploader, video.duration)
+        except Exception:
+            return web.json_response(lyrics_json(video, None))  # a failed lookup is not kept: asked again
+        cache[video.id] = lyrics_json(video, found)  # a true miss too
+    return web.json_response(cache[video.id])
+
+
+def playing_video(client):
+    with client.queue_lock:
+        return None if client.idle or not client.queue else client.queue[client.index]
+
+
+def lyrics_json(video, found):
+    artist, track = lyrics.guess(video.title, video.uploader)
+    return {"artist": artist, "track": track, "synced": found and found.synced, "plain": found and found.plain,
+            "source_url": found and found.source_url}
 
 
 @routes.get("/api/playlists")
@@ -439,6 +469,7 @@ def make_app(client, current, hub=None, streamer=None):
     app[HUB] = hub or Broadcaster()
     app[HUB].client = client
     app[STREAMER] = streamer
+    app[LYRICS] = {}
     app.add_routes(routes)
     app.router.add_static("/static", STATIC_DIR)
     app.on_startup.append(attach_hub)

@@ -39,7 +39,7 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
 
 | Method | Path | Body / reply |
 |---|---|---|
-| GET | `/api/status` | `status()` as JSON (+ `queue`: list, `index`) |
+| GET | `/api/status` | `status()` as JSON (+ `queue`: list, `index`); `levels` (`[left, right]` peak dBFS or `null`) comes with `levels_floor`, the player's `LEVEL_FLOOR` (−60), so the page draws the bars without its own scale |
 | POST | `/api/play` | `{"query": "…"}` or `{"url": "…"}` → resolves and replaces the queue |
 | POST | `/api/queue` | `{"url"|"query"}` → appends |
 | POST | `/api/command` | `{"name": "pause"|"next"|"prev"|"stop"|"mute"|"sleep"|"radio"|"seek"|"volume"|"jump"|"remove"|"move"|"clear_others", "value"?}` → the new status; `sleep` takes `ttyplayer sleep`'s text (`"30m"`, `"end"`, `"off"`; a bad one is a 400 with `parse_sleep()`'s error) and goes through `handle_control("sleep <text>")`, as the control socket's does; `radio` takes `"on"`, `"off"` or `"toggle"` (`""` only reports) the same way, `handle_control("radio <text>")`; the status JSON's `radio` is `false`, `true` or `"fetching"`; `jump`/`remove` take a 0-based queue row, `move` two (`[from, to]`) |
@@ -47,6 +47,7 @@ Everything stays on the same `MpvClient`, `youtube`, `history`, `favorites`, `pl
 | GET | `/api/favorites` | the favorites, newest first; each video carries `url`, what its Play/Queue send |
 | POST | `/api/favorites/{id}` | toggles: unfavorites, or favorites the video in the body → the favorites |
 | GET | `/api/search?q=` | `youtube.search` results (from `search_source`), each with its `url` |
+| GET | `/api/lyrics` | the playing track's lyrics: `{"artist", "track", "synced": [[seconds, text]…] \| null, "plain": str \| null, "source_url"}` from `lyrics.guess` + `lyrics.fetch` (the TUI's `find` without its error swallowing, same disk cache), run in the executor and kept in memory per video id for the server's lifetime (a track without lyrics too; a failed lookup is not kept and is asked again); `synced` and `plain` both `null`: none found; 404 `{"error": "lyrics are off"}` under `show_lyrics false`, 404 `{"error": "nothing is playing"}` when idle |
 | GET/POST | `/api/playlists…` | list / play a playlist |
 | GET | `/api/settings`, PATCH | read / change settings |
 | WS | `/ws` | server → client: every `on_state` status as one JSON message (with `queue` when it changed since the last one); client → server: the same commands as `/api/command` |
@@ -61,7 +62,16 @@ One static page (vanilla JS, no framework, no build): search box, results, queue
 card (title, uploader, progress bar, time, volume slider, play/pause/next/prev/mute, `zz 27:13` and a
 Sleep 30m / Sleep off button for the sleep timer, a Radio button that sends `radio toggle` and reads
 `Radio off`, `∞ Radio on` or `∞ fetching…` from the status), favorites and
-playlists lists. Dark/light follows the phone. Works from the phone's browser and as a home-screen
+playlists lists. The card also shows the track's art (a 64×64 box, `object-fit: cover`), two thin
+L/R level bars under the volume slider (filled from `levels_floor` to 0 dBFS; empty when `levels` is
+`null`), and a Lyrics section (a `<details>`, closed by default, its state kept in `localStorage`) that
+fetches `/api/lyrics` when opened and on each new track while open, highlights the synced line at the
+status `position` and scrolls it to the section's middle; plain lyrics show as text, else
+`No lyrics found` / `Lyrics are off`. Lyrics are text nodes, never markup.
+
+The art is `status.thumbnail` itself: the phone fetches it from i.ytimg.com (or SoundCloud's CDN)
+directly, the server proxies nothing. The one caveat: on a LAN without internet the art cannot load,
+and the page shows its placeholder (the app icon), as it does for a track without art. Dark/light follows the phone. Works from the phone's browser and as a home-screen
 app (manifest). The page talks WS for state and `fetch` for actions.
 
 ## TUI as a client

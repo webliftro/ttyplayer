@@ -214,7 +214,7 @@ It prints the address to open, with the token, and a QR code of it for a phone:
 Serving ttyplayer at http://192.168.1.20:7700/?token=…
 ```
 
-Open that address on a phone and it is a remote: what plays (with a moving progress bar), previous / play-pause / next, a volume slider and mute, a search box (a pasted link plays at once; each result has **Play** and **Queue**), the queue (tap a row to jump there, **×** removes it, **Clear** keeps only what plays), your favorites (the heart on any row adds or drops one) and your playlists. It follows the phone's dark or light mode, reconnects by itself when the server restarts, and "Add to Home Screen" makes it an app icon. The page keeps the token only for that browser tab; opened without one (from the home screen, say) it asks you to paste the token `serve` printed. Ctrl-C (or `ttyplayer stop`, or a `stop` command) stops the server and the player.
+Open that address on a phone and it is a remote: what plays (with a moving progress bar), previous / play-pause / next, a volume slider and mute, a search box (a pasted link plays at once; each result has **Play** and **Queue**), the queue (tap a row to jump there, **×** removes it, **Clear** keeps only what plays), your favorites (the heart on any row adds or drops one) and your playlists. The card shows the track's art and the two level bars, and a **Lyrics** section (closed until you open it; the page remembers) follows the song as the TUI's Lyrics tab does, the current line highlighted. The art comes to the phone straight from YouTube or SoundCloud, so on a network without internet it shows a placeholder. It follows the phone's dark or light mode, reconnects by itself when the server restarts, and "Add to Home Screen" makes it an app icon. The page keeps the token only for that browser tab; opened without one (from the home screen, say) it asks you to paste the token `serve` printed. Ctrl-C (or `ttyplayer stop`, or a `stop` command) stops the server and the player.
 
 Every `/api/…` request and the socket need the token, as `Authorization: Bearer <token>` or `?token=<token>`; without it the reply is `401 {"error": "unauthorized"}`. Replies are JSON; errors are `{"error": "…"}`.
 
@@ -234,6 +234,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"name": "volume", "value": -5}' http
 | GET | `/api/search?q=…` | the search results (`search_limit` of them) |
 | GET | `/api/favorites` | the favorites, newest first |
 | POST | `/api/favorites/<id>` | unfavorites that video, or favorites it (the body is the video: `{"title", "uploader", "duration"}`) → the favorites |
+| GET | `/api/lyrics` | the playing track's lyrics: `{"artist", "track", "synced": [[seconds, text], …] or null, "plain": text or null, "source_url"}` (both null: none found); 404 when nothing plays or `show_lyrics` is false |
 | GET | `/api/playlists` | `[{"name": …, "count": …}]` |
 | POST | `/api/playlists/<name>/play` | that playlist becomes the queue |
 | GET, PATCH | `/api/settings` | every setting but the token; PATCH `{"key": value}` changes and saves them, checked like `config set` |

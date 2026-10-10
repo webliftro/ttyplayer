@@ -6,6 +6,8 @@ const TOKEN_KEY = "ttyplayer-token";
 const RECONNECT_FIRST = 1000; // ms; doubles after each failed attempt
 const RECONNECT_MAX = 10000;
 const SLEEP_FOR = "30m"; // what the Sleep button arms
+const ART_PLACEHOLDER = "/static/icon.svg"; // shown with no art, or art the phone cannot load
+const LYRICS_OPEN_KEY = "ttyplayer-lyrics-open";
 
 const $ = (id) => document.getElementById(id);
 
@@ -17,6 +19,10 @@ let socket = null;
 let retryDelay = RECONNECT_FIRST;
 let retryTimer = null;
 let volumeHeld = false; // the slider is being dragged: the player's updates must not move it
+let artFailed = null; // the art URL that would not load: the placeholder stays until the art changes
+let lyricsId; // the id of the track whose lyrics are shown or loading (null: nothing playing)
+let lyricsLines = []; // [[seconds, element]] of the shown synced lyrics
+let lyricsCurrent = -1; // the index in lyricsLines of the highlighted line
 
 // --- the token ----------------------------------------------------------
 
@@ -69,13 +75,18 @@ async function api(method, path, body) {
   return reply;
 }
 
-// Run an action; its failure becomes the banner (a 401 also asks for the token again).
+// What a failed request says to the user; a 401 also asks for the token again.
+function failure(error) {
+  if (error instanceof Unauthorized) askForToken();
+  return error instanceof TypeError ? "The server cannot be reached." : error.message;
+}
+
+// Run an action; its failure becomes the banner.
 async function act(action) {
   try {
     return await action();
   } catch (error) {
-    if (error instanceof Unauthorized) askForToken();
-    showBanner(error instanceof TypeError ? "The server cannot be reached." : error.message);
+    showBanner(failure(error));
     return undefined;
   }
 }
@@ -147,6 +158,7 @@ function setState(status) {
   stateAt = performance.now();
   renderNowPlaying();
   if (status.queue || markMoved) renderQueue();
+  followLyrics();
 }
 
 // --- drawing ----------------------------------------------------------------
@@ -183,6 +195,7 @@ function renderNowPlaying() {
   const idle = state.idle || !state.title;
   $("np-title").textContent = idle ? "Nothing playing" : state.title;
   $("np-uploader").textContent = idle ? "" : state.uploader || "";
+  renderArt(idle ? null : state.thumbnail);
   const label = idle ? "Stopped" : state.paused ? "Paused" : "Playing";
   $("np-state").textContent = { Stopped: "■", Paused: "⏸", Playing: "▶" }[label];
   $("np-state").setAttribute("aria-label", label);
@@ -201,6 +214,33 @@ function renderNowPlaying() {
   $("radio").setAttribute("aria-pressed", String(Boolean(state.radio)));
   renderProgress();
   renderSleep();
+  renderLevels();
+}
+
+// The phone loads the art itself; the src changes only with the URL, so a status tick never reloads it.
+function renderArt(url) {
+  const src = url && url !== artFailed ? url : ART_PLACEHOLDER;
+  if ($("np-art").getAttribute("src") !== src) $("np-art").src = src;
+}
+
+function artFailedToLoad() {
+  const src = $("np-art").getAttribute("src");
+  if (src === ART_PLACEHOLDER) return;
+  artFailed = src;
+  $("np-art").src = ART_PLACEHOLDER;
+}
+
+// Each channel's peak as a bar, empty at the player's levels_floor and full at 0 dBFS; no levels, no bars.
+function renderLevels() {
+  const [left, right] = (!state.idle && state.levels) || [null, null];
+  $("level-left").style.setProperty("--level", levelFraction(left));
+  $("level-right").style.setProperty("--level", levelFraction(right));
+}
+
+function levelFraction(level) {
+  const floor = state.levels_floor;
+  if (typeof level !== "number" || typeof floor !== "number") return 0;
+  return Math.min(1, Math.max(0, (level - floor) / -floor));
 }
 
 // zz and the time left on the player's sleep timer (zz end: when the track ends), as the TUI shows it.
@@ -308,6 +348,74 @@ function renderPlaylists(playlists) {
     return row;
   });
   renderList("playlists-list", rows, "No playlists yet.");
+}
+
+// --- the lyrics -------------------------------------------------------------
+
+function playingVideo() {
+  return (!state.idle && (state.queue || [])[state.index - 1]) || null;
+}
+
+// While the Lyrics section is open it follows the playing track: fetched on opening and on a new track.
+function followLyrics() {
+  if (!$("lyrics").open) return;
+  const video = playingVideo();
+  const id = video ? video.id : null;
+  if (id === lyricsId) {
+    renderLyricsLine();
+    return;
+  }
+  lyricsId = id;
+  if (id === null) showLyrics([], "Nothing playing");
+  else loadLyrics(id);
+}
+
+async function loadLyrics(id) {
+  showLyrics([], "Loading…");
+  let found;
+  try {
+    found = await api("GET", "/api/lyrics");
+  } catch (error) {
+    found = { error: failure(error) };
+  }
+  if (id !== lyricsId) return; // the track changed meanwhile
+  if (found.error) showLyrics([], found.error.charAt(0).toUpperCase() + found.error.slice(1));
+  else if (found.synced) showLyrics(found.synced);
+  else showLyrics([], found.plain || "No lyrics found");
+}
+
+// Synced lines, each [seconds, text], or one block of text; text nodes only, never markup.
+function showLyrics(synced, text) {
+  const line = (words) => {
+    const element = document.createElement("div");
+    element.className = "lyric";
+    element.textContent = words;
+    return element;
+  };
+  lyricsLines = synced.map(([seconds, words]) => [seconds, line(words || "♪")]);
+  lyricsCurrent = -1;
+  $("lyrics-body").replaceChildren(...(text === undefined ? lyricsLines.map(([, element]) => element) : [line(text)]));
+  renderLyricsLine();
+}
+
+// The line sung now, by the status position: highlighted and scrolled to the middle of the section.
+function renderLyricsLine() {
+  const now = position();
+  const index = now === null ? -1 : lyricsLines.findLastIndex(([seconds]) => seconds <= now);
+  if (index === lyricsCurrent) return;
+  if (lyricsCurrent >= 0) lyricsLines[lyricsCurrent][1].classList.remove("current");
+  lyricsCurrent = index;
+  if (index < 0) return;
+  const line = lyricsLines[index][1];
+  const body = $("lyrics-body");
+  line.classList.add("current");
+  body.scrollTop = line.offsetTop - (body.clientHeight - line.offsetHeight) / 2;
+}
+
+function toggleLyrics() {
+  localStorage.setItem(LYRICS_OPEN_KEY, $("lyrics").open ? "open" : "");
+  lyricsId = undefined; // opening fetches anew
+  followLyrics();
 }
 
 // --- the lists ------------------------------------------------------------
@@ -438,6 +546,9 @@ function wire() {
   $("listen-audio").addEventListener("pause", renderListening);
   $("listen-audio").addEventListener("error", streamFailed);
   renderListening();
+  $("np-art").addEventListener("error", artFailedToLoad);
+  $("lyrics").open = localStorage.getItem(LYRICS_OPEN_KEY) === "open";
+  $("lyrics").addEventListener("toggle", toggleLyrics);
   $("queue-clear").addEventListener("click", (event) => {
     event.preventDefault(); // a button in a <summary> would also fold the section
     command("clear_others");
@@ -445,7 +556,10 @@ function wire() {
   $("favorites").addEventListener("toggle", () => $("favorites").open && loadFavorites());
   $("playlists").addEventListener("toggle", () => $("playlists").open && loadPlaylists());
   setInterval(() => {
-    if (playing()) renderProgress();
+    if (playing()) {
+      renderProgress();
+      renderLyricsLine();
+    }
     renderSleep();
   }, 1000);
 }

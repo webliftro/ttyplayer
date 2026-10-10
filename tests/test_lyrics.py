@@ -202,6 +202,8 @@ def test_a_miss_is_cached_as_none_and_not_asked_again(data_home):
 
 def test_a_network_error_is_not_cached_so_the_next_play_asks_again(data_home):
     assert lyrics.find("abc", TITLE, UPLOADER, 233, FakeOpener(get=OSError("offline"))) is None
+    with pytest.raises(OSError):
+        lyrics.fetch("abc", TITLE, UPLOADER, 233, FakeOpener(get=OSError("offline")))  # told apart from a miss
     assert not cache_file(data_home, "abc").exists()
     assert lyrics.find("abc", TITLE, UPLOADER, 233, FakeOpener()) is not None
 

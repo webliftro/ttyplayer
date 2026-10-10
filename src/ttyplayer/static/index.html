@@ -29,6 +29,7 @@
     <div class="np-head">
       <span id="np-state" class="np-state" aria-label="Stopped">■</span>
       <span id="np-sleep" class="np-sleep"></span>
+      <img id="np-art" class="np-art" src="/static/icon.svg" alt="">
       <div class="np-text">
         <div id="np-title" class="np-title">Nothing playing</div>
         <div id="np-uploader" class="np-uploader"></div>
@@ -41,6 +42,10 @@
       <button id="mute" type="button" class="icon" aria-label="Mute" aria-pressed="false">🔊</button>
       <input id="volume" type="range" min="0" max="100" step="1" value="0" aria-label="Volume">
       <span id="volume-value" class="volume-value"></span>
+    </div>
+    <div class="levels" aria-hidden="true">
+      <span>L</span><div class="level"><div id="level-left" class="level-fill"></div></div>
+      <span>R</span><div class="level"><div id="level-right" class="level-fill"></div></div>
     </div>
     <div class="transport">
       <button id="prev" type="button" aria-label="Previous">⏮</button>
@@ -63,6 +68,11 @@
     <button id="search-button" type="submit">Search</button>
   </form>
   <ul id="search-results" class="videos"></ul>
+
+  <details id="lyrics">
+    <summary>Lyrics</summary>
+    <div id="lyrics-body" class="lyrics"></div>
+  </details>
 
   <details id="queue" open>
     <summary>Queue <button id="queue-clear" type="button" class="small">Clear</button></summary>

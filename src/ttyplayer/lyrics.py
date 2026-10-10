@@ -162,6 +162,14 @@ def from_record(record):
 def find(video_id, title, uploader, duration=None, opener=urllib.request.urlopen):
     """The video's Lyrics from the cache, else looked up (and cached, a miss too); None when there are none."""
     try:
+        return fetch(video_id, title, uploader, duration, opener)
+    except Exception:
+        return None  # not a miss: asked again on the next play
+
+
+def fetch(video_id, title, uploader, duration=None, opener=urllib.request.urlopen):
+    """find() that raises when the lookup fails, so a caller can tell a failure from a true miss."""
+    try:
         path = data_path("lyrics") / hashlib.sha1(video_id.encode()).hexdigest()
     except Exception:
         path = None
@@ -170,10 +178,7 @@ def find(video_id, title, uploader, duration=None, opener=urllib.request.urlopen
             cached = path.read_text(encoding="utf-8")
             os.utime(path)  # a hit is recent use
             return None if cached == MISS else from_cache(json.loads(cached))
-    try:
-        found = request(*guess(title, uploader), duration, opener)
-    except Exception:
-        return None  # not a miss: asked again on the next play
+    found = request(*guess(title, uploader), duration, opener)
     if path is not None:
         with contextlib.suppress(OSError):
             art.store(path, (MISS if found is None else json.dumps(found.__dict__)).encode())

@@ -1050,6 +1050,7 @@ class MpvClient:
             "error": self.error,
             "stream": self.headless_pcm,
             "levels": self.levels,
+            "levels_floor": LEVEL_FLOOR,
             "sleep": self.sleep_status(),
             "radio": self.radio_status(),
         }

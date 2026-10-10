@@ -266,6 +266,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "error": None,
         "stream": False,
         "levels": None,
+        "levels_floor": -60.0,
         "sleep": None,
         "radio": False,
     }

@@ -18,7 +18,7 @@ import aiohttp
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
-from ttyplayer import control, favorites, player, playlists, server, settings, stream, youtube
+from ttyplayer import control, favorites, lyrics, player, playlists, server, settings, stream, youtube
 from ttyplayer.models import Video
 
 TOKEN = "secret-token"
@@ -141,6 +141,7 @@ def api(fake, method, path, settings_=None, **kwargs):
         ("/api/status", {"Authorization": TOKEN}),
         ("/api/status?token=wrong", {}),
         ("/api/settings", {}),
+        ("/api/lyrics", {}),
         ("/ws", {}),
         ("/stream", {}),
         ("/stream?token=wrong", {}),
@@ -527,7 +528,7 @@ def test_status_carries_the_players_error(fake):
 
 def test_status_and_socket_carry_the_levels(fake):
     hub = server.Broadcaster()
-    fake.status = lambda: {"idle": False, "index": 1, "levels": [-12.5, -90.0]}
+    fake.status = lambda: {"idle": False, "index": 1, "levels": [-12.5, -90.0], "levels_floor": player.LEVEL_FLOOR}
 
     async def test(http):
         reply = await http.get("/api/status", headers=AUTH)
@@ -540,7 +541,94 @@ def test_status_and_socket_carry_the_levels(fake):
 
     polled, first, second = with_http(server.make_app(fake, current(), hub), test)
     assert polled["levels"] == first["levels"] == [-12.5, -90.0]
+    assert polled["levels_floor"] == first["levels_floor"] == second["levels_floor"] == player.LEVEL_FLOOR
     assert second["levels"] is None
+
+
+# --- /api/lyrics -------------------------------------------------------------------
+
+SONG = Video(id="s1", title="Artist - Song (Official Video)", uploader="ArtistVEVO", duration=200)
+FOUND = lyrics.Lyrics([(0.5, "First"), (4.0, "Second")], "First\nSecond", "https://lrclib.net/api/get/7")
+
+
+@pytest.fixture
+def fetch(monkeypatch):
+    """lyrics.fetch faked: answers FOUND (or fetch.answer; an exception is raised) and records (args, thread) of each call."""
+    calls = []
+
+    def fake_fetch(*args):
+        calls.append((args, threading.current_thread()))
+        if isinstance(fake_fetch.answer, Exception):
+            raise fake_fetch.answer
+        return fake_fetch.answer
+
+    fake_fetch.answer = FOUND
+    fake_fetch.calls = calls
+    monkeypatch.setattr(lyrics, "fetch", fake_fetch)
+    return fake_fetch
+
+
+def playing(fake, video):
+    fake.queue, fake.index, fake.idle = [video], 0, False
+    return fake
+
+
+def test_lyrics_of_the_playing_track_off_the_event_loop(fake, fetch):
+    status, body = api(playing(fake, SONG), "GET", "/api/lyrics")
+    assert (status, body) == (200, {"artist": "Artist", "track": "Song", "synced": [[0.5, "First"], [4.0, "Second"]],
+                                    "plain": "First\nSecond", "source_url": "https://lrclib.net/api/get/7"})
+    [(args, thread)] = fetch.calls
+    assert args == (SONG.id, SONG.title, SONG.uploader, SONG.duration)
+    assert thread is not threading.main_thread()  # the executor's, not the loop's
+
+
+def test_lyrics_are_looked_up_once_per_track_for_the_servers_lifetime(fake, fetch):
+    async def test(http):
+        replies = [await (await http.get("/api/lyrics", headers=AUTH)).json() for _ in range(2)]
+        fake.queue[0] = VIDEOS[0]
+        replies.append(await (await http.get("/api/lyrics", headers=AUTH)).json())
+        return replies
+
+    first, again, other = with_http(server.make_app(playing(fake, SONG), current()), test)
+    assert first == again and other["track"] == "Song 0"
+    assert [args[0] for args, _ in fetch.calls] == [SONG.id, VIDEOS[0].id]
+
+
+def ask_twice(fake):
+    async def test(http):
+        return [await (await http.get("/api/lyrics", headers=AUTH)).json() for _ in range(2)]
+
+    return with_http(server.make_app(playing(fake, SONG), current()), test)
+
+
+NONE_FOUND = {"artist": "Artist", "track": "Song", "synced": None, "plain": None, "source_url": None}
+
+
+def test_a_track_without_lyrics_says_so_and_is_not_asked_again(fake, fetch):
+    fetch.answer = None
+    assert ask_twice(fake) == [NONE_FOUND] * 2
+    assert len(fetch.calls) == 1  # a true miss is kept for the server's lifetime
+
+
+def test_a_failed_lookup_says_none_found_and_is_asked_again(fake, fetch):
+    fetch.answer = OSError("offline")
+    assert ask_twice(fake) == [NONE_FOUND] * 2
+    assert len(fetch.calls) == 2
+
+
+def test_plain_lyrics_have_no_synced_lines(fake, fetch):
+    fetch.answer = lyrics.Lyrics(None, "Words", "https://lrclib.net/api/get/8")
+    body = api(playing(fake, SONG), "GET", "/api/lyrics")[1]
+    assert (body["synced"], body["plain"]) == (None, "Words")
+
+
+def test_lyrics_off_or_nothing_playing_is_404_without_a_lookup(fake, fetch):
+    off = api(playing(fake, SONG), "GET", "/api/lyrics", current(show_lyrics=False))
+    fake.idle = True
+    idle = api(fake, "GET", "/api/lyrics")
+    assert off == (404, {"error": "lyrics are off"})
+    assert idle == (404, {"error": "nothing is playing"})
+    assert fetch.calls == []
 
 
 def test_socket_carries_the_players_error(fake):
@@ -928,6 +1016,55 @@ def test_play_and_queue_send_the_url_of_the_videos_site(video, label, path):
     ], shown="posted")
     sent = [path, {"url": video.url}]
     assert steps == [[], [sent], [], [sent]]
+
+
+def test_the_level_bars_fill_from_the_players_floor():
+    shown = run_page([status(VIDEOS[:2], 1, paused=True, levels=[-30.0, -60.0], levels_floor=-60.0),
+                      status(None, 1, levels=[0.0, -90.0]), status(None, 1, levels=None),
+                      status(None, 1, idle=True, levels=[-6.0, -6.0])], shown="levels")
+    assert shown == [[0.5, 0], [1, 0], [0, 0], [0, 0]]
+
+
+def test_the_art_shows_the_thumbnail_loads_it_once_and_falls_back_to_the_placeholder():
+    art = "https://i.ytimg.com/vi/v0/hqdefault.jpg"
+    shown = run_page([status(VIDEOS[:2], 1, thumbnail=art), status(None, 1, thumbnail=art), "art-error",
+                      status(None, 1, thumbnail=art), status(None, 2, thumbnail=art + "?2"),
+                      status(None, 2, idle=True, thumbnail=art + "?2")], shown="art")
+    placeholder = "/static/icon.svg"
+    assert [step["src"] for step in shown] == [art, art, placeholder, placeholder, art + "?2", placeholder]
+    assert [step["loads"] for step in shown] == [1, 1, 2, 2, 3, 4]
+
+
+SYNCED = {"artist": "a", "track": "t", "synced": [[1, "One"], [4, "Two"], [8, ""]], "plain": "One\nTwo", "source_url": "u"}
+
+
+def test_lyrics_are_closed_by_default_and_remember_being_opened():
+    shown = run_page([status(VIDEOS[:2], 1, paused=True, position=0), {"lyrics": SYNCED}, "close-lyrics"],
+                     shown="lyrics")
+    assert shown[0] == {"open": False, "stored": None, "lines": []}
+    assert shown[1]["open"] is True and shown[1]["stored"] == "open"
+    assert shown[2]["stored"] == ""
+
+
+def test_the_lyrics_highlight_follows_the_position():
+    shown = run_page([status(VIDEOS[:2], 1, paused=True, position=0.5), {"lyrics": SYNCED},
+                      status(None, 1, position=4.2), status(None, 1, position=9), status(None, 1, position=2)],
+                     shown="lyrics")
+    assert [step["lines"] for step in shown] == [[], ["One", "Two", "♪"], ["One", "▸Two", "♪"], ["One", "Two", "▸♪"],
+                                                 ["▸One", "Two", "♪"]]
+
+
+def test_the_lyrics_follow_a_new_track_and_say_when_there_are_none():
+    plain = {**SYNCED, "synced": None, "plain": "Just words"}
+    none = {**SYNCED, "synced": None, "plain": None}
+    shown = run_page([status(VIDEOS[:2], 1, paused=True), {"lyrics": plain}, {"get": none}, status(None, 2),
+                      status(None, 2, idle=True), {"lyrics": {"error": "lyrics are off"}, "status": 404}],
+                     shown="lyrics")
+    assert [step["lines"] for step in shown[1:]] == [["Just words"], ["Just words"], ["No lyrics found"],
+                                                     ["Nothing playing"], ["Nothing playing"]]
+    lyrics_off = run_page([status(VIDEOS[:2], 1), {"lyrics": {"error": "lyrics are off"}, "status": 404}],
+                          shown="lyrics")
+    assert lyrics_off[1]["lines"] == ["Lyrics are off"]
 
 
 def test_the_manifest_makes_an_installable_app():
