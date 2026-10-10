@@ -9,6 +9,7 @@ from conftest import posix_only
 
 ROOT = Path(__file__).resolve().parent.parent
 RELEASE = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+TESTS = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
 
 
 def job(name):
@@ -34,6 +35,12 @@ def run_step(script, tmp_path, fakes):
         (bin_dir / command).chmod(0o755)
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_REF_NAME": "v1.2.3", "RUNNER_TEMP": str(tmp_path)}
     return subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+
+def test_the_pytest_step_runs_in_utf8_mode_on_every_os():
+    match = re.search(r"- run: uv run pytest -q\n\s+env:\n\s+PYTHONUTF8: \"1\"", TESTS)
+    assert match, "the pytest step sets PYTHONUTF8"
+    assert "if:" not in TESTS[TESTS.index("uv run pytest"):TESTS.index("- name:")]
 
 
 def test_wait_polls_the_json_api_for_twenty_minutes():

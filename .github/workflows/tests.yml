@@ -18,6 +18,8 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - run: uv run pytest -q
+        env:
+          PYTHONUTF8: "1"  # pytest's reporter must not die on a cp1252 Windows console
       - name: install.sh dry run
         if: runner.os != 'Windows'
         run: TTYPLAYER_INSTALL_DRY_RUN=1 sh install.sh

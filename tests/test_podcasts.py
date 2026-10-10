@@ -1,7 +1,10 @@
 import email.message
 import io
 import pathlib
+import re
 import socket
+import subprocess
+import sys
 import urllib.error
 import urllib.parse
 
@@ -82,14 +85,34 @@ def http_error(url, code):
         (b'{"errorMessage": "Invalid value(s) for key(s): [mediaType]"}', "unexpected reply from iTunes"),
         (b'{"results": null}', "unexpected reply from iTunes"),
         (b'[{"feedUrl": "https://lexfridman.com/feed/podcast/"}]', "unexpected reply from iTunes"),
-        (b"[" * 100_000, "unexpected reply from iTunes"),
+        (b"[" * 2_000, "unexpected reply from iTunes"),  # deeper than sys.getrecursionlimit(), shallow for the C stack
         (urllib.error.URLError("Name or service\nnot known"), "Name or service not known"),
     ],
+    ids=["http-403", "dns-failure", "timeout", "html", "error-message", "null-results", "bare-list", "deep-nesting",
+         "multiline-reason"],
 )
 def test_a_failed_search_is_one_line_of_podcast_error(answer, message):
     with pytest.raises(podcasts.PodcastError) as caught:
         podcasts.search_shows("x", 5, opener(search=answer))
     assert message in str(caught.value) and "\n" not in str(caught.value)
+
+
+def test_a_reply_nested_too_deep_to_decode_is_one_line_of_podcast_error(monkeypatch):
+    def too_deep(text):
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON array")
+
+    monkeypatch.setattr(podcasts.json, "loads", too_deep)
+    with pytest.raises(podcasts.PodcastError) as caught:
+        podcasts.search_shows("x", 5, opener())
+    assert "unexpected reply from iTunes" in str(caught.value) and "\n" not in str(caught.value)
+
+
+def test_no_parametrize_id_in_this_module_is_longer_than_80_characters():
+    """A bytes case without ids= makes a node id of its repr; a huge one broke the Windows run (ci-fix-8)."""
+    collected = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", __file__],
+                               capture_output=True, text=True, encoding="utf-8", check=True).stdout
+    ids = re.findall(r"^\S+?::\w+\[(.*)\]$", collected, re.M)
+    assert ids and max(map(len, ids)) <= 80
 
 
 def test_search_shows_leaves_out_results_that_are_not_shows_and_reads_odd_fields_as_missing():
