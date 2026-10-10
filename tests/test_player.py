@@ -219,10 +219,11 @@ def test_current_title_falls_back_to_mpv_when_queue_is_empty():
 
 
 def make_remote_client(videos, monkeypatch):
-    """make_client plus a recording send() and interrupt_main()."""
+    """make_client plus a recording send() (keeping its on_reply in asked) and interrupt_main()."""
     client = make_client(videos)
     client.sent = []
-    client.send = client.sent.append
+    client.asked = []  # the on_reply callbacks of sent commands, unanswered
+    client.send = lambda command, on_reply=None: client.sent.append(command) or (on_reply and client.asked.append(on_reply))
     client.interrupted = []
     monkeypatch.setattr(player, "interrupt_main", lambda: client.interrupted.append(True))
     return client
@@ -995,6 +996,8 @@ def test_mute_is_observed_after_the_other_properties(monkeypatch):
         ["observe_property", 5, "volume"],
         ["observe_property", 6, "mute"],
         ["observe_property", 7, "ao-volume"],
+        ["observe_property", 8, "playlist-count"],  # prefetch is on by default
+        ["observe_property", 9, "playlist-pos"],
     ]
 
 
@@ -2346,3 +2349,274 @@ def test_radio_text_and_message(radio, text, message):
 def test_status_line_shows_the_radio_after_the_state():
     assert "Playing  ∞  🔊" in player.status_line({**TIMED, "radio": True})
     assert "Playing  ∞ fetching…  🔊" in player.status_line({**TIMED, "radio": "fetching"})
+
+
+# --- prefetch: mpv holds the queue's next track -------------------------------
+
+RESTART = {"event": "playback-restart"}
+EOF_EVENT = {"event": "end-file", "reason": "eof"}
+
+
+def test_build_argv_adds_the_prefetch_options_unless_prefetch_is_off():
+    with_prefetch = player.build_argv(False, "/tmp/x.sock")
+    without = player.build_argv(False, "/tmp/x.sock", prefetch=False)
+    assert player.PREFETCH_OPTIONS == ["--prefetch-playlist=yes", "--gapless-audio=yes"]
+    assert [arg for arg in with_prefetch if arg not in player.PREFETCH_OPTIONS] == without
+    assert set(player.PREFETCH_OPTIONS) <= set(with_prefetch)
+    assert not set(player.PREFETCH_OPTIONS) & set(without)
+    assert set(player.PREFETCH_OPTIONS) <= set(player.build_argv(False, "/tmp/x.sock", pcm_target="/dev/stdout"))
+
+
+def test_mpv_client_without_prefetch_starts_mpv_without_it_and_observes_no_playlist(monkeypatch):
+    client, argvs = piped_client(monkeypatch)
+    client.quit()
+    assert set(player.PREFETCH_OPTIONS) <= set(argvs[0]) and client.prefetch
+    assert ["observe_property", 8, "playlist-count"] in FakePipe.made[0].requests
+    assert ["observe_property", 9, "playlist-pos"] in FakePipe.made[0].requests
+    monkeypatch.setattr(player.subprocess, "Popen", lambda argv, stdout=None: argvs.append(argv) or client.process)
+    plain = player.MpvClient(prefetch=False)
+    plain.quit()
+    assert not set(player.PREFETCH_OPTIONS) & set(argvs[1]) and not plain.prefetch
+    assert not [r for r in FakePipe.made[1].requests if "playlist-count" in r or "playlist-pos" in r]
+
+
+def mpv_holds(client, count):
+    client.handle_message({"event": "property-change", "name": "playlist-count", "data": count})
+
+
+ENTRY = 7  # the playlist_entry_id mpv gives the prefetched entry
+ASK_ENTRY = ["get_property", "playlist/1/id"]
+START = {"event": "start-file", "playlist_entry_id": ENTRY}
+MPV_IDLE = {"event": "property-change", "name": "playlist-pos", "data": -1}
+
+
+def mpv_names_entries(client, entry=ENTRY):
+    """mpv answers the player's asks for the prefetched entry's id."""
+    while client.asked:
+        client.asked.pop(0)(entry)
+
+
+def prefetching(videos, monkeypatch, index=0):
+    """A client with prefetch on, sounding videos[index] after its restart, mpv holding and naming the next one;
+    loads, sends and notifications recorded from here on."""
+    client = make_remote_client(videos, monkeypatch)
+    client.prefetch = True
+    client.jump(index)
+    client.handle_message(RESTART)
+    mpv_holds(client, 2 if client.prefetched else 1)
+    mpv_names_entries(client)
+    client.loaded.clear()
+    client.sent.clear()
+    client.played = []
+    client.on_play = client.played.append
+    client.states = []
+    client.on_state = client.states.append
+    return client
+
+
+def test_prefetch_appends_the_next_track_once_the_current_one_restarts(monkeypatch):
+    client = make_remote_client([A, B, C], monkeypatch)
+    client.prefetch = True
+    client.play_current()
+    assert client.sent == []  # nothing competes with A while it loads
+    client.handle_message(RESTART)
+    assert client.sent == [["loadfile", B.url, "append"], ASK_ENTRY]
+    mpv_names_entries(client)
+    assert client.prefetched == B.url and client.prefetched_id == ENTRY
+    client.handle_message(RESTART)  # a seek: mpv holds B already
+    client.next()  # loadfile B replaces mpv's playlist
+    assert client.prefetched is None and client.prefetched_id is None
+    client.handle_message(RESTART)
+    assert client.sent[2:] == [["loadfile", C.url, "append"], ASK_ENTRY]
+    assert client.loaded == [A.url, B.url]
+
+
+def test_an_entry_id_for_a_replaced_prefetch_is_not_kept(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.move(2, 1)  # C next
+    client.remove(1)  # B next again
+    client.asked.pop(0)(8)  # the late answer for C, which mpv no longer holds
+    assert client.prefetched == B.url and client.prefetched_id is None
+    client.asked.pop(0)(9)
+    assert client.prefetched_id == 9
+
+
+def test_a_reorder_replaces_the_prefetched_track(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.move(2, 1)
+    assert client.sent == [["playlist-remove", 1], ["loadfile", C.url, "append"], ASK_ENTRY]
+    assert client.prefetched_id is None  # until mpv names the new entry
+    client.move(2, 0)  # A stays current, C stays next: nothing to send
+    assert len(client.sent) == 3 and client.prefetched == C.url
+
+
+def test_removing_the_prefetched_track_removes_it_from_mpv(monkeypatch):
+    client = prefetching([A, B], monkeypatch)
+    client.remove(1)
+    assert client.sent == [["playlist-remove", 1]]
+    assert client.prefetched is None
+
+
+def test_clearing_the_others_removes_the_prefetched_track(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.clear_others()
+    assert client.sent == [["playlist-remove", 1]]
+
+
+def test_appending_while_the_last_track_plays_prefetches_the_first_new_one(monkeypatch):
+    client = prefetching([A], monkeypatch)
+    assert client.prefetched is None
+    client.append([B, C])  # as the radio and the server add tracks
+    assert client.sent == [["loadfile", B.url, "append"], ASK_ENTRY]
+    assert client.loaded == []
+
+
+def test_adding_a_track_while_the_last_one_plays_prefetches_it(monkeypatch):
+    client = make_remote_client([], monkeypatch)
+    client.prefetch = True
+    client.add(A)  # building the queue before anything plays mirrors nothing
+    client.add(B)
+    assert client.sent == []
+    client.play_current()
+    client.handle_message(RESTART)
+    client.remove(1)
+    client.sent.clear()
+    client.add(C)  # as the TUI's `a` adds a track
+    assert client.sent == [["loadfile", C.url, "append"], ASK_ENTRY]
+
+
+def test_without_prefetch_no_playlist_command_is_ever_sent(monkeypatch):
+    client = make_remote_client([A, B, C], monkeypatch)
+    client.play_current()
+    client.handle_message(RESTART)
+    client.move(2, 1)
+    client.append([C])
+    client.add(A)
+    client.remove(1)
+    client.handle_message(EOF_EVENT)
+    client.handle_message(START)
+    client.handle_message(RESTART)
+    client.handle_message(MPV_IDLE)
+    assert client.sent == []
+    assert client.loaded == [A.url, B.url]
+
+
+def test_mpv_going_on_to_the_prefetched_track_advances_with_no_loadfile(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.handle_message(EOF_EVENT)
+    assert client.index == 0 and client.played == []  # not before mpv starts B
+    assert client.awaiting_advance and client.states == []
+    client.handle_message(START)
+    assert client.index == 1
+    assert client.loaded == []
+    assert client.played == [B]  # history, as for a load
+    assert client.states == [client.status()]
+    assert client.status()["started_in"] is None  # not before B sounds
+    client.move(2, 0)  # edits before B restarts wait for the restart
+    client.move(0, 2)
+    assert client.sent == []
+    client.handle_message(RESTART)
+    assert client.sent == [["playlist-remove", 0], ["loadfile", C.url, "append"], ASK_ENTRY]  # A leaves, C is next
+    assert client.status()["started_in"] == 0.0
+    assert client.states[-1] == client.status()
+    client.handle_message(RESTART)  # a seek in B
+    assert client.status()["started_in"] == 0.0 and len(client.sent) == 3
+
+
+def test_queue_edits_while_waiting_for_mpv_to_go_on_wait_too(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.handle_message(EOF_EVENT)
+    client.move(2, 1)  # the queue now says C next; mpv goes on to B
+    assert client.sent == []
+    client.handle_message(START)
+    assert client.index == 1 and client.loaded == [C.url]  # loadfile replaces B
+
+
+def test_mpv_starting_another_entry_falls_back_to_a_load(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.handle_message(EOF_EVENT)
+    client.handle_message({**START, "playlist_entry_id": ENTRY + 1})
+    assert client.index == 1 and client.loaded == [B.url]
+    assert not client.advanced
+
+
+def test_mpv_going_idle_instead_of_on_falls_back_to_a_load(monkeypatch):
+    client = prefetching([A, B], monkeypatch)
+    client.handle_message(EOF_EVENT)
+    client.handle_message(MPV_IDLE)  # mpv lost the entry and stopped
+    assert client.index == 1 and client.loaded == [B.url]
+    client.handle_message(MPV_IDLE)  # mpv's idle before the load starts: nothing to wait for
+    assert client.loaded == [B.url]
+
+
+def test_a_jump_while_waiting_for_mpv_to_go_on_wins(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.handle_message(EOF_EVENT)
+    client.jump(2)
+    client.handle_message(START)  # mpv went on to B before the loadfile reached it
+    assert client.index == 2 and client.loaded == [C.url]
+    assert client.played == [C]
+
+
+def test_the_advanced_track_failing_is_reported_and_skipped(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.handle_message(EOF_EVENT)
+    client.handle_message(START)
+    client.handle_message(FAILED)
+    assert client.index == 2 and client.loaded == [C.url]
+    assert client.status()["error"] == "Could not play Second: loading failed"
+    assert not client.advanced and client.prefetched is None
+
+
+def test_a_stale_prefetched_track_falls_back_to_a_load(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.queue[1] = C  # the queue moved on without the mirror: mpv holds B, the queue says C
+    client.handle_message(EOF_EVENT)
+    assert client.index == 1
+    assert client.loaded == [C.url]  # loadfile replaces whatever mpv went on to
+    assert client.status()["started_in"] is None
+    client.handle_message(START)  # mpv's start of B, or of C: the load's own
+    assert client.index == 1 and client.loaded == [C.url]
+
+
+def test_a_prefetched_track_mpv_does_not_hold_falls_back_to_a_load(monkeypatch):
+    client = prefetching([A, B], monkeypatch)
+    mpv_holds(client, 1)
+    client.handle_message(EOF_EVENT)
+    assert client.loaded == [B.url]
+
+
+def test_a_prefetched_track_mpv_has_not_named_falls_back_to_a_load(monkeypatch):
+    client = prefetching([A, B], monkeypatch)
+    client.prefetched_id = None  # mpv has not answered which entry it holds
+    client.handle_message(EOF_EVENT)
+    assert client.loaded == [B.url] and not client.awaiting_advance
+
+
+def test_a_stale_prefetched_track_past_the_end_of_the_queue_is_stopped(monkeypatch):
+    client = prefetching([A, B], monkeypatch)
+    del client.queue[1]
+    client.handle_message(EOF_EVENT)
+    assert client.idle and client.loaded == []
+    assert client.sent[-1] == ["stop"]
+    assert client.prefetched is None
+
+
+def test_sleep_at_the_end_of_the_track_stops_mpv_going_on_to_the_prefetched_track(monkeypatch):
+    client = prefetching([A, B], monkeypatch)
+    client.sleep("end")
+    client.handle_message(EOF_EVENT)
+    assert client.interrupted == [True]
+    assert client.sent[-1] == ["stop"] and client.index == 0
+    client.handle_message(START)
+    assert client.index == 0
+
+
+def test_a_jump_replaces_the_prefetched_track_by_its_own_loadfile(monkeypatch):
+    client = prefetching([A, B, C], monkeypatch)
+    client.jump(2)
+    assert client.loaded == [C.url] and client.prefetched is None
+    client.handle_message(RESTART)
+    client.prev()
+    client.handle_message(RESTART)
+    assert client.sent == [["loadfile", C.url, "append"], ASK_ENTRY]  # no playlist-remove: each loadfile cleared mpv's playlist

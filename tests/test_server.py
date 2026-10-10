@@ -87,7 +87,10 @@ class FakeClient:
     def notify(self):
         self.calls.append("notify")
 
-    append = player.MpvClient.append  # the real one, over this fake's queue, jump() and notify()
+    def _sync_prefetch(self):
+        pass  # no mpv playlist to mirror into
+
+    append = player.MpvClient.append  # the real one, over this fake's queue, jump(), notify() and _sync_prefetch()
 
 
 @pytest.fixture

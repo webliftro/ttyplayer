@@ -185,6 +185,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
 | `radio` | `false` | a new player goes on with related YouTube tracks when its queue runs out, as `play --radio` does |
 | `normalize_loudness` | `false` | mpv evens out loud and quiet tracks (a `loudnorm` filter to −16 LUFS); the stream of `serve --stream` gets it too |
+| `prefetch` | `true` | mpv buffers the queue's next track while the current one plays and goes on to it with no gap (gapless where the source allows); `false` loads each track only when the last one ends |
 | `seek_seconds` | `5` | how far `,` / `.` (and left / right in `ttyplayer play`) seek (1–300) |
 | `volume_step` | `5` | how much `-` / `+` (and up / down in `ttyplayer play`) change the volume (1–50) |
 

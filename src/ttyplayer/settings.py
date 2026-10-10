@@ -39,6 +39,7 @@ class Settings:
     search_source: str = "youtube"  # where a search looks: one of youtube.SOURCES
     radio: bool = False  # a new player goes on with related tracks when its queue runs out
     normalize_loudness: bool = False  # mpv's loudnorm filter evens out loud and quiet tracks
+    prefetch: bool = True  # mpv buffers the queue's next track ahead and plays it on with no gap
     seek_seconds: int = SEEK_SECONDS  # how far , . and left/right seek
     volume_step: int = VOLUME_STEP  # how much - + and up/down change the volume
 

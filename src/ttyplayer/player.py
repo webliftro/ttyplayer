@@ -54,6 +54,8 @@ RADIO_SWITCHES = {"on": True, "off": False}  # `radio on|off`; toggle flips it
 RADIO_FORMS = "on, off or toggle"
 RADIO_MARK = "∞"
 RADIO_NEEDS_YOUTUBE = "Radio needs a YouTube track to go on from"
+# prefetch: mpv opens and buffers the one upcoming playlist entry ahead, then plays it on without reopening the device.
+PREFETCH_OPTIONS = ["--prefetch-playlist=yes", "--gapless-audio=yes"]
 
 
 def keys(seek=SEEK_SECONDS, step=VOLUME_STEP):
@@ -79,12 +81,15 @@ TERMINAL_ARROWS = {"[D": "left", "[C": "right", "[A": "up", "[B": "down"}  # aft
 CONSOLE_ARROWS = {"K": "left", "M": "right", "H": "up", "P": "down"}  # after \xe0 or \x00
 
 
-def build_argv(video, socket_path, pcm_target=None, levels=True, normalize=False):
+def build_argv(video, socket_path, pcm_target=None, levels=True, normalize=False, prefetch=True):
     """mpv's command line; pcm_target, a PcmSource's path, takes the sound as PCM for ttyplayer serve --stream, not speakers.
 
-    normalize adds the loudness filter, levels then the level meter's filter, except with a pcm_target.
+    normalize adds the loudness filter, levels then the level meter's filter, except with a pcm_target;
+    prefetch adds PREFETCH_OPTIONS.
     """
     argv = ["mpv", "--idle", "--no-terminal", f"--input-ipc-server={socket_path}"]
+    if prefetch:
+        argv += PREFETCH_OPTIONS
     # The stream's listeners hear the same tracks, so they get the normalized sound too.
     filters = [NORMALIZE_FILTER] if normalize else []
     if pcm_target:
@@ -377,6 +382,11 @@ class MpvClient:
     show_levels = False  # whether mpv runs the level filter (never under headless_pcm)
     levels = None  # [left, right] peak dBFS while a track plays with show_levels, else None
     normalize = False  # whether mpv runs the loudness filter (under headless_pcm too)
+    prefetch = False  # whether mpv holds the queue's next track as its one upcoming playlist entry, see _sync_prefetch()
+    prefetched = None  # the url of that entry, at mpv's playlist position 1; None while mpv holds none
+    prefetched_id = None  # mpv's playlist_entry_id for it, once mpv tells; start-file names the entry it starts by it
+    awaiting_advance = False  # the track ended on the prefetched entry; its start-file confirms mpv went on to it
+    advanced = False  # mpv went on to the prefetched entry; the finished track heads its playlist until the restart
     keys = KEYS  # what press() does with each key, for the configured seek and volume steps
     sleep_timer = None  # the threading.Timer of `sleep <duration>`; it also runs the fade, under fade_lock
     sleep_ends_at = None  # epoch time that timer fires at
@@ -399,6 +409,7 @@ class MpvClient:
         levels=True,
         radio=False,
         normalize=False,
+        prefetch=True,
         seek_seconds=SEEK_SECONDS,
         volume_step=VOLUME_STEP,
     ):
@@ -413,12 +424,14 @@ class MpvClient:
         self.headless_pcm = pcm is not None
         self.show_levels = levels and not self.headless_pcm
         self.normalize = normalize
+        self.prefetch = prefetch
         self.keys = keys(seek_seconds, volume_step)
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
             self.process = subprocess.Popen(
-                build_argv(video, self.socket_path, pcm and pcm.mpv_target(), levels, normalize), stdout=pcm and pcm.popen_stdout
+                build_argv(video, self.socket_path, pcm and pcm.mpv_target(), levels, normalize, prefetch),
+                stdout=pcm and pcm.popen_stdout,
             )
         except FileNotFoundError:
             self._remove_socket_dir()
@@ -442,7 +455,10 @@ class MpvClient:
 
         self.listener = threading.Thread(target=self.listen, daemon=True)
         self.listener.start()
-        for number, name in enumerate(["time-pos", "duration", "pause", "media-title", "volume", "mute", "ao-volume"], start=1):
+        observed = ["time-pos", "duration", "pause", "media-title", "volume", "mute", "ao-volume"]
+        if prefetch:
+            observed += ["playlist-count", "playlist-pos"]  # what mpv holds when a track ends, and whether it went on
+        for number, name in enumerate(observed, start=1):
             self.send(["observe_property", number, name])
         self.stop_polling = threading.Event()
         self.poller = threading.Thread(target=self.poll, daemon=True)
@@ -489,10 +505,13 @@ class MpvClient:
             if message["name"] == "ao-volume" and "data" not in message:
                 return  # coreaudio's first event has no data; the poll reads the real value
             self.state[message["name"]] = message.get("data")
+            if message["name"] == "playlist-pos" and message.get("data") == -1:
+                self._edit(self._stopped_at_end)
             self.notify()
+        elif message.get("event") == "start-file":
+            self._edit(self._started_file, message.get("playlist_entry_id"))
         elif message.get("event") == "playback-restart":
-            if self._mark_started():
-                self.notify()
+            self._edit(self._restarted)
         elif message.get("event") == "end-file" and message.get("reason") == "eof":
             # At the end of the queue this still notifies, to tell a UI it went idle.
             self._edit(self._end_of_track)
@@ -512,6 +531,20 @@ class MpvClient:
             self.loaded_at = None
             self.error = None
             return True
+
+    def _restarted(self):
+        """A playback-restart: mark the track started; after an advance it started with no load (started_in 0.0),
+        and the finished track leaves mpv's playlist.
+
+        _edit() then mirrors the next track, now that this one sounds.
+        """
+        if self.advanced:
+            self.advanced = False
+            self.started_in = 0.0
+            self.error = None
+            self.send(["playlist-remove", 0])
+            return True
+        return self._mark_started()
 
     def poll(self):
         """Read the levels every LEVELS_INTERVAL while show_levels, the volumes every VOLUME_POLL_SECONDS, until quit()."""
@@ -862,13 +895,14 @@ class MpvClient:
     # --- queue ----------------------------------------------------------
 
     def add(self, video: Video):
-        self.queue.append(video)
+        self._edit(self.queue.append, video)
 
     def append(self, videos):
         """Add videos to the end of the queue; when nothing plays, play the first of them."""
         with self.queue_lock:
             first = len(self.queue)
             self.queue.extend(videos)
+            self._sync_prefetch()
         if self.idle:
             self.jump(first)
         else:
@@ -915,37 +949,128 @@ class MpvClient:
         """
         with self.queue_lock:
             changed = change(*args)
+            self._sync_prefetch()
         if changed:
             self.notify()
         return changed
+
+    def _sync_prefetch(self):
+        """Make mpv's one upcoming playlist entry the queue's next track, or none past the last; the only writer of
+        mpv's playlist besides loadfile. Under queue_lock.
+
+        The queue is the truth: a stale entry is removed before the right one is appended. Nothing is mirrored
+        while a loadfile's track loads, or after an advance until the new track restarts: the restart mirrors it.
+        """
+        if not self.prefetch or self.idle or self.loaded_at is not None or self.awaiting_advance or self.advanced:
+            return
+        upcoming = self.upcoming_url()
+        if upcoming == self.prefetched:
+            return
+        if self.prefetched:
+            self.send(["playlist-remove", 1])
+        self.prefetched = upcoming
+        self.prefetched_id = None
+        if upcoming:
+            self.send(["loadfile", upcoming, "append"])
+            self.get_property("playlist/1/id", lambda entry: self._prefetched_entry(upcoming, entry))
+
+    def _prefetched_entry(self, url, entry):
+        """mpv's reply to which entry it holds at position 1; kept while that is still the prefetched url."""
+        with self.queue_lock:
+            if self.prefetched == url:
+                self.prefetched_id = entry
+
+    def _forget_prefetched(self):
+        """mpv's playlist holds nothing upcoming now (a loadfile or stop cleared it)."""
+        self.prefetched = None
+        self.prefetched_id = None
+        self.awaiting_advance = False
+        self.advanced = False
+
+    def _drop_prefetched(self):
+        """Stop mpv when it holds an entry the player does not go on to; loadfile and stop clear mpv's playlist."""
+        if self.prefetched:
+            self.send(["stop"])
+        self._forget_prefetched()
 
     # The changes below run under queue_lock, through _edit().
 
     def _play_index(self, index):
         if not 0 <= index < len(self.queue):
             return False
-        self.index = index
-        video = self.queue[index]
-        self.idle = False
-        self.radio_fetching = False
+        self._forget_prefetched()  # loadfile replaces mpv's playlist
         self.started_in = None
         self.loaded_at = time.monotonic()
-        self.load(video.url)
-        if self.on_play:
-            self.on_play(video)
+        self.load(self.queue[index].url)
+        self._begin(index)
         return True
 
+    def _holds_upcoming(self):
+        """Whether mpv holds the queue's next track as its known upcoming entry, so it goes on to it by itself."""
+        upcoming = self.upcoming_url()
+        named = self.prefetched_id is not None and self.state.get("playlist-count", 0) >= 2
+        return bool(upcoming) and upcoming == self.prefetched and named
+
+    def _await_advance(self):
+        """At a track's end, wait for mpv's start-file of the prefetched entry rather than load it; False when mpv
+        does not hold it (none, or not the queue's next track: the queue changed meanwhile), or has not named it."""
+        if not self._holds_upcoming():
+            return False
+        self.awaiting_advance = True
+        return True
+
+    def _started_file(self, entry):
+        """mpv started a playlist entry. After a track's end, the prefetched one: follow mpv onto it with no loadfile,
+        writing history as a load does; anything else (the queue changed since) is replaced by a load.
+
+        Its playback-restart, in _restarted(), then records started_in 0.0.
+        """
+        if not self.awaiting_advance:
+            return False  # a loadfile's own start
+        self.awaiting_advance = False
+        if entry != self.prefetched_id or not self._holds_upcoming():
+            return self._next_or_idle()
+        self.prefetched = None
+        self.prefetched_id = None
+        self.advanced = True
+        self.started_in = None
+        self.loaded_at = None
+        self._begin(self.index + 1)
+        return True
+
+    def _stopped_at_end(self):
+        """mpv went idle (playlist-pos -1) while the player waited for it to go on: play the next track by a load."""
+        if not self.awaiting_advance:
+            return False
+        self.awaiting_advance = False
+        return self._next_or_idle()
+
+    def _begin(self, index):
+        """queue[index] is the playing track now, however it was loaded."""
+        self.index = index
+        self.idle = False
+        self.radio_fetching = False
+        if self.on_play:
+            self.on_play(self.queue[index])
+
     def _end_of_track(self):
-        """Play the next track, or after `sleep end` stop as `ttyplayer stop` does."""
+        """Go on to the next track, or after `sleep end` stop as `ttyplayer stop` does."""
         if self.sleep_after_track:
             self.sleep_after_track = False
+            self._drop_prefetched()
+            self.idle = True  # nothing more plays, and nothing is mirrored again before the stop
             interrupt_main()
             return True
+        if self._await_advance():
+            return False  # nothing changed yet: the start-file tells
         return self._next_or_idle()
 
     def _next_or_idle(self):
         """Play the next track; past the last one the radio looks for more, else the player goes idle."""
-        if not (self._play_index(self.index + 1) or self._start_radio()):
+        if self._play_index(self.index + 1):
+            return True
+        self._drop_prefetched()
+        if not self._start_radio():
             self.idle = True
         return True
 
@@ -966,6 +1091,7 @@ class MpvClient:
                 self.idle = True
                 self.started_in = None
                 self.loaded_at = None
+                self._forget_prefetched()  # stop clears mpv's playlist
                 self.send(["stop"])
         return True
 
@@ -1014,10 +1140,17 @@ class MpvClient:
             return self.queue[self.index].thumbnail
         return None
 
-    def up_next(self):
+    def upcoming(self):
+        """The queue's track after the current one; None at the end."""
         if self.index + 1 < len(self.queue):
-            return self.queue[self.index + 1].title
+            return self.queue[self.index + 1]
         return None
+
+    def upcoming_url(self):
+        return video.url if (video := self.upcoming()) else None
+
+    def up_next(self):
+        return video.title if (video := self.upcoming()) else None
 
     # --- display --------------------------------------------------------
 

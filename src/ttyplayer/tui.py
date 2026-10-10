@@ -812,6 +812,7 @@ class TtyplayerApp(App):
                 levels=self.settings.show_levels,
                 radio=self.settings.radio,
                 normalize=self.settings.normalize_loudness,
+                prefetch=self.settings.prefetch,
             )
         except FileNotFoundError:
             self.toast("mpv is not installed. Install it with: brew install mpv", severity="error")

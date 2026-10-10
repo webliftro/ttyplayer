@@ -93,7 +93,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   hides or shows the art column at once), `show_lyrics` (Enter turns the Lyrics tab's lookups off or
   on at once), `radio`, `normalize_loudness`
   (a new player starts with the loudness filter; Enter in the modal sends `set_normalize`, `af pre` /
-  `af remove @norm`), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
+  `af remove @norm`), `prefetch` (a new player starts with it; it is mpv's command line, so a
+  running player keeps what it started with), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
   bindings (`step_bindings()`, from `player.keys()`'s numbers) when a table mounts and again when
   either changes, so the next key press uses the new step and `?` shows it.
 - The Footer is Textual's own, fed by `BINDINGS` — key hints are never typed by hand twice. `?`

@@ -737,6 +737,7 @@ def start_mpv(with_video, on_state=None, pcm=None, radio=False):
             levels=current.show_levels,
             radio=radio or current.radio,
             normalize=current.normalize_loudness,
+            prefetch=current.prefetch,
             seek_seconds=current.seek_seconds,
             volume_step=current.volume_step,
         )

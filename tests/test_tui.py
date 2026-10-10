@@ -37,8 +37,9 @@ VIDEOS = [
 class FakeClient(player.MpvClient):
     """Stands in for MpvClient: the real queue edits and status(), never mpv; records the calls."""
 
-    def __init__(self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False):
+    def __init__(self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True):
         self.video = video
+        self.prefetch_asked = prefetch  # the setting the app passed; this fake mirrors nothing into mpv
         self.show_levels = levels
         self.normalize = normalize
         self.radio = radio
@@ -62,7 +63,7 @@ class FakeClient(player.MpvClient):
         self.idle = False
         return True
 
-    def send(self, command):
+    def send(self, command, on_reply=None):
         self.calls.append(("send", *command))
 
     def toggle_pause(self):
@@ -165,8 +166,8 @@ def served(monkeypatch):
 def clients():
     made = []
 
-    def factory(video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False):
-        made.append(FakeClient(video, on_play, on_state, levels, radio, normalize))
+    def factory(video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True):
+        made.append(FakeClient(video, on_play, on_state, levels, radio, normalize, prefetch))
         return made[-1]
 
     factory.made = made
@@ -375,6 +376,21 @@ async def test_a_appends_and_starts_playing_an_empty_queue(clients, served):
         client = clients.made[0]
         assert [v.id for v in client.queue] == ["a", "b"]
         assert client.calls == [("play_current", "a")]
+
+
+@drive
+async def test_a_mirrors_the_added_track_into_mpv_as_the_next_one(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("a")
+        await pilot.pause()
+        client = clients.made[0]
+        client.prefetch = True  # as the real client, which this fake's prefetch_asked stands for
+        await pilot.press("down", "a")
+        await pilot.pause()
+        assert client.calls[1:] == [("send", "loadfile", VIDEOS[1].url, "append"), ("send", "get_property", "playlist/1/id")]
+        assert client.prefetched == VIDEOS[1].url
 
 
 @drive
@@ -1820,6 +1836,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["search_source", "youtube", "(default youtube)"],
             ["radio", "false", "(default false)"],
             ["normalize_loudness", "false", "(default false)"],
+            ["prefetch", "true", "(default true)"],
             ["seek_seconds", "5", "(default 5)"],
             ["volume_step", "5", "(default 5)"],
         ]
@@ -2962,3 +2979,13 @@ async def test_enter_on_show_lyrics_in_the_settings_screen_turns_the_open_tab_of
         await tick(pilot, clients.made[0], 12)  # a status while the modal is on top
         assert settings.load().show_lyrics is False
         assert lyrics_message(app) == "Lyrics are off (show_lyrics)"
+
+
+@drive
+async def test_a_new_player_follows_the_prefetch_setting(clients, served):
+    app = make_app_with(clients, settings.Settings(prefetch=False))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert clients.made[0].prefetch_asked is False

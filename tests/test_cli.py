@@ -103,11 +103,12 @@ class FakeClient:
 
     def __init__(
         self, video=False, on_play=None, on_state=None, pcm=None, levels=True, radio=False, normalize=False,
-        seek_seconds=player.SEEK_SECONDS, volume_step=player.VOLUME_STEP,
+        prefetch=True, seek_seconds=player.SEEK_SECONDS, volume_step=player.VOLUME_STEP,
     ):
         self.video = video
         self.radio = radio
         self.normalize = normalize
+        self.prefetch = prefetch
         self.steps = (seek_seconds, volume_step)
         self.pcm = pcm
         self.headless_pcm = pcm is not None
@@ -142,11 +143,11 @@ def test_start_mpv_follows_the_playback_tuning_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(player, "MpvClient", FakeClient)
     default = cli.start_mpv(False)
-    assert (default.normalize, default.steps) == (False, (5, 5))
-    for key, value in [("normalize_loudness", "true"), ("seek_seconds", "10"), ("volume_step", "2")]:
+    assert (default.normalize, default.prefetch, default.steps) == (False, True, (5, 5))
+    for key, value in [("normalize_loudness", "true"), ("prefetch", "false"), ("seek_seconds", "10"), ("volume_step", "2")]:
         settings.update(key, value)
     tuned = cli.start_mpv(False)
-    assert (tuned.normalize, tuned.steps) == (True, (10, 2))
+    assert (tuned.normalize, tuned.prefetch, tuned.steps) == (True, False, (10, 2))
 
 
 @pytest.mark.parametrize("saved, flag, radio", [(None, False, False), (None, True, True), ("true", False, True)])
@@ -761,10 +762,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
