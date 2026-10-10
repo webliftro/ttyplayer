@@ -30,17 +30,31 @@ jobs:
           python-version: "3.13"
       - name: Wait for the release on PyPI
         run: |
+          # The JSON API is what the generator reads; pip's simple index lags behind it.
           version="${GITHUB_REF_NAME#v}"
-          for attempt in $(seq 30); do
-            pip download -q --no-deps --only-binary :all: -d "$RUNNER_TEMP/wheel" "ttyplayer==$version" && exit 0
-            sleep 20
+          url="https://pypi.org/pypi/ttyplayer/$version/json"
+          # Attempts start 20 s apart against a 20-minute deadline, so slow requests cannot stretch either.
+          start=$(date +%s)
+          deadline=$((start + 1200))
+          minute=0
+          while attempt=$(date +%s); [ "$attempt" -lt "$deadline" ]; do
+            left=$((deadline - attempt))
+            curl -fsS --max-time $((left < 10 ? left : 10)) -o /dev/null "$url" 2>/dev/null && exit 0
+            now=$(date +%s)
+            if [ $(((now - start) / 60)) -gt "$minute" ]; then
+              minute=$(((now - start) / 60))
+              echo "Waiting for ttyplayer $version on PyPI ($minute min)"
+            fi
+            next=$((attempt + 20 < deadline ? attempt + 20 : deadline))
+            if [ "$now" -lt "$next" ]; then sleep $((next - now)); fi
           done
-          echo "ttyplayer $version did not appear on PyPI within 10 minutes" >&2
+          echo "ttyplayer $version did not appear on PyPI within 20 minutes" >&2
           exit 1
       - name: Generate the formula
         run: |
           mkdir -p Formula
-          python3 -I scripts/brew_formula.py "${GITHUB_REF_NAME#v}" > Formula/ttyplayer.rb
+          python3 -I scripts/brew_formula.py "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/ttyplayer.rb"
+          mv "$RUNNER_TEMP/ttyplayer.rb" Formula/ttyplayer.rb
       - name: Commit the formula to webliftro/homebrew-tap
         if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
