@@ -193,6 +193,9 @@ class RemoteClient:
     def set_levels(self, enabled):
         """Nothing: the server's mpv follows the server's own show_levels; the TUI only hides its bars."""
 
+    def set_normalize(self, enabled):
+        """Nothing: the server's mpv follows the server's own normalize_loudness."""
+
     def quit(self):
         """Hang up; the server plays on. Once is enough; a second call does nothing."""
         if self.loop.is_closed():
@@ -285,8 +288,8 @@ class RemoteApp(tui.TtyplayerApp):
         self.token = token
         self.sub_title = f"remote: {urlsplit(url).netloc or url}"
 
-    def connect(self, video=False, on_play=None, on_state=None, levels=True, radio=False):
-        """A RemoteClient; levels and radio are the server's own settings there."""
+    def connect(self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False):
+        """A RemoteClient; levels, radio and normalize are the server's own settings there."""
         return RemoteClient(self.url, self.token, on_play=on_play, on_state=on_state, on_error=self.server_error)
 
     def on_mount(self):

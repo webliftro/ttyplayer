@@ -182,19 +182,34 @@ class SearchBox(Input):
     BINDINGS = [Binding("escape", "app.focus_results", "Back to the table", show=False)]
 
 
+def signed(number):
+    """number with its sign: +5, −5 (a minus sign, not a hyphen)."""
+    return f"−{-number}" if number < 0 else f"+{number}"
+
+
+def step_bindings(settings):
+    """The tables' seek and volume keys, for the settings' seek_seconds and volume_step (numbers from player.keys)."""
+    table = player.keys(settings.seek_seconds, settings.volume_step)
+    seeks = {
+        "comma": table[","][1],
+        "full_stop": table["."][1],
+        "less_than_sign": -LONG_SEEK_SECONDS,
+        "greater_than_sign": LONG_SEEK_SECONDS,
+    }
+    steps = {"minus": table["-"][1], "plus": table["+"][1]}
+    return [
+        *(Binding(key, f"app.seek({seconds})", f"Seek {signed(seconds)}s", show=False) for key, seconds in seeks.items()),
+        *(Binding(key, f"app.change_volume({step})", f"Volume {signed(step)}", show=False) for key, step in steps.items()),
+    ]
+
+
 class VideoTable(DataTable):
-    """A table of videos in the design's columns, with the playback keys."""
+    """A table of videos in the design's columns, with the playback keys; set_steps adds the seek and volume ones."""
 
     BINDINGS = [
         Binding("space", "app.toggle_pause", "Pause"),
         Binding("n", "app.next", "Next"),
         Binding("p", "app.prev", "Prev"),
-        Binding("comma", f"app.seek({-player.SEEK_SECONDS})", f"Seek −{player.SEEK_SECONDS}s", show=False),
-        Binding("full_stop", f"app.seek({player.SEEK_SECONDS})", f"Seek +{player.SEEK_SECONDS}s", show=False),
-        Binding("less_than_sign", f"app.seek({-LONG_SEEK_SECONDS})", f"Seek −{LONG_SEEK_SECONDS}s", show=False),
-        Binding("greater_than_sign", f"app.seek({LONG_SEEK_SECONDS})", f"Seek +{LONG_SEEK_SECONDS}s", show=False),
-        Binding("minus", f"app.change_volume({-player.VOLUME_STEP})", f"Volume −{player.VOLUME_STEP}", show=False),
-        Binding("plus", f"app.change_volume({player.VOLUME_STEP})", f"Volume +{player.VOLUME_STEP}", show=False),
         Binding("M", "app.toggle_mute", "Mute", show=False),
         Binding("f", "app.favorite", "Fav"),
         Binding("A", "app.add_to_playlist", "To playlist"),
@@ -206,6 +221,12 @@ class VideoTable(DataTable):
 
     def on_mount(self):
         self.set_columns(VIDEO_COLUMNS)
+        self.set_steps(self.app.settings)
+
+    def set_steps(self, settings):
+        """This table's seek and volume keys follow settings, replacing the ones before."""
+        for binding in step_bindings(settings):
+            self._bindings.key_to_bindings[binding.key] = [binding]
 
     def set_columns(self, labels):
         """The # column, then labels; the table is rebuilt only when they change."""
@@ -354,7 +375,7 @@ class HelpScreen(ModalScreen):
 class NameScreen(ModalScreen):
     """Asks for a playlist name, or another line: Enter runs save(name), whose error stays on screen until a name works.
 
-    The error is a PlaylistError, or a ValueError (a sleep timer's text).
+    The error is a PlaylistError, a ValueError (a sleep timer's text) or a SettingsError (a number setting's text).
     """
 
     BINDINGS = [Binding("escape", "dismiss", "Cancel", show=False)]
@@ -378,7 +399,7 @@ class NameScreen(ModalScreen):
         name = event.value.strip()
         try:
             self.save(name)
-        except (playlists.PlaylistError, ValueError) as error:
+        except (playlists.PlaylistError, ValueError, config.SettingsError) as error:
             self.query_one("#name-error", Static).update(str(error))
             return
         self.dismiss(name)
@@ -422,7 +443,8 @@ class ConfirmScreen(ModalScreen):
 
 
 class SettingsScreen(ModalScreen):
-    """Every setting with its value and default, one row per Settings field; Enter flips a true/false one."""
+    """Every setting with its value and default, one row per Settings field; Enter flips a true/false one
+    and asks for a whole number one."""
 
     BINDINGS = [Binding("escape", "dismiss", "Close", show=False)]
 
@@ -455,8 +477,16 @@ class SettingsScreen(ModalScreen):
         if isinstance(value, bool):
             self.app.change_setting(key, not value)
             self.show()
+        elif isinstance(value, int):
+            allowed = config.RANGES[key]
+            ask = NameScreen(key, str(value), functools.partial(self.set_number, key), f"{allowed.start} to {allowed.stop - 1}")
+            self.app.push_screen(ask, lambda _: self.show())
         else:
             self.query_one("#settings-hint", Static).update(f"set with: ttyplayer config set {key} <value>")
+
+    def set_number(self, key, text):
+        """text checked as config set checks it; a bad one raises SettingsError and changes nothing."""
+        self.app.change_setting(key, config.parse(key, text))
 
 
 class TtyplayerApp(App):
@@ -633,6 +663,7 @@ class TtyplayerApp(App):
                 on_state=self.on_player_state,
                 levels=self.settings.show_levels,
                 radio=self.settings.radio,
+                normalize=self.settings.normalize_loudness,
             )
         except FileNotFoundError:
             self.toast("mpv is not installed. Install it with: brew install mpv", severity="error")
@@ -996,7 +1027,8 @@ class TtyplayerApp(App):
         self.toast(unknown, severity="warning")
 
     def change_setting(self, key, value):
-        """Set key to value for this app and in the file; the clock and the level meter show or hide at once."""
+        """Set key to value for this app and in the file; the clock, the level meter, the loudness filter
+        and the seek and volume keys follow at once."""
         self.settings = dataclasses.replace(self.settings, **{key: value})
         try:
             config.change(key, value)
@@ -1006,6 +1038,11 @@ class TtyplayerApp(App):
             self.show_clock()
         if key == "show_levels":
             self.show_levels()
+        if key == "normalize_loudness" and self.client:
+            self.client.set_normalize(value)
+        if key in ("seek_seconds", "volume_step"):
+            for table in self.screen_stack[0].query(VideoTable):
+                table.set_steps(self.settings)
 
     def show_clock(self):
         """Header's show_clock is fixed when it is built, so a new Header replaces the old one."""
@@ -1041,7 +1078,7 @@ class TtyplayerApp(App):
                 [
                     ("Anywhere", self.BINDINGS),
                     ("Search box", SearchBox.BINDINGS),
-                    ("Tables", VideoTable.BINDINGS),
+                    ("Tables", [*VideoTable.BINDINGS, *step_bindings(self.settings)]),
                     ("Search, History, Favorites tables", PickTable.BINDINGS),
                     ("Search table", ResultsTable.BINDINGS),
                     ("Queue table", QueueTable.BINDINGS),

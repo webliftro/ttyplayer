@@ -6,10 +6,16 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from ttyplayer.player import SEEK_SECONDS, VOLUME_STEP
 from ttyplayer.utils import APP_NAME, WINDOWS
 
-SEARCH_LIMIT_RANGE = range(1, 51)
-SERVER_PORT_RANGE = range(1, 65536)
+# The whole numbers each int key takes.
+RANGES = {
+    "search_limit": range(1, 51),
+    "server_port": range(1, 65536),
+    "seek_seconds": range(1, 301),
+    "volume_step": range(1, 51),
+}
 
 
 class SettingsError(Exception):
@@ -30,6 +36,9 @@ class Settings:
     show_levels: bool = True  # the level meter: mpv's level filter and the TUI's two bars
     search_source: str = "youtube"  # where a search looks: one of youtube.SOURCES
     radio: bool = False  # a new player goes on with related tracks when its queue runs out
+    normalize_loudness: bool = False  # mpv's loudnorm filter evens out loud and quiet tracks
+    seek_seconds: int = SEEK_SECONDS  # how far , . and left/right seek
+    volume_step: int = VOLUME_STEP  # how much - + and up/down change the volume
 
 
 DEFAULTS = Settings()
@@ -118,14 +127,9 @@ def check(key, value):
     kind = type(getattr(DEFAULTS, key))
     if type(value) is not kind:
         raise SettingsError(f"{key} must be {kind.__name__}, not {value!r}")
-    if key == "search_limit" and value not in SEARCH_LIMIT_RANGE:
-        raise SettingsError(
-            f"search_limit must be between {SEARCH_LIMIT_RANGE.start} and {SEARCH_LIMIT_RANGE.stop - 1}, not {value}"
-        )
-    if key == "server_port" and value not in SERVER_PORT_RANGE:
-        raise SettingsError(
-            f"server_port must be between {SERVER_PORT_RANGE.start} and {SERVER_PORT_RANGE.stop - 1}, not {value}"
-        )
+    if key in RANGES and value not in RANGES[key]:
+        allowed = RANGES[key]
+        raise SettingsError(f"{key} must be between {allowed.start} and {allowed.stop - 1}, not {value}")
     if key == "search_source":
         from ttyplayer.youtube import SOURCES  # yt-dlp loads on use, so doctor runs without it
 

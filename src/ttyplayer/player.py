@@ -37,6 +37,9 @@ KEY_POLL_SECONDS = 0.1  # how often the Windows key reader looks for a key, or a
 LEVELS_LABEL = "levels"
 LEVELS_FILTER = f"@{LEVELS_LABEL}:lavfi=[astats=metadata=1:reset=1:measure_overall=none:measure_perchannel=Peak_level]"
 LEVELS_PROPERTY = f"af-metadata/{LEVELS_LABEL}"
+# normalize_loudness: EBU R128 loudnorm to -16 LUFS, before the level filter so the meter shows the normalized level.
+NORMALIZE_LABEL = "norm"
+NORMALIZE_FILTER = f"@{NORMALIZE_LABEL}:lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]"
 LEVEL_KEY = "lavfi.astats.{}.Peak_level"  # {} is the channel, from 1
 LEVELS_INTERVAL = 0.1  # seconds between level reads while a track plays
 LEVEL_SILENCE = -90.0  # dBFS stored for astats' -inf
@@ -52,37 +55,46 @@ RADIO_FORMS = "on, off or toggle"
 RADIO_MARK = "∞"
 RADIO_NEEDS_YOUTUBE = "Radio needs a YouTube track to go on from"
 
-# What each key does, by the key's name: the character typed, or the arrow's direction.
-KEYS = {
-    " ": ("toggle_pause",),
-    ",": ("seek", -SEEK_SECONDS),
-    ".": ("seek", SEEK_SECONDS),
-    "left": ("seek", -SEEK_SECONDS),
-    "right": ("seek", SEEK_SECONDS),
-    "up": ("change_volume", VOLUME_STEP),
-    "down": ("change_volume", -VOLUME_STEP),
-    "+": ("change_volume", VOLUME_STEP),
-    "=": ("change_volume", VOLUME_STEP),  # the + key without shift
-    "-": ("change_volume", -VOLUME_STEP),
-    "n": ("next",),
-    "p": ("prev",),
-}
+
+def keys(seek=SEEK_SECONDS, step=VOLUME_STEP):
+    """What each key does, by the key's name (the character typed, or the arrow's direction), seeking seek seconds and changing the volume by step."""
+    return {
+        " ": ("toggle_pause",),
+        ",": ("seek", -seek),
+        ".": ("seek", seek),
+        "left": ("seek", -seek),
+        "right": ("seek", seek),
+        "up": ("change_volume", step),
+        "down": ("change_volume", -step),
+        "+": ("change_volume", step),
+        "=": ("change_volume", step),  # the + key without shift
+        "-": ("change_volume", -step),
+        "n": ("next",),
+        "p": ("prev",),
+    }
+
+
+KEYS = keys()  # with the default steps, for callers that pass none
 TERMINAL_ARROWS = {"[D": "left", "[C": "right", "[A": "up", "[B": "down"}  # after ESC
 CONSOLE_ARROWS = {"K": "left", "M": "right", "H": "up", "P": "down"}  # after \xe0 or \x00
 
 
-def build_argv(video, socket_path, pcm_target=None, levels=True):
+def build_argv(video, socket_path, pcm_target=None, levels=True, normalize=False):
     """mpv's command line; pcm_target, a PcmSource's path, takes the sound as PCM for ttyplayer serve --stream, not speakers.
 
-    levels adds the level meter's filter, except with a pcm_target.
+    normalize adds the loudness filter, levels then the level meter's filter, except with a pcm_target.
     """
     argv = ["mpv", "--idle", "--no-terminal", f"--input-ipc-server={socket_path}"]
+    # The stream's listeners hear the same tracks, so they get the normalized sound too.
+    filters = [NORMALIZE_FILTER] if normalize else []
     if pcm_target:
         from ttyplayer.stream import MPV_PCM_OPTIONS  # asyncio loads only for serve --stream
 
         argv += [*MPV_PCM_OPTIONS, f"--ao-pcm-file={pcm_target}"]
     elif levels:
-        argv.append(f"--af={LEVELS_FILTER}")
+        filters.append(LEVELS_FILTER)
+    if filters:
+        argv.append(f"--af={','.join(filters)}")
     if not video:
         # Audio only: also tell yt-dlp not to pick (and buffer) a video stream,
         # which shortens the wait before sound starts.
@@ -364,6 +376,8 @@ class MpvClient:
     headless_pcm = False  # whether there is one: no local sound
     show_levels = False  # whether mpv runs the level filter (never under headless_pcm)
     levels = None  # [left, right] peak dBFS while a track plays with show_levels, else None
+    normalize = False  # whether mpv runs the loudness filter (under headless_pcm too)
+    keys = KEYS  # what press() does with each key, for the configured seek and volume steps
     sleep_timer = None  # the threading.Timer of `sleep <duration>`; it also runs the fade, under fade_lock
     sleep_ends_at = None  # epoch time that timer fires at
     sleep_after_track = False  # `sleep end`: stop when the current track ends
@@ -376,7 +390,18 @@ class MpvClient:
     recent = staticmethod(recent_plays)  # () -> [Video] the radio skips
     fade_wait = staticmethod(threading.Event.wait)  # (cancelled, seconds): a step's pause, cut short by a cancel
 
-    def __init__(self, video=False, on_play=None, on_state=None, pcm=None, levels=True, radio=False):
+    def __init__(
+        self,
+        video=False,
+        on_play=None,
+        on_state=None,
+        pcm=None,
+        levels=True,
+        radio=False,
+        normalize=False,
+        seek_seconds=SEEK_SECONDS,
+        volume_step=VOLUME_STEP,
+    ):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
         self.on_play = on_play
@@ -387,11 +412,13 @@ class MpvClient:
         self.radio = radio
         self.headless_pcm = pcm is not None
         self.show_levels = levels and not self.headless_pcm
+        self.normalize = normalize
+        self.keys = keys(seek_seconds, volume_step)
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
             self.process = subprocess.Popen(
-                build_argv(video, self.socket_path, pcm and pcm.mpv_target(), levels), stdout=pcm and pcm.popen_stdout
+                build_argv(video, self.socket_path, pcm and pcm.mpv_target(), levels, normalize), stdout=pcm and pcm.popen_stdout
             )
         except FileNotFoundError:
             self._remove_socket_dir()
@@ -521,6 +548,13 @@ class MpvClient:
         if not enabled:
             self._set_levels(None)
 
+    def set_normalize(self, enabled):
+        """Add or remove the loudness filter in the running mpv, before the level filter (af pre), under headless_pcm too."""
+        if enabled == self.normalize:
+            return
+        self.normalize = enabled
+        self.send(["af", "pre", NORMALIZE_FILTER] if enabled else ["af", "remove", f"@{NORMALIZE_LABEL}"])
+
     def playing(self):
         return not self.idle and not self.state.get("pause")
 
@@ -641,9 +675,9 @@ class MpvClient:
             print()  # leave the status line behind instead of overwriting it
 
     def press(self, key):
-        """Do what KEYS says the key named key does; other keys do nothing."""
-        if key in KEYS:
-            method, *args = KEYS[key]
+        """Do what keys says the key named key does; other keys do nothing."""
+        if key in self.keys:
+            method, *args = self.keys[key]
             getattr(self, method)(*args)
 
     def toggle_pause(self):

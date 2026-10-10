@@ -68,6 +68,29 @@ def test_build_argv_adds_the_level_filter_unless_levels_is_off():
     assert not [arg for arg in without if arg.startswith("--af")]
 
 
+NORMALIZE = "@norm:lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]"
+LEVELS = LEVELS_ARG.removeprefix("--af=")
+
+
+@pytest.mark.parametrize(
+    "pcm_target, levels, normalize, af",
+    [
+        (None, False, False, None),
+        (None, True, False, LEVELS_ARG),
+        (None, False, True, f"--af={NORMALIZE}"),
+        (None, True, True, f"--af={NORMALIZE},{LEVELS}"),  # normalized first, so the meter shows that level
+        ("/dev/stdout", False, False, None),
+        ("/dev/stdout", True, False, None),
+        ("/dev/stdout", False, True, f"--af={NORMALIZE}"),  # the stream's listeners hear it normalized
+        ("/dev/stdout", True, True, f"--af={NORMALIZE}"),
+    ],
+)
+def test_build_argv_filters_for_every_combination(pcm_target, levels, normalize, af):
+    argv = player.build_argv(False, "/tmp/x.sock", pcm_target=pcm_target, levels=levels, normalize=normalize)
+    assert [arg for arg in argv if arg.startswith("--af")] == ([af] if af else [])
+    assert player.NORMALIZE_FILTER == NORMALIZE
+
+
 def test_build_argv_with_a_pcm_target_has_no_level_filter():
     assert player.build_argv(False, "/tmp/x.sock", pcm_target="/dev/stdout") == player.build_argv(
         False, "/tmp/x.sock", pcm_target="/dev/stdout", levels=False
@@ -1249,6 +1272,22 @@ def test_set_levels_removes_and_adds_the_filter_in_the_running_mpv():
     assert client.show_levels
 
 
+def test_set_normalize_puts_the_filter_before_the_levels_and_removes_it_in_the_running_mpv():
+    client = levels_client()
+    client.set_normalize(True)
+    client.set_normalize(True)  # already on: nothing sent
+    client.set_normalize(False)
+    assert [r["command"] for r in client.ipc.requests] == [["af", "pre", NORMALIZE], ["af", "remove", "@norm"]]
+    assert not client.normalize
+
+
+def test_set_normalize_works_under_headless_pcm():
+    client = wired_client([A])
+    client.headless_pcm = True
+    client.set_normalize(True)
+    assert [r["command"] for r in client.ipc.requests] == [["af", "pre", NORMALIZE]] and client.normalize
+
+
 def test_set_levels_does_nothing_under_headless_pcm():
     client = wired_client([A])
     client.headless_pcm = True
@@ -1548,6 +1587,26 @@ def test_press_does_what_the_shared_key_table_says(monkeypatch):
     assert calls == EVERY_KEY_CALLS
 
 
+def test_keys_builds_the_table_for_other_steps():
+    table = player.keys(10, 3)
+    assert [table[key] for key in [",", ".", "left", "right", "up", "down", "+", "=", "-"]] == [
+        ("seek", -10), ("seek", 10), ("seek", -10), ("seek", 10),
+        ("change_volume", 3), ("change_volume", -3), ("change_volume", 3), ("change_volume", 3), ("change_volume", -3),
+    ]
+    assert player.KEYS == player.keys(player.SEEK_SECONDS, player.VOLUME_STEP)
+
+
+def test_a_key_press_seeks_and_steps_by_the_configured_amounts(monkeypatch):
+    client, argvs = piped_client(monkeypatch)
+    client.quit()
+    tuned = player.MpvClient(seek_seconds=10, volume_step=3)
+    tuned.quit()
+    calls = routed_calls(tuned)
+    for key in [".", ",", "+", "down"]:
+        tuned.press(key)
+    assert calls == [("seek", 10), ("seek", -10), ("volume", 3), ("volume", -3)]
+
+
 def test_terminal_and_console_name_the_arrows_the_same():
     assert set(player.TERMINAL_ARROWS.values()) == set(player.CONSOLE_ARROWS.values()) == {"left", "right", "up", "down"}
     assert {name for name in player.KEYS if len(name) > 1} == set(player.CONSOLE_ARROWS.values())
@@ -1768,6 +1827,15 @@ def test_mpv_client_starts_mpv_with_the_level_filter_unless_levels_is_off(monkey
     quiet = player.MpvClient(levels=False)
     quiet.quit()
     assert LEVELS_ARG not in argvs[1] and not quiet.show_levels
+
+
+def test_mpv_client_starts_mpv_with_the_loudness_filter_when_asked(monkeypatch):
+    client, argvs = piped_client(monkeypatch)
+    client.quit()
+    assert not client.normalize and not any(NORMALIZE in arg for arg in argvs[0])
+    normalized = player.MpvClient(normalize=True)
+    normalized.quit()
+    assert f"--af={NORMALIZE},{LEVELS}" in argvs[1] and normalized.normalize
 
 
 def test_mpv_client_on_windows_talks_over_a_named_pipe(monkeypatch):

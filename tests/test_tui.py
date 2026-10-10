@@ -36,9 +36,10 @@ VIDEOS = [
 class FakeClient(player.MpvClient):
     """Stands in for MpvClient: the real queue edits and status(), never mpv; records the calls."""
 
-    def __init__(self, video=False, on_play=None, on_state=None, levels=True, radio=False):
+    def __init__(self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False):
         self.video = video
         self.show_levels = levels
+        self.normalize = normalize
         self.radio = radio
         self.on_play = on_play
         self.on_state = on_state
@@ -133,8 +134,8 @@ def served(monkeypatch):
 def clients():
     made = []
 
-    def factory(video=False, on_play=None, on_state=None, levels=True, radio=False):
-        made.append(FakeClient(video, on_play, on_state, levels, radio))
+    def factory(video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False):
+        made.append(FakeClient(video, on_play, on_state, levels, radio, normalize))
         return made[-1]
 
     factory.made = made
@@ -633,7 +634,7 @@ async def test_help_lists_every_binding_and_closes(clients, served):
             assert isinstance(app.screen, tui.HelpScreen)
             lines = [str(s.render()) for s in app.screen.query(Static)]
             tables = [
-                *tui.VideoTable.BINDINGS, *tui.PickTable.BINDINGS, *tui.ResultsTable.BINDINGS,
+                *tui.VideoTable.BINDINGS, *tui.step_bindings(settings.DEFAULTS), *tui.PickTable.BINDINGS, *tui.ResultsTable.BINDINGS,
                 *tui.QueueTable.BINDINGS, *tui.FavoritesTable.BINDINGS, *tui.PlaylistTable.BINDINGS,
             ]
             for binding in [*tui.TtyplayerApp.BINDINGS, *tui.SearchBox.BINDINGS, *tables]:
@@ -656,7 +657,10 @@ async def test_footer_shows_the_main_keys_from_a_table(clients, served):
         }
         hidden = {
             binding.key
-            for binding in tui.VideoTable.BINDINGS + tui.ResultsTable.BINDINGS + tui.TtyplayerApp.BINDINGS
+            for binding in [
+                *tui.VideoTable.BINDINGS, *tui.step_bindings(settings.DEFAULTS), *tui.ResultsTable.BINDINGS,
+                *tui.TtyplayerApp.BINDINGS,
+            ]
             if not binding.show
         }
         assert not hidden & {key.key for key in app.query("FooterKey")}
@@ -1556,6 +1560,70 @@ async def test_enter_on_show_levels_flips_it_the_bars_and_mpvs_filter_follow(cli
         assert client.calls[-1] == ("send", "af", "add", player.LEVELS_FILTER)
 
 
+def help_lines(app):
+    return [str(s.render()) for s in app.screen.query(Static)]
+
+
+@drive
+async def test_with_normalize_loudness_mpv_starts_with_the_filter_and_enter_toggles_it_live(clients, served):
+    app = make_app_with(clients, settings.Settings(normalize_loudness=True))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        client = clients.made[0]
+        assert client.normalize is True
+        await pilot.press("S")
+        await pilot.pause()
+        await pilot.press(*["down"] * settings.KEYS.index("normalize_loudness"), "enter")
+        await pilot.pause()
+        assert settings.load().normalize_loudness is False
+        assert client.calls[-1] == ("send", "af", "remove", "@norm")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert settings.load().normalize_loudness is True
+        assert client.calls[-1] == ("send", "af", "pre", player.NORMALIZE_FILTER)
+
+
+@drive
+async def test_the_seek_and_volume_keys_and_help_follow_the_configured_steps(clients, served):
+    app = make_app_with(clients, settings.Settings(seek_seconds=10, volume_step=2))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter", "full_stop", "comma", "plus", "minus")
+        await pilot.pause()
+        assert clients.made[0].calls[-4:] == [("seek", 10), ("seek", -10), ("change_volume", 2), ("change_volume", -2)]
+        await pilot.press("question_mark")
+        await pilot.pause()
+        lines = help_lines(app)
+        for shown in ("Seek −10s", "Seek +10s", "Seek −30s", "Seek +30s", "Volume −2", "Volume +2"):
+            assert any(line.endswith(f"  {shown}") for line in lines), shown
+        assert not any("Seek +5s" in line or "Volume +5" in line for line in lines)
+
+
+@drive
+async def test_a_changed_step_setting_applies_on_the_next_keypress_in_every_table(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter", "full_stop")
+        await pilot.pause()
+        client = clients.made[0]
+        assert client.calls[-1] == ("seek", player.SEEK_SECONDS)
+        app.change_setting("seek_seconds", 15)
+        app.change_setting("volume_step", 7)
+        await pilot.press("full_stop", "plus")
+        await pilot.pause()
+        assert client.calls[-2:] == [("seek", 15), ("change_volume", 7)]
+        assert (settings.load().seek_seconds, settings.load().volume_step) == (15, 7)
+        await pilot.press("2", "comma")  # the Queue table follows too
+        await pilot.pause()
+        assert client.calls[-1] == ("seek", -15)
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert any(line.endswith("  Seek +15s") for line in help_lines(app))
+
+
 @drive
 async def test_palette_provider_offers_every_command_and_runs_its_action(clients, served, monkeypatch):
     app = make_app(clients)
@@ -1718,6 +1786,9 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["show_levels", "true", "(default true)"],
             ["search_source", "youtube", "(default youtube)"],
             ["radio", "false", "(default false)"],
+            ["normalize_loudness", "false", "(default false)"],
+            ["seek_seconds", "5", "(default 5)"],
+            ["volume_step", "5", "(default 5)"],
         ]
         await pilot.press("escape")
         await pilot.pause()
@@ -1747,15 +1818,68 @@ async def test_enter_on_show_clock_flips_it_saves_it_and_the_header_follows(clie
 
 
 @drive
-async def test_enter_on_a_non_boolean_setting_shows_how_to_set_it(clients, served, settings_file):
+async def test_enter_on_a_text_setting_shows_how_to_set_it(clients, served, settings_file):
     app = make_app_with(clients, settings.Settings())
     async with run(app) as pilot:
         await open_settings(pilot)
         saved = settings_file.read_text(encoding="utf-8")
-        await pilot.press("down", "down", "enter")
+        await pilot.press("down", "enter")
         await pilot.pause()
-        assert str(app.screen.query_one("#settings-hint", Static).render()) == "set with: ttyplayer config set search_limit <value>"
+        assert str(app.screen.query_one("#settings-hint", Static).render()) == "set with: ttyplayer config set theme <value>"
         assert settings_file.read_text(encoding="utf-8") == saved
+
+
+async def type_number(pilot, key, text):
+    """Enter on key's row in Settings, then its number box emptied and text typed and submitted."""
+    table = pilot.app.screen.query_one(DataTable)
+    table.move_cursor(row=settings.KEYS.index(key))
+    await pilot.press("enter")
+    await pilot.pause()
+    assert isinstance(pilot.app.screen, tui.NameScreen)
+    await pilot.press(*["backspace"] * len(pilot.app.screen.query_one(Input).value), *text, "enter")
+    await pilot.pause()
+
+
+@drive
+async def test_enter_on_a_number_setting_asks_for_it_and_refuses_a_bad_one(clients, served, settings_file):
+    app = make_app_with(clients, settings.Settings())
+    async with run(app) as pilot:
+        await open_settings(pilot)
+        saved = settings_file.read_text(encoding="utf-8")
+        for text, error in (("0", "seek_seconds must be between 1 and 300, not 0"), ("ten", "seek_seconds must be a whole number")):
+            await type_number(pilot, "seek_seconds", text)
+            assert str(app.screen.query_one("#name-error", Static).render()).startswith(error)
+            assert settings_file.read_text(encoding="utf-8") == saved
+            await pilot.press("escape")  # cancels: nothing changes
+            await pilot.pause()
+            assert isinstance(app.screen, tui.SettingsScreen)
+        assert app.settings.seek_seconds == player.SEEK_SECONDS
+        await type_number(pilot, "search_limit", "20")
+        assert isinstance(app.screen, tui.SettingsScreen)
+        assert settings_rows(app)[settings.KEYS.index("search_limit")] == ["search_limit", "20", "(default 10)"]
+        assert settings.load().search_limit == 20
+
+
+@drive
+async def test_seek_and_volume_steps_set_in_settings_apply_on_the_next_keypress_and_in_the_help(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.press("S")
+        await pilot.pause()
+        await type_number(pilot, "seek_seconds", "12")
+        await type_number(pilot, "volume_step", "3")
+        assert settings_rows(app)[-2:] == [["seek_seconds", "12", "(default 5)"], ["volume_step", "3", "(default 5)"]]
+        assert (settings.load().seek_seconds, settings.load().volume_step) == (12, 3)
+        await pilot.press("escape", "full_stop", "minus")
+        await pilot.pause()
+        assert clients.made[0].calls[-2:] == [("seek", 12), ("change_volume", -3)]
+        await pilot.press("question_mark")
+        await pilot.pause()
+        lines = help_lines(app)
+        for shown in ("Seek +12s", "Seek −12s", "Volume +3", "Volume −3"):
+            assert any(line.endswith(f"  {shown}") for line in lines), shown
 
 
 @drive

@@ -172,7 +172,7 @@ def play(
 ):
     """Play a YouTube link or playlist, or search and pick what to play.
 
-    Keys while playing: space pause, left/right or , . seek, up/down or - + volume,
+    Keys while playing: space pause, left/right or , . seek (seek_seconds), up/down or - + volume (volume_step),
     n next, p previous, q quit.
     """
     start_playback(resolve(target, limit, source), video, radio)
@@ -247,7 +247,7 @@ def tui(
     """Open the full-screen player: search, pick and play in one screen.
 
     Keys: / search, Enter play, a add to queue, f favorite, m more results,
-    space pause, , . seek 5s, < > seek 30s, - + volume, M mute, n next,
+    space pause, , . seek (seek_seconds), < > seek 30s, - + volume (volume_step), M mute, n next,
     p previous, 1-4 tabs, t theme, ? help, Ctrl-P commands, q quit.
 
     With --remote (or the remote_url setting) the server plays and this screen drives it.
@@ -704,7 +704,8 @@ def start_playback(videos, with_video, radio=False):
 
 
 def start_mpv(with_video, on_state=None, pcm=None, radio=False):
-    """An MpvClient that keeps history (radio on with radio or the radio setting), or a one-line message and exit 1 when mpv cannot start."""
+    """An MpvClient that keeps history (radio on with radio or the radio setting) and follows the playback settings,
+    or a one-line message and exit 1 when mpv cannot start."""
     current = load_settings()
     try:
         return player.MpvClient(
@@ -714,6 +715,9 @@ def start_mpv(with_video, on_state=None, pcm=None, radio=False):
             pcm=pcm,
             levels=current.show_levels,
             radio=radio or current.radio,
+            normalize=current.normalize_loudness,
+            seek_seconds=current.seek_seconds,
+            volume_step=current.volume_step,
         )
     except FileNotFoundError:
         fail(f"mpv is not installed. {mpv_install_hint()}")

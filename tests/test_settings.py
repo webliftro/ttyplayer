@@ -18,11 +18,11 @@ def test_settings_fields_and_defaults():
         ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10),
         ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
         ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True), ("search_source", "youtube"),
-        ("radio", False),
+        ("radio", False), ("normalize_loudness", False), ("seek_seconds", 5), ("volume_step", 5),
     ]
     assert settings.KEYS == [
         "show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url", "stream_enabled",
-        "spotify_client_id", "show_levels", "search_source", "radio",
+        "spotify_client_id", "show_levels", "search_source", "radio", "normalize_loudness", "seek_seconds", "volume_step",
     ]
 
 
@@ -41,7 +41,7 @@ def test_save_writes_a_flat_toml_that_loads_back_identically(tmp_path):
 
 def test_load_ignores_unknown_keys_and_fills_missing_ones(tmp_path):
     path = tmp_path / "settings.toml"
-    path.write_text('theme = "nord"\nvolume_step = 3\n', encoding="utf-8")
+    path.write_text('theme = "nord"\nvolume = 3\n', encoding="utf-8")
     assert settings.load(path) == Settings(theme="nord")
 
 
@@ -53,6 +53,9 @@ def test_load_ignores_unknown_keys_and_fills_missing_ones(tmp_path):
         ("search_limit = true", "search_limit must be int"),
         ("theme = 3", "theme must be str"),
         ("search_limit = 0", "search_limit must be between 1 and 50"),
+        ("normalize_loudness = 1", "normalize_loudness must be bool"),
+        ("seek_seconds = 0", "seek_seconds must be between 1 and 300"),
+        ("volume_step = 51", "volume_step must be between 1 and 50"),
     ],
 )
 def test_load_rejects_a_malformed_file_or_a_wrong_type_in_one_line(tmp_path, text, message):
@@ -87,6 +90,12 @@ def test_update_with_an_unknown_key_names_the_valid_keys(tmp_path):
         ("search_limit", "51", "search_limit must be between 1 and 50, not 51"),
         ("server_port", "0", "server_port must be between 1 and 65535, not 0"),
         ("server_port", "65536", "server_port must be between 1 and 65535, not 65536"),
+        ("normalize_loudness", "on", "normalize_loudness must be true or false, not 'on'"),
+        ("seek_seconds", "0", "seek_seconds must be between 1 and 300, not 0"),
+        ("seek_seconds", "301", "seek_seconds must be between 1 and 300, not 301"),
+        ("seek_seconds", "2.5", "seek_seconds must be a whole number, not '2.5'"),
+        ("volume_step", "0", "volume_step must be between 1 and 50, not 0"),
+        ("volume_step", "51", "volume_step must be between 1 and 50, not 51"),
         ("search_source", "bandcamp", "search_source must be one of youtube, soundcloud, not 'bandcamp'"),
     ],
 )
@@ -114,6 +123,17 @@ def test_save_turns_a_write_error_into_one_line(tmp_path):
 @pytest.mark.parametrize("limit", ["1", "50"])
 def test_search_limit_range_is_inclusive(tmp_path, limit):
     assert settings.update("search_limit", limit, tmp_path / "s.toml").search_limit == int(limit)
+
+
+@pytest.mark.parametrize("key, value", [("seek_seconds", "1"), ("seek_seconds", "300"), ("volume_step", "1"), ("volume_step", "50")])
+def test_seek_seconds_and_volume_step_ranges_are_inclusive(tmp_path, key, value):
+    assert getattr(settings.update(key, value, tmp_path / "s.toml"), key) == int(value)
+
+
+def test_normalize_loudness_saves_and_loads_back(tmp_path):
+    path = tmp_path / "s.toml"
+    assert settings.update("normalize_loudness", "true", path).normalize_loudness is True
+    assert settings.load(path) == Settings(normalize_loudness=True)
 
 
 @posix_only

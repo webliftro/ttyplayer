@@ -80,8 +80,8 @@ Keys in `ttyplayer play` (the terminal player; `ttyplayer tui` has its own table
 | Key | Action |
 |---|---|
 | space | pause / resume |
-| left / right, `,` / `.` | seek 5 seconds |
-| up / down, `-` / `+` | volume |
+| left / right, `,` / `.` | seek 5 seconds (`seek_seconds`) |
+| up / down, `-` / `+` | volume, 5 at a time (`volume_step`) |
 | `n` / `p` | next / previous in the queue |
 | `q` or Ctrl-C | quit, restores the terminal and stops mpv |
 
@@ -130,14 +130,14 @@ Under the volume, the panel's level meter shows two bars, `L` and `R`, that foll
 | anywhere | Ctrl-P | command palette |
 | anywhere | `t` | next theme (remembered for next time) |
 | table | `P` | save the queue as a playlist (asks for a name; an existing playlist of that name is replaced) |
-| table | `S` | settings: Enter flips a true / false one, `esc` closes |
+| table | `S` | settings: Enter flips a true / false one or asks for a number, `esc` closes |
 | table | `R` | radio on / off (`∞` in the panel; `∞ fetching…` while it looks up related tracks) |
 | table | `q` | quit and stop mpv (in the search box it is just a letter) |
 | table | `space` | pause / resume |
 | table | `n` / `p` | next / previous |
-| table | `,` / `.` | seek −5 s / +5 s |
+| table | `,` / `.` | seek −5 s / +5 s (`seek_seconds`; `?` shows the configured number) |
 | table | `<` / `>` | seek −30 s / +30 s |
-| table | `-` / `+` | volume −5 / +5 |
+| table | `-` / `+` | volume −5 / +5 (`volume_step`) |
 | table | `M` | mute / unmute (🔇 in the panel) |
 | table | `f` | favorite / unfavorite this row (the track playing when there is no row) |
 | Search · History · Favorites row | Enter | play this one, then the rows after it |
@@ -177,6 +177,9 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
 | `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
 | `radio` | `false` | a new player goes on with related YouTube tracks when its queue runs out, as `play --radio` does |
+| `normalize_loudness` | `false` | mpv evens out loud and quiet tracks (a `loudnorm` filter to −16 LUFS); the stream of `serve --stream` gets it too |
+| `seek_seconds` | `5` | how far `,` / `.` (and left / right in `ttyplayer play`) seek (1–300) |
+| `volume_step` | `5` | how much `-` / `+` (and up / down in `ttyplayer play`) change the volume (1–50) |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
@@ -185,7 +188,7 @@ ttyplayer config set <key> <value>   change it: ttyplayer config set show_clock 
 ttyplayer config path                where the file is
 ```
 
-In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock and the level meter show or hide at once); the others are set with `ttyplayer config set`.
+In the TUI, `S` (or Settings… in Ctrl-P) lists the settings: Enter on a true / false one flips it and saves it (the clock and the level meter show or hide at once, the loudness filter goes in or out of the running mpv); Enter on a number asks for a new one, checked as `config set` checks it; the others are set with `ttyplayer config set`. A `seek_seconds` / `volume_step` changed there applies from the next key press, and the help shows the new step.
 
 ## Server
 

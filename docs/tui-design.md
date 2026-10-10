@@ -65,6 +65,12 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   the panel never jumps. They update with each status, about every `LEVELS_INTERVAL` (0.1 s) while
   playing. `show_levels = false` hides both lines (the panel shrinks to three) and, in a running TUI,
   takes the filter out of mpv at once (`af remove`).
+- Settings the TUI reads (the `S` modal lists every key with its value and default): `show_clock`,
+  `theme`, `search_limit`, `search_source`, `remote_url`, `show_levels`, `radio`, `normalize_loudness`
+  (a new player starts with the loudness filter; Enter in the modal sends `set_normalize`, `af pre` /
+  `af remove @norm`), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
+  bindings (`step_bindings()`, from `player.keys()`'s numbers) when a table mounts and again when
+  either changes, so the next key press uses the new step and `?` shows it.
 - The Footer is Textual's own, fed by `BINDINGS` — key hints are never typed by hand twice. `?`
   opens a help modal that lists every binding with its description, generated from the same
   `BINDINGS`.
@@ -86,13 +92,13 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 | anywhere | Ctrl-P | command palette (Textual built-in: search, theme, help, quit) |
 | anywhere | `t` | next theme (cycles `App.available_themes`, saved to the settings file) |
 | table | `P` | save the queue as a playlist: a name modal (one track: its title; else `Queue <date>`), a playlist of that name is replaced; `Nothing to save` with no queue |
-| table | `S` | Settings modal: Enter flips a true / false setting, Esc closes |
+| table | `S` | Settings modal: Enter flips a true / false setting or asks for a whole number one (checked like `config set`), Esc closes |
 | table | `q` | quit (in the search box `q` is a letter) |
 | table | space | pause / resume |
 | table | `n` / `p` | next / previous |
-| table | `,` / `.` | seek −5 s / +5 s |
+| table | `,` / `.` | seek −`seek_seconds` / +`seek_seconds` (5 s by default) |
 | table | `<` / `>` | seek −30 s / +30 s |
-| table | `-` / `+` | volume −5 / +5 |
+| table | `-` / `+` | volume −`volume_step` / +`volume_step` (5 by default) |
 | table | `M` | mute / unmute |
 | Search · History · Favorites row | Enter | play this one (the queue becomes this row and the rows after it in that table) |
 | Search · History · Favorites row | `a` | add to the queue (starts playing if the queue was empty) |
