@@ -30,13 +30,16 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from ttyplayer import art, control, favorites, history, player, playlists, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, youtube
 from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
 HISTORY_LIMIT = 50
 FAVORITE_MARK = " ♥"
 IDLE_TEXT = "Nothing playing — press / to search"
+LYRICS_IDLE_TEXT = "Nothing playing"
+LYRICS_LOADING_TEXT = "Looking up…"
+LYRICS_OFF_TEXT = "Lyrics are off (show_lyrics)"
 LONG_SEEK_SECONDS = 30
 VIDEO_COLUMNS = ("Title", "Uploader", "Length")
 PLAYLIST_COLUMNS = ("Name", "Tracks", "Length")
@@ -228,6 +231,93 @@ class NowPlaying(Horizontal):
     def show_art(self, shown):
         """The art column follows show_art; without the art extra it is never there."""
         self.query_one(Art).hide(not (shown and self.app.image_widget))
+
+
+class LyricsView(VerticalScroll):
+    """Tab 6: the playing track's lyrics, the line being sung highlighted and kept in the middle.
+
+    follow() runs on the app thread on every status tick and keeps the track and position; only a shown
+    tab looks a track up, on a worker thread, and a result for a track no longer playing is dropped.
+    """
+
+    can_focus = True
+    video = None  # the playing track, kept while the tab is hidden
+    position = None
+    loaded_id = None  # the track whose lyrics are shown or loading
+    synced = None  # [(seconds, text)] of the shown synced lyrics; None for plain ones or a message
+    lines = ()  # the shown lines' widgets
+    current = None  # the highlighted line's index
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="lyrics-message", markup=False)
+
+    def on_mount(self):
+        self.show_message(LYRICS_IDLE_TEXT)
+
+    def shown(self):
+        return self.screen.query_one(TabbedContent).active == "lyrics"  # self.screen: a modal may be on top
+
+    def follow(self, video, position):
+        self.video, self.position = video, position
+        self.refresh_if_shown()
+
+    def refresh_if_shown(self):
+        if self.shown():
+            self.refresh_lyrics()
+
+    def refresh_lyrics(self):
+        """Bring the tab up to the playing track: a message, a lookup started, or the highlight moved."""
+        video = self.video
+        if not self.app.settings.show_lyrics or video is None:
+            self.loaded_id = None
+            self.show_message(LYRICS_IDLE_TEXT if self.app.settings.show_lyrics else LYRICS_OFF_TEXT)
+        elif video.id != self.loaded_id:
+            self.loaded_id = video.id
+            self.show_message(LYRICS_LOADING_TEXT)
+            self.load(video)
+        else:
+            self.highlight()
+
+    @work(thread=True, exclusive=True, group="lyrics")
+    def load(self, video):
+        found = lyrics.find(video.id, video.title, video.uploader, video.duration)
+        if not get_current_worker().is_cancelled:
+            self.app.call_from_thread(self.put, video, found)
+
+    def put(self, video, found):
+        if video.id != self.loaded_id:
+            return
+        if found is None:
+            self.show_message(lyrics.not_found(*lyrics.guess(video.title, video.uploader)))
+            return
+        self.query_one("#lyrics-message").display = False
+        self.synced = found.synced
+        words = [line for _, line in found.synced] if found.synced else found.plain.splitlines()
+        self.lines = [Static(Text(line or " "), classes="lyrics-line") for line in words]
+        self.mount_all(self.lines)
+        self.highlight()
+
+    def show_message(self, message):
+        self.synced = self.current = None
+        self.remove_children(self.lines)
+        self.lines = ()
+        self.query_one("#lyrics-message", Static).update(message)
+        self.query_one("#lyrics-message").display = True
+
+    def highlight(self):
+        """The line sung at position in $accent, scrolled to the middle; plain lyrics have none."""
+        if self.synced is None:
+            return
+        index = lyrics.current_line(self.synced, self.position)
+        lines = self.lines
+        if index != self.current:
+            if self.current is not None:
+                lines[self.current].remove_class("-current")
+            if index is not None:
+                lines[index].add_class("-current")
+            self.current = index
+        if index is not None:
+            self.scroll_to_center(lines[index], animate=False)
 
 
 class SearchBox(Input):
@@ -554,6 +644,7 @@ class TtyplayerApp(App):
         Binding("3", "show_tab('history')", "History tab", show=False),
         Binding("4", "show_tab('favorites')", "Favorites tab", show=False),
         Binding("5", "playlists", "Playlists tab", show=False),
+        Binding("6", "show_tab('lyrics')", "Lyrics tab", show=False),
         Binding("P", "save_queue", "Save queue"),
         Binding("t", "next_theme", "Next theme", show=False),
         Binding("S", "settings", "Settings"),
@@ -596,6 +687,8 @@ class TtyplayerApp(App):
                 yield FavoritesTable()
             with TabPane("Playlists", id="playlists"):
                 yield PlaylistTable()
+            with TabPane("Lyrics", id="lyrics"):
+                yield LyricsView()
         yield NowPlaying()
         yield Footer()
 
@@ -762,6 +855,7 @@ class TtyplayerApp(App):
             self.history_stale = False
             self.show_history()
         self.query_one(NowPlaying).show(status, self.playing_video())
+        self.query_one(LyricsView).follow(self.playing_video(), status and status["position"])
         self.mark_playing()
         self.show_queue()
         self.toast_player_error(status and status.get("error"))
@@ -794,6 +888,8 @@ class TtyplayerApp(App):
             self.show_favorites()
         elif event.pane.id == "playlists":
             self.show_playlists()
+        elif event.pane.id == "lyrics":
+            self.query_one(LyricsView).refresh_lyrics()
 
     def show_library(self, table_type, pane, title, videos):
         self.query_one(table_type).show(videos, self.playing_video(), self.favorite_ids)
@@ -1095,6 +1191,8 @@ class TtyplayerApp(App):
             self.show_levels()
         if key == "show_art":
             self.show_art()
+        if key == "show_lyrics":
+            self.screen_stack[0].query_one(LyricsView).refresh_if_shown()
         if key == "normalize_loudness" and self.client:
             self.client.set_normalize(value)
         if key in ("seek_seconds", "volume_step"):
@@ -1129,7 +1227,7 @@ class TtyplayerApp(App):
     def action_focus_results(self):
         pane = self.query_one(TabbedContent).active_pane
         if pane is not None:
-            pane.query_one(DataTable).focus()
+            pane.query_one("DataTable, LyricsView").focus()
 
     def action_show_tab(self, tab):
         self.query_one(TabbedContent).active = tab

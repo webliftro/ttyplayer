@@ -50,6 +50,7 @@ ttyplayer sleep off                  cancel it (no argument: show it)
 ttyplayer radio on                   go on with related tracks when the queue runs out
 ttyplayer radio off                  stop at the end of the queue again (no argument: show it)
 ttyplayer status                     1:23 / 4:56  Playing  <title>
+ttyplayer lyrics                     the playing track's lyrics, from LRCLIB
 ```
 
 When the sleep timer runs out, the volume fades to nothing over 5 seconds and the player stops as if `q` was pressed; the volume is put back first, so the next play starts at the old level. Paused or idle, it stops at once. `ttyplayer status`, the TUI and the web remote show `zz 27:13` (or `zz end`) while a timer is armed.
@@ -116,18 +117,20 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
 Looks: left of those lines the panel shows the playing track's cover, its YouTube thumbnail or SoundCloud artwork, in a 10-column box. Terminals that draw pictures (Kitty, WezTerm, iTerm2 and other Sixel ones) show the real image; elsewhere, Terminal.app for one, it is a mosaic of colored half-blocks. Covers come with the `art` extra, which the install scripts include; `ttyplayer doctor` says whether you have it. Each cover is downloaded once and kept in the data dir's `art` folder (the 200 most recent). `ttyplayer config set show_art false`, or Enter on `show_art` in the Settings screen, removes the box.
+
+Read along: the Lyrics tab (`6`) shows the playing track's lyrics, the line being sung in the accent color and kept in the middle as the song goes on (lyrics without timings just scroll). They come from [LRCLIB](https://lrclib.net), a free, open lyrics database: ttyplayer guesses the artist and title from the video's title and uploader (`Artist - Song (Official Video)`, `Song | Artist`, an `Artist - Topic` channel, …) and asks LRCLIB once per track, only while the tab is shown; the answer, a miss included, is kept in the data dir's `lyrics` folder. With nothing found the tab says `No lyrics found for "<artist> – <title>"`, so you see what it looked for. `ttyplayer lyrics` prints the same lyrics in another terminal. `ttyplayer config set show_lyrics false`, or Enter on `show_lyrics` in the Settings screen, stops the lookups (the tab says `Lyrics are off (show_lyrics)`). Lyrics courtesy of LRCLIB; ttyplayer sends it only the guessed artist, title and length.
 
 | Where | Key | Action |
 |---|---|---|
 | table | `↑` / `↓` | move through the list (volume is `-` / `+`) |
 | anywhere | `/` | focus the search box (`esc` returns to the table) |
 | anywhere | `?` | help: every key and command (`esc` closes) |
-| anywhere | `1` `2` `3` `4` `5` | Search / Queue / History / Favorites / Playlists tab |
+| anywhere | `1` `2` `3` `4` `5` `6` | Search / Queue / History / Favorites / Playlists / Lyrics tab |
 | anywhere | Ctrl-C | quit and stop mpv |
 | anywhere | Ctrl-P | command palette |
 | anywhere | `t` | next theme (remembered for next time) |
@@ -178,6 +181,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `spotify_client_id` | *none* | the Client ID of your own Spotify app, which `ttyplayer spotify login` needs (see Spotify above) |
 | `show_levels` | `true` | the TUI's level meter: mpv measures the sound's peaks and the now-playing panel shows them |
 | `show_art` | `true` | the track's cover in the TUI's now-playing panel (needs the `art` extra; without it nothing changes) |
+| `show_lyrics` | `true` | the TUI's Lyrics tab looks the playing track up on LRCLIB; `false` turns the lookups off |
 | `search_source` | `youtube` | where a search looks: `youtube` or `soundcloud`; `--source` and the TUI's `sc:` / `yt:` prefix override it once |
 | `radio` | `false` | a new player goes on with related YouTube tracks when its queue runs out, as `play --radio` does |
 | `normalize_loudness` | `false` | mpv evens out loud and quiet tracks (a `loudnorm` filter to −16 LUFS); the stream of `serve --stream` gets it too |

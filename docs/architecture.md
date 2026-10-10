@@ -46,7 +46,7 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, …), settings_path, load, save,
+               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, …), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
@@ -57,6 +57,14 @@ src/ttyplayer/
                decode(bytes) -> PIL image | None, available() (the art extra: Pillow and textual-image),
                image_widget() (textual_image's Image, imported before the app runs). The only module that
                imports PIL or textual_image, and only inside those functions.
+  lyrics.py    Lyrics from LRCLIB (lrclib.net, no key; each request names ttyplayer, its version and its home page): guess(title, uploader)
+               -> (artist, track); lookup(artist, track, duration) -> Lyrics(synced [(seconds, text)] |
+               None, plain | None, source_url) | None: GET /api/get, on a 404 /api/search and the first
+               hit within 5 s; parse_lrc, current_line, text; urllib, 3 s a request, never raises.
+               find(video_id, title, uploader, duration) adds a disk cache under data_path("lyrics")
+               (sha1 of the video id, 0600, through art.store so the 200 most recently used are kept); a
+               miss is cached as `none`, a network error is not. The TUI's Lyrics tab calls find(), the
+               `lyrics` command lookup() (it has no video id: status carries none).
   models.py    Video dataclass: id, title, uploader, duration, source ("youtube" by default), link (the
                page URL yt-dlp reported, for every other source) and thumbnail (the cover's URL or None). url is the only place that builds a URL:
                the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title.
@@ -75,13 +83,14 @@ after the PyPI upload and commits the result to the `webliftro/homebrew-tap` tap
 Dependencies point one way:
 
 ```
-cli  ->  youtube, player, history, favorites, playlists, control, settings, tui (imported only by the tui command),
+cli  ->  youtube, player, history, favorites, playlists, control, settings, lyrics, tui (imported only by the tui command),
          server (imported only by the serve command), remote (imported only by tui --remote),
          spotify (imported only by the spotify commands)
 spotify  ->  youtube, playlists, settings (for the config dir only)
 remote  ->  tui, server, control, models      (tui -> remote -> (HTTP) server: the server plays)
 server  ->  player, youtube, playlists, settings, control, history (through the client and callbacks cli wires)
-tui  ->  youtube, player, history, favorites, control, settings, utils, models
+tui  ->  youtube, player, history, favorites, control, settings, lyrics, utils, models
+lyrics  ->  art (its disk cache's store), utils
 settings  ->  utils
 player  ->  control
 youtube, player, history, favorites, playlists  ->  models, utils
@@ -165,6 +174,10 @@ f on a row / d          -> favorites.add / remove_id, toast; the Favorites table
   (f with no row: the track playing)
 on_play (under queue_lock) -> history.record(video), mark the History table stale (never waits)
 tab 3 / 4 shown         -> History / Favorites table reloaded from history.load(50) / favorites.load()
+tab 6 shown / a status  -> LyricsView.follow(playing video, position); shown and a new video id:
+  while it is shown        "Looking up…", lyrics worker thread: lyrics.find() -> call_from_thread:
+                           the lines (dropped when the track changed meanwhile); else the line at
+                           position highlighted and centered
 keys on the table       -> BINDINGS -> app actions -> toggle_pause / seek / change_volume / toggle_mute
                            / next / prev
 start                   -> Header(show_clock); App.theme = the saved theme (unknown: the default, a toast)

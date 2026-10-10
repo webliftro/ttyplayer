@@ -17,12 +17,12 @@ def test_settings_fields_and_defaults():
     assert [(field.name, field.default) for field in dataclasses.fields(Settings)] == [
         ("show_clock", True), ("theme", "textual-dark"), ("search_limit", 10),
         ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
-        ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True), ("show_art", True), ("search_source", "youtube"),
+        ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True), ("show_art", True), ("show_lyrics", True), ("search_source", "youtube"),
         ("radio", False), ("normalize_loudness", False), ("seek_seconds", 5), ("volume_step", 5),
     ]
     assert settings.KEYS == [
         "show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url", "stream_enabled",
-        "spotify_client_id", "show_levels", "show_art", "search_source", "radio", "normalize_loudness", "seek_seconds", "volume_step",
+        "spotify_client_id", "show_levels", "show_art", "show_lyrics", "search_source", "radio", "normalize_loudness", "seek_seconds", "volume_step",
     ]
 
 

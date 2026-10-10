@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from ttyplayer import art, cli, control, favorites, history, player, playlists, settings, spotify, utils, youtube
+from ttyplayer import art, cli, control, favorites, history, lyrics, player, playlists, settings, spotify, utils, youtube
 from ttyplayer.cli import app
 from ttyplayer.models import Video
 
@@ -535,7 +535,59 @@ def test_status_shows_the_queue_position_when_there_is_a_queue(monkeypatch):
     assert result.output == "--:-- / 4:56  Playing  🔊 ▮▮▮▮▮▮▮▯▯▯ 70%  Song  [2/3]\n"
 
 
-@pytest.mark.parametrize("command", ["pause", "next", "prev", "stop", "status"])
+LYRICS_STATUS = {**STATUS, "title": "Queen - Bohemian Rhapsody (Official Video)", "uploader": "Queen Official", "idle": False}
+
+
+def fake_lookup(found):
+    """A lyrics.lookup stand-in that records its arguments and answers found."""
+
+    def lookup(artist, track, duration=None):
+        lookup.calls.append((artist, track, duration))
+        return found
+
+    lookup.calls = []
+    return lookup
+
+
+@pytest.mark.parametrize(
+    ("found", "printed"),
+    [
+        (lyrics.Lyrics([(1.0, "Is this the real life?"), (4.5, "Is this just fantasy?")], None, "url"), "Is this the real life?\nIs this just fantasy?\n"),
+        (lyrics.Lyrics(None, "Is this the real life?\nIs this just fantasy?", "url"), "Is this the real life?\nIs this just fantasy?\n"),
+    ],
+)
+def test_lyrics_prints_the_playing_tracks_words_without_stamps(found, printed, monkeypatch):
+    send, lookup = fake_send(LYRICS_STATUS), fake_lookup(found)
+    monkeypatch.setattr(control, "send", send)
+    monkeypatch.setattr(lyrics, "lookup", lookup)
+    result = runner.invoke(app, ["lyrics"])
+    assert result.exit_code == 0
+    assert result.output == printed
+    assert send.names == ["status"]
+    assert lookup.calls == [("Queen", "Bohemian Rhapsody", 296.0)]
+
+
+def test_lyrics_not_found_is_one_line_and_exit_1(monkeypatch):
+    monkeypatch.setattr(control, "send", fake_send(LYRICS_STATUS))
+    monkeypatch.setattr(lyrics, "lookup", fake_lookup(None))
+    result = runner.invoke(app, ["lyrics"])
+    assert result.exit_code == 1
+    assert result.stderr == 'No lyrics found for "Queen – Bohemian Rhapsody"\n'
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("reply", [{**LYRICS_STATUS, "idle": True}, {**LYRICS_STATUS, "title": ""}])
+def test_lyrics_with_the_player_idle_is_one_line_and_exit_1(reply, monkeypatch):
+    lookup = fake_lookup(None)
+    monkeypatch.setattr(control, "send", fake_send(reply))
+    monkeypatch.setattr(lyrics, "lookup", lookup)
+    result = runner.invoke(app, ["lyrics"])
+    assert result.exit_code == 1
+    assert result.stderr == "Nothing is playing\n"
+    assert lookup.calls == []
+
+
+@pytest.mark.parametrize("command", ["pause", "next", "prev", "stop", "status", "lyrics"])
 def test_remote_commands_with_nothing_playing(command, monkeypatch):
     monkeypatch.setattr(control, "send", no_player)
     result = runner.invoke(app, [command])
@@ -709,10 +761,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, seek_seconds, volume_step\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):

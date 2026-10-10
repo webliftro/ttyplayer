@@ -15,7 +15,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 ```
 ┌─ ttyplayer ──────────────────────────────────────────────────────── 14:02 ─┐  Header (clock)
 │ 🔍 Search (sc: SoundCloud, yt: YouTube) or paste a link…           ◐     │  search bar + spinner
-│ ┌ Search ──┬ Queue ──┬ History ──┬ Favorites ──┬ Playlists ──┐          │  TabbedContent (1–5)
+│ ┌ Search ──┬ Queue ──┬ History ──┬ Favorites ──┬ Playlists ──┬ Lyrics ┐ │  TabbedContent (1–6)
 │ │  #  Title                          Uploader          Length           │  DataTable, zebra,
 │ │ ▸1  lofi hip hop radio             Lofi Girl          --:--           │  row cursor
 │ │  2  Never Gonna Give You Up        Rick Astley        3:33            │
@@ -36,12 +36,23 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   A query starting with `sc:` searches SoundCloud, `yt:` YouTube, whatever `search_source` says;
   after a search the Search tab's heading reads `SoundCloud results` or `YouTube results`.
 - Tabs: **Search** (results), **Queue** (what will play, reorderable), **History**, **Favorites**,
-  **Playlists**. Digits `1`–`5` switch tabs. Every tab is a `DataTable` with the same columns so the eye never
+  **Playlists**, **Lyrics**. Digits `1`–`6` switch tabs. Every tab but Lyrics is a `DataTable` with the same columns so the eye never
   re-learns the screen: `#`, `Title`, `Uploader`, `Length`. The row being played shows `▸` in `#`.
 - **Playlists** lists the playlists (`#`, `Name`, `Tracks`, `Length` = the sum of the known
   durations), tab title `Playlists (n)`. Enter opens one in the same table: its tracks in the
   columns above, tab title `Playlists › <name> (n)`; Esc or Backspace goes back to the list. The tab
   is read from the `playlists` files each time it is shown and after every change.
+- **Lyrics** (`LyricsView`, a focusable `VerticalScroll`) reads along with the playing track. One of four
+  states: `Nothing playing` (dim; idle or no player), `Looking up…` (dim; the lookup is running),
+  `No lyrics found for "<artist> – <title>"` (dim; the guess from `lyrics.guess()`, so the user sees why),
+  or the lyrics, one centered line each. Synced lyrics highlight the line whose time ≤ `position`
+  (`$accent`, bold, `lyrics.current_line()`) and scroll it to the middle on every status tick (near
+  the start or the end the view stops at its edge); plain lyrics show without a highlight.
+  `show_lyrics = false` replaces all of it with `Lyrics are off (show_lyrics)` (dim). The tab keeps
+  the playing video and position on every status; only while it is shown does it act: when the
+  playing video's id differs from the one it shows, a worker thread runs `lyrics.find()` (the disk
+  cache, else LRCLIB) and a result for a track no longer playing is dropped. Hidden, it fetches
+  nothing; shown again, it catches up.
 - Small centered modals: the playlist name (`P`, New playlist…; a bad name is shown under the box
   until a good one is typed), the sleep timer (Sleep…, the same modal), the playlist picker (`A`),
   and the yes / no before deleting a playlist.
@@ -79,7 +90,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   takes the filter out of mpv at once (`af remove`).
 - Settings the TUI reads (the `S` modal lists every key with its value and default): `show_clock`,
   `theme`, `search_limit`, `search_source`, `remote_url`, `show_levels`, `show_art` (Enter in the modal
-  hides or shows the art column at once), `radio`, `normalize_loudness`
+  hides or shows the art column at once), `show_lyrics` (Enter turns the Lyrics tab's lookups off or
+  on at once), `radio`, `normalize_loudness`
   (a new player starts with the loudness filter; Enter in the modal sends `set_normalize`, `af pre` /
   `af remove @norm`), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
   bindings (`step_bindings()`, from `player.keys()`'s numbers) when a table mounts and again when
@@ -100,7 +112,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 |---|---|---|
 | anywhere | `/` | focus the search box |
 | anywhere | `?` | help modal (Esc closes) |
-| anywhere | `1` `2` `3` `4` `5` | Search / Queue / History / Favorites / Playlists tab |
+| anywhere | `1` `2` `3` `4` `5` `6` | Search / Queue / History / Favorites / Playlists / Lyrics tab |
 | anywhere | Ctrl-C | quit |
 | anywhere | Ctrl-P | command palette (Textual built-in: search, theme, help, quit) |
 | anywhere | `t` | next theme (cycles `App.available_themes`, saved to the settings file) |

@@ -10,7 +10,7 @@ from importlib import metadata
 
 import typer
 
-from ttyplayer import art, control, favorites, history, player, playlists, settings
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, settings
 from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen, video_from_info
 
 app = typer.Typer()
@@ -626,6 +626,19 @@ def radio(state: str = typer.Argument("", help=f"{player.RADIO_FORMS}; none show
 def status():
     """Show what the playing ttyplayer is playing"""
     typer.echo(player.status_line(remote("status")))
+
+
+@app.command(name="lyrics")
+def lyrics_command():
+    """Print the lyrics of the track the playing ttyplayer is playing (from LRCLIB)"""
+    status = remote("status")
+    if status.get("idle") or not status.get("title"):
+        fail("Nothing is playing")
+    artist, track = lyrics.guess(status["title"], status.get("uploader"))
+    found = lyrics.lookup(artist, track, status.get("duration"))
+    if found is None:
+        fail(lyrics.not_found(artist, track))
+    typer.echo(lyrics.text(found))
 
 
 def remote(name):

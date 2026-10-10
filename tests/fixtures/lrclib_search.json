@@ -1,0 +1,22 @@
+[
+  {
+    "id": 3396300,
+    "trackName": "I Want to Live (Extended)",
+    "artistName": "Borislav Slavov",
+    "albumName": "Baldur's Gate 3 (Extended Edition)",
+    "duration": 301,
+    "instrumental": false,
+    "plainLyrics": "I feel your breath upon my neck (extended)",
+    "syncedLyrics": "[00:20.00] I feel your breath upon my neck (extended)"
+  },
+  {
+    "id": 3396226,
+    "trackName": "I Want to Live",
+    "artistName": "Borislav Slavov",
+    "albumName": "Baldur's Gate 3 (Original Game Soundtrack)",
+    "duration": 233.0,
+    "instrumental": false,
+    "plainLyrics": "I feel your breath upon my neck\nA soft caress as cold as death",
+    "syncedLyrics": null
+  }
+]

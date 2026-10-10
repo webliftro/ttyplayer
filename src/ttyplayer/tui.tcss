@@ -206,3 +206,22 @@ NameScreen, PlaylistPicker, ConfirmScreen {
     margin-top: 1;
     text-style: dim;
 }
+
+LyricsView {
+    height: 1fr;
+    padding: 0 2;
+}
+
+#lyrics-message {
+    text-style: dim;
+}
+
+.lyrics-line {
+    width: 1fr;
+    text-align: center;
+}
+
+.lyrics-line.-current {
+    color: $accent;
+    text-style: bold;
+}

@@ -24,7 +24,7 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import art, control, favorites, history, player, playlists, remote, settings, tui, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, remote, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -127,6 +127,30 @@ def settings_file(monkeypatch, tmp_path):
 def no_art(monkeypatch):
     """No art extra, whatever this venv has: the panel's widths stay the same; the art tests opt in."""
     monkeypatch.setattr(art, "available", lambda: False)
+
+
+class FakeFind:
+    """Stands in for lyrics.find: answers each video id from answers (None when absent), after its gate
+    opens if it has one; records the ids asked for."""
+
+    def __init__(self):
+        self.answers = {}
+        self.gates = {}
+        self.calls = []
+
+    def __call__(self, video_id, title, uploader, duration=None):
+        self.calls.append(video_id)
+        if video_id in self.gates:
+            self.gates[video_id].wait(5)
+        return self.answers.get(video_id)
+
+
+@pytest.fixture(autouse=True)
+def find_lyrics(monkeypatch):
+    """No test reaches LRCLIB: lyrics.find is a fake that finds nothing unless told otherwise."""
+    find = FakeFind()
+    monkeypatch.setattr(lyrics, "find", find)
+    return find
 
 
 @pytest.fixture
@@ -240,7 +264,7 @@ async def test_layout_header_search_tabs_panel_footer(clients, served):
         assert search_box.parent is app.query_one(LoadingIndicator).parent
         tabs = app.query_one(TabbedContent)
         assert [str(tabs.get_tab(pane).label) for pane in tabs.query("TabPane")] == [
-            "Search", "Queue", "History", "Favorites", "Playlists"
+            "Search", "Queue", "History", "Favorites", "Playlists", "Lyrics"
         ]
         assert tabs.active == "search"
         assert tabs.get_pane("queue").query_one(tui.QueueTable)
@@ -374,7 +398,7 @@ async def test_digits_switch_tabs_and_slash_and_escape_move_focus(clients, serve
     async with run(app) as pilot:
         await search(pilot)
         tabs = app.query_one(TabbedContent)
-        for key, pane in [("2", "queue"), ("3", "history"), ("4", "favorites"), ("1", "search")]:
+        for key, pane in [("2", "queue"), ("3", "history"), ("4", "favorites"), ("6", "lyrics"), ("1", "search")]:
             await pilot.press(key)
             await pilot.pause()
             assert tabs.active == pane
@@ -1792,6 +1816,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["spotify_client_id", "", "(default )"],
             ["show_levels", "true", "(default true)"],
             ["show_art", "true", "(default true)"],
+            ["show_lyrics", "true", "(default true)"],
             ["search_source", "youtube", "(default youtube)"],
             ["radio", "false", "(default false)"],
             ["normalize_loudness", "false", "(default false)"],
@@ -2753,3 +2778,187 @@ def png_2x2():
     out = io.BytesIO()
     Image.new("RGB", (2, 2), "red").save(out, "PNG")
     return out.getvalue()
+
+
+# --- lyrics ---------------------------------------------------------------------
+
+SONGS = [
+    Video(id="s1", title="Queen - Bohemian Rhapsody (Official Video)", uploader="Queen Official", duration=355),
+    Video(id="s2", title="Get Lucky", uploader="Daft Punk - Topic", duration=248),
+]
+SYNCED = lyrics.Lyrics([(float(second), f"line {second}") for second in range(0, 200, 5)], None, "https://lrclib.net/api/get/1")
+
+
+def lyrics_view(app):
+    return app.query_one(tui.LyricsView)
+
+
+def lyrics_message(app):
+    view = lyrics_view(app)
+    message = view.query_one("#lyrics-message", Static)
+    return str(message.render()) if message.display else None
+
+
+def lyrics_lines(app):
+    """The shown lines, the highlighted one marked with a *."""
+    return [("*" if line.has_class("-current") else "") + str(line.render()) for line in lyrics_view(app).lines]
+
+
+async def play_song(pilot, row=0):
+    await search(pilot)
+    await pilot.press(*["down"] * row, "enter")
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+async def show_lyrics_tab(pilot):
+    await pilot.press("6")
+    await pilot.app.workers.wait_for_complete()
+    await pilot.pause()
+
+
+async def tick(pilot, client, position):
+    """A status tick from the player at position seconds."""
+    client.state["time-pos"] = position
+    client.notify()
+    await pilot.pause()
+
+
+@drive
+async def test_lyrics_tab_says_nothing_playing_and_focuses_on_6(clients, served, find_lyrics):
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await pilot.press("escape", "6")
+        await pilot.pause()
+        assert app.query_one(TabbedContent).active == "lyrics"
+        assert app.focused is lyrics_view(app)
+        assert lyrics_message(app) == "Nothing playing"
+        assert find_lyrics.calls == []
+
+
+@drive
+async def test_lyrics_are_looked_up_only_while_the_tab_is_shown_and_kept_while_hidden(clients, served, find_lyrics):
+    find_lyrics.answers = {"s1": SYNCED}
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await play_song(pilot)
+        await tick(pilot, clients.made[0], 12)
+        assert find_lyrics.calls == []  # hidden: nothing fetched
+        app.query_one(TabbedContent).active = "lyrics"
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert find_lyrics.calls == ["s1"]
+        assert lyrics_message(app) is None
+        assert lyrics_lines(app)[:4] == ["line 0", "line 5", "*line 10", "line 15"]
+        app.query_one(TabbedContent).active = "search"
+        await tick(pilot, clients.made[0], 30)
+        app.query_one(TabbedContent).active = "lyrics"
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert find_lyrics.calls == ["s1"]  # the same track: kept, not fetched again
+        assert lyrics_lines(app)[6] == "*line 30"
+
+
+@drive
+async def test_lyrics_look_up_shows_looking_up_then_the_lines_and_drops_a_stale_result(clients, served, find_lyrics):
+    first, second = threading.Event(), threading.Event()
+    find_lyrics.gates = {"s1": first, "s2": second}
+    find_lyrics.answers = {"s1": SYNCED, "s2": lyrics.Lyrics(None, "plain one\nplain two", "url")}
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter", "6")
+        await pilot.pause()
+        assert lyrics_message(app) == "Looking up…"
+        clients.made[0].jump(1)  # the track changed while its lyrics were on the way
+        await pilot.pause()
+        first.set()
+        await asyncio.to_thread(time.sleep, 0.1)
+        await pilot.pause()
+        assert lyrics_message(app) == "Looking up…"  # the first track's lyrics came too late
+        second.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert find_lyrics.calls == ["s1", "s2"]
+        assert lyrics_message(app) is None
+        assert lyrics_lines(app) == ["plain one", "plain two"]  # plain lyrics: nothing highlighted
+        await tick(pilot, clients.made[0], 100)
+        assert lyrics_lines(app) == ["plain one", "plain two"]
+
+
+@drive
+async def test_no_lyrics_names_the_guessed_artist_and_track(clients, served, find_lyrics):
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await play_song(pilot)
+        await show_lyrics_tab(pilot)
+        assert lyrics_message(app) == 'No lyrics found for "Queen – Bohemian Rhapsody"'
+        clients.made[0].jump(1)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert lyrics_message(app) == 'No lyrics found for "Daft Punk – Get Lucky"'
+        clients.made[0].idle = True
+        clients.made[0].notify()
+        await pilot.pause()
+        assert lyrics_message(app) == "Nothing playing"
+
+
+@drive
+async def test_the_highlight_follows_the_position_and_stays_in_the_middle(clients, served, find_lyrics):
+    find_lyrics.answers = {"s1": SYNCED}
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await play_song(pilot)
+        await show_lyrics_tab(pilot)
+        client, view = clients.made[0], lyrics_view(app)
+        await tick(pilot, client, 2)
+        assert lyrics_lines(app)[:2] == ["*line 0", "line 5"]
+        assert view.scroll_y == 0  # the top line cannot go higher than the top
+        for position in (102, 104.9, 125):  # mid-song: near the end the view stops at its last line
+            await tick(pilot, client, position)
+            await tick(pilot, client, position)  # the second tick scrolls with the new lines laid out
+            index = int(position // 5)
+            assert [n for n, line in enumerate(lyrics_lines(app)) if line.startswith("*")] == [index]
+            line = view.lines[index]
+            middle = view.region.y + view.region.height // 2
+            assert abs(line.region.y - middle) <= 1
+        await tick(pilot, client, None)
+        assert not any(line.startswith("*") for line in lyrics_lines(app))
+
+
+@drive
+async def test_show_lyrics_off_stops_the_look_up_and_turning_it_on_brings_it_back(clients, served, find_lyrics):
+    settings.save(settings.Settings(show_lyrics=False))
+    find_lyrics.answers = {"s1": SYNCED}
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await play_song(pilot)
+        await show_lyrics_tab(pilot)
+        assert lyrics_message(app) == "Lyrics are off (show_lyrics)"
+        assert find_lyrics.calls == []
+        app.change_setting("show_lyrics", True)  # what Enter on its Settings row does
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert find_lyrics.calls == ["s1"]
+        assert lyrics_message(app) is None
+        app.change_setting("show_lyrics", False)
+        await pilot.pause()
+        assert lyrics_message(app) == "Lyrics are off (show_lyrics)"
+        assert lyrics_lines(app) == []
+        assert settings.load().show_lyrics is False
+
+
+@drive
+async def test_enter_on_show_lyrics_in_the_settings_screen_turns_the_open_tab_off(clients, served, find_lyrics):
+    find_lyrics.answers = {"s1": SYNCED}
+    app = make_app(clients, resolve=lambda text, limit, source: SONGS)
+    async with run(app) as pilot:
+        await play_song(pilot)
+        await show_lyrics_tab(pilot)
+        await pilot.press("S")
+        await pilot.pause()
+        app.screen.query_one(DataTable).move_cursor(row=settings.KEYS.index("show_lyrics"))
+        await pilot.press("enter")
+        await tick(pilot, clients.made[0], 12)  # a status while the modal is on top
+        assert settings.load().show_lyrics is False
+        assert lyrics_message(app) == "Lyrics are off (show_lyrics)"
