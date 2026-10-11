@@ -1966,8 +1966,8 @@ def day(number):
 
 @pytest.fixture
 def subscribed(monkeypatch, tmp_path):
-    """XDG homes in tmp_path, SHOWS followed since Oct 1, and podcasts.dated_episodes answering FEEDS by URL (a
-    PodcastError value is raised); .asked records the URLs."""
+    """XDG homes in tmp_path, SHOWS followed since Oct 1, and podcasts.dated_episodes (and podcasts.feed, with the
+    show) answering FEEDS by URL (a PodcastError value is raised); .asked records the URLs."""
     from ttyplayer import subscriptions
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
@@ -1990,6 +1990,8 @@ def subscribed(monkeypatch, tmp_path):
     dated_episodes.feeds = feeds
     dated_episodes.real = podcasts.dated_episodes
     monkeypatch.setattr(podcasts, "dated_episodes", dated_episodes)
+    shows = {show.feed_url: show for show in SHOWS}
+    monkeypatch.setattr(podcasts, "feed", lambda url, limit, opener=None: (shows[url], podcasts.dated_episodes(url, limit)))
     return dated_episodes
 
 
@@ -2162,6 +2164,87 @@ def test_podcast_new_reads_every_new_episode_of_a_long_feed(subscribed, monkeypa
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert (len(lines), lines[0][:24], lines[-1][:24]) == (20, " 1. 2026-10-26  Episode ", "20. 2026-10-07  Episode ")
+
+
+# --- podcast export / import (OPML) ------------------------------------------------
+
+OPML_FILE = Path(__file__).parent / "fixtures" / "subscriptions.opml"
+
+
+def test_podcast_export_prints_the_opml_or_writes_it_to_a_file(subscribed, tmp_path):
+    from ttyplayer import subscriptions
+
+    result = runner.invoke(app, ["podcast", "export"])
+    assert (result.exit_code, result.stdout) == (0, subscriptions.export_opml())
+    assert 'xmlUrl="https://lexfridman.com/feed"' in result.stdout
+    path = tmp_path / "mine.opml"
+    result = runner.invoke(app, ["podcast", "export", str(path)])
+    assert (result.exit_code, result.stdout) == (0, f"Exported 2 shows to {path}\n")
+    assert path.read_text(encoding="utf-8") == subscriptions.export_opml()
+    if os.name == "posix":
+        assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_podcast_export_to_a_path_it_cannot_write_fails_in_one_line(subscribed, tmp_path):
+    result = runner.invoke(app, ["podcast", "export", str(tmp_path / "missing" / "mine.opml")])
+    assert result.exit_code == 1 and result.stderr.startswith("Cannot write ") and result.stderr.count("\n") == 1
+
+
+def test_podcast_import_follows_the_shows_of_a_file_and_says_how_many(subscribed):
+    from ttyplayer import subscriptions
+
+    result = runner.invoke(app, ["podcast", "import", str(OPML_FILE)])
+    assert (result.exit_code, result.stdout) == (0, "Added 4 shows (1 already followed, 2 without a feed)\n")
+    assert len(subscriptions.all()) == 6
+    result = runner.invoke(app, ["podcast", "import", str(OPML_FILE)])
+    assert result.stdout == "Added 0 shows (5 already followed, 2 without a feed)\n"
+
+
+def test_podcast_import_dry_run_lists_the_shows_and_follows_none(subscribed):
+    from ttyplayer import subscriptions
+
+    result = runner.invoke(app, ["podcast", "import", "--dry-run", str(OPML_FILE)])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == (
+        "The Daily  https://daily.example.org/rss\n"
+        "Lex Fridman Podcast  https://lex.example.org/rss\n"
+        "Science & Stuff  https://science.example.org/feed.xml\n"
+        "Untitled  https://nameless.example.org/rss\n"
+        "Would add 4 shows (1 already followed, 2 without a feed)\n"
+    )
+    assert [each.show for each in subscriptions.all()] == SHOWS
+
+
+def test_podcast_import_fetches_a_url_through_podcasts_get(subscribed, monkeypatch):
+    asked = []
+
+    def get(url, opener):
+        asked.append(url)
+        return b'<opml><body><outline text="One" xmlUrl="https://one.example.org/rss"/></body></opml>'
+
+    monkeypatch.setattr(podcasts, "get", get)
+    result = runner.invoke(app, ["podcast", "import", "https://example.org/mine.opml"])
+    assert (result.exit_code, result.stdout) == (0, "Added 1 show (0 already followed, 0 without a feed)\n")
+    assert asked == ["https://example.org/mine.opml"]
+
+
+def test_podcast_import_fails_in_one_line(subscribed, monkeypatch, tmp_path):
+    from ttyplayer import subscriptions
+
+    result = runner.invoke(app, ["podcast", "import", str(tmp_path / "missing.opml")])
+    assert result.exit_code == 1 and result.stderr.startswith("Cannot read ") and result.stderr.count("\n") == 1
+    bad = tmp_path / "bad.opml"
+    bad.write_text("<opml><body>", encoding="utf-8")
+    result = runner.invoke(app, ["podcast", "import", str(bad)])
+    assert result.exit_code == 1 and result.stderr.startswith("Podcast lookup failed: not an OPML file (")
+
+    def get(url, opener):
+        raise podcasts.PodcastError("HTTP 404 from example.org")
+
+    monkeypatch.setattr(podcasts, "get", get)
+    result = runner.invoke(app, ["podcast", "import", "https://example.org/mine.opml"])
+    assert (result.exit_code, result.stderr) == (1, "Podcast lookup failed: HTTP 404 from example.org\n")
+    assert [each.show for each in subscriptions.all()] == SHOWS
 
 
 # --- lastfm ------------------------------------------------------------------

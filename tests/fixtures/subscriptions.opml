@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<opml version="1.0">
+  <head><title>Overcast Podcast Subscriptions</title></head>
+  <body>
+    <outline text="feeds">
+      <outline type="rss" text="The Daily" title="The Daily" xmlUrl="https://daily.example.org/rss" htmlUrl="https://daily.example.org"/>
+      <outline text="Talk">
+        <outline type="rss" title="Lex Fridman Podcast" xmlUrl="https://lex.example.org/rss"/>
+        <outline type="rss" text="Science &amp; Stuff" xmlUrl=" https://science.example.org/feed.xml "/>
+      </outline>
+    </outline>
+    <outline type="rss" text="The Daily again" xmlUrl="https://daily.example.org/rss"/>
+    <outline type="rss" text="Old style" url="https://old.example.org/rss"/>
+    <outline type="rss" text="Not the web" xmlUrl="file:///etc/passwd"/>
+    <outline type="rss" xmlUrl="https://nameless.example.org/rss"/>
+  </body>
+</opml>

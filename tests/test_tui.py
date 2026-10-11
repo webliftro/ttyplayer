@@ -3081,9 +3081,9 @@ EPISODE_DATES = {episode.id: datetime.datetime(2026, 10, n, tzinfo=datetime.time
 
 @pytest.fixture
 def fake_podcasts(monkeypatch):
-    """podcasts.search_shows answers SHOWS and podcasts.dated_episodes EPISODES dated Oct 3, 2, 1 (or raise .error,
-    or for a feed in .errors its error); both record their calls, as does yt-dlp, which a podcast never reaches. Apps
-    get the real resolve, whose youtube.search finds the shows."""
+    """podcasts.search_shows answers SHOWS and podcasts.dated_episodes (and podcasts.feed, with the show) EPISODES
+    dated Oct 3, 2, 1 (or raise .error, or for a feed in .errors its error); both record their calls, as does yt-dlp,
+    which a podcast never reaches. Apps get the real resolve, whose youtube.search finds the shows."""
     calls = []
 
     def search_shows(query, limit):
@@ -3100,6 +3100,8 @@ def fake_podcasts(monkeypatch):
     episodes.errors = {}
     monkeypatch.setattr(podcasts, "search_shows", search_shows)
     monkeypatch.setattr(podcasts, "dated_episodes", episodes)
+    shows = {show.feed_url: show for show in SHOWS}
+    monkeypatch.setattr(podcasts, "feed", lambda url, limit, opener=None: (shows[url], episodes(url, limit)))
     monkeypatch.setattr(youtube, "_extract", lambda target, **options: calls.append(("yt-dlp", target)) or {})
     search_shows.calls = episodes.calls = calls
     return episodes

@@ -757,6 +757,57 @@ def podcast_new(
         queue_or_play([video for _, video, _ in new], on_queued=mark_seen)
 
 
+@podcast_app.command(name="export")
+def podcast_export(path: str = typer.Argument("", help="The OPML file to write (default: print it)")):
+    """Write the podcasts you follow as OPML, which other podcast apps import"""
+    from ttyplayer import subscriptions
+
+    opml = subscriptions.export_opml()
+    if not path:
+        typer.echo(opml, nl=False)
+        return
+    target = os.path.expanduser(path)
+    try:
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(opml)
+        os.chmod(target, 0o644)
+    except OSError as error:
+        fail(f"Cannot write {path}: {error.strerror or error}")
+    typer.echo(f"Exported {plural(len(subscriptions.all()), 'show')} to {path}")
+
+
+@podcast_app.command(name="import")
+def podcast_import(
+    source: str = typer.Argument(..., help="An OPML file, or its http(s) URL, from another podcast app"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List the shows it would follow, follow none"),
+):
+    """Follow the podcasts of an OPML file another podcast app exported"""
+    import urllib.request
+
+    from ttyplayer import podcasts, subscriptions, youtube
+
+    if youtube.is_url(source):
+        text = lookup(podcasts.get, source, urllib.request.urlopen)
+    else:
+        try:
+            with open(os.path.expanduser(source), "rb") as f:
+                text = f.read(podcasts.MAX_BYTES + 1)
+        except OSError as error:
+            fail(f"Cannot read {source}: {error.strerror or error}")
+    if dry_run:
+        shows, already, skipped = lookup(subscriptions.opml_shows, text)
+        for show in shows:
+            typer.echo(f"{show.name}  {show.feed_url}")
+        typer.echo(f"Would add {plural(len(shows), 'show')} ({already} already followed, {skipped} without a feed)")
+        return
+    added, already, skipped = lookup(subscriptions.import_opml, text)
+    typer.echo(f"Added {plural(added, 'show')} ({already} already followed, {skipped} without a feed)")
+
+
+def plural(count, noun):
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 def refreshed_subscriptions():
     """subscriptions.refresh_dated(), a line on stderr per feed that failed; a message and exit 1 when none is
     followed."""

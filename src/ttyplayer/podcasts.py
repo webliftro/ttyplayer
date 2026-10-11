@@ -86,6 +86,12 @@ def dated_episodes(feed_url, limit=EPISODES, opener=urllib.request.urlopen):
     return parse_feed(get(feed_url, opener))[:limit]
 
 
+def feed(feed_url, limit=EPISODES, opener=urllib.request.urlopen):
+    """(feed_show(), dated_episodes()) of the feed at feed_url, fetched and parsed once."""
+    channel = parse_channel(get(feed_url, opener))
+    return channel_show(feed_url, channel), channel_episodes(channel)[:limit]
+
+
 def latest(query, limit=EPISODES, opener=urllib.request.urlopen):
     """(the first show matching query, its newest limit episodes); (None, []) when no show matches."""
     shows = search_shows(query, 1, opener)
@@ -120,7 +126,11 @@ def parse_feed(body):
     ElementTree resolves no external entities and fetches no DTD, so an untrusted feed cannot make it read files
     or the network; the body's size is capped by get().
     """
-    channel = parse_channel(body)
+    return channel_episodes(parse_channel(body))
+
+
+def channel_episodes(channel):
+    """parse_feed() of a parsed channel."""
     show = text(channel, "title") or "Unknown"
     items = [episode(item, show, channel_artwork(channel)) for item in channel.iter("item")]
     dated = [each for each in items if each is not None]
@@ -131,7 +141,11 @@ def parse_feed(body):
 
 def feed_show(feed_url, opener=urllib.request.urlopen) -> Show:
     """The show the feed at feed_url describes (its id 0: it does not come from iTunes)."""
-    channel = parse_channel(get(feed_url, opener))
+    return channel_show(feed_url, parse_channel(get(feed_url, opener)))
+
+
+def channel_show(feed_url, channel) -> Show:
+    """feed_show() of a parsed channel."""
     return Show(
         name=text(channel, "title") or "Unknown",
         author=text(channel, f"{ITUNES}author") or "Unknown",

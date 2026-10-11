@@ -48,15 +48,19 @@ src/ttyplayer/
                urllib, http(s) only, 5 s a request; every failure (a bad URL, a reply of the wrong
                shape, an unreadable feed) is one line of PodcastError, a 502 on the server. remember/remembered keep
                the CLI's last show list for `podcast episodes <n>` (and, under another name, the last
-               `podcast subscriptions` list); feed_show(feed_url) is the Show a feed describes.
+               `podcast subscriptions` list); feed_show(feed_url) is the Show a feed describes, feed(feed_url, limit)
+               (feed_show, dated_episodes) from one fetch.
   subscriptions.py The podcasts the user follows: subscriptions.json under data_path, feed URL -> name,
                author, artwork, id, added, last_seen (the newest pubDate seen), written atomically.
                add(show), remove(feed_url), all() -> [Subscription(show, added, last_seen)], get(feed_url),
                mark_seen(feed_url, pub_date) (forward only); an unreadable file reads as empty with one
                stderr line. refresh() -> [(show, [video], new_count)] (refresh_dated the same with pubDates)
-               fetches every feed through podcasts.dated_episodes on 4 threads, counts the episodes is_new
+               fetches every feed through podcasts.feed on 4 threads, counts the episodes is_new
                (after last_seen, else after added), sorts by newest episode; a failed feed is (show, [], None)
-               and on_error(show, error). It only stores and compares: fetching and parsing stay in podcasts.
+               and on_error(show, error); an Unknown author (an imported show) takes the feed's, in one write. It only stores and compares: fetching and parsing stay in podcasts.
+               export_opml() -> OPML 2.0 text (one rss outline per show, by name); opml_shows(text) -> (new
+               shows, already, skipped) and import_opml(text) -> the counts, adding the new in one write: nested
+               outlines flattened, xmlUrl the key, a 5 MB cap and no entities (`podcast export | import`).
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
                handle_control for the control socket (`append <json videos>` queues them, for
                `podcast new --play`); append(videos), the one "add to the end, play if
