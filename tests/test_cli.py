@@ -938,7 +938,7 @@ def test_doctor_without_the_art_extra_shows_how_to_get_it_and_passes(monkeypatch
     monkeypatch.setattr(art, "available", lambda: False)
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
-    assert "- album art not installed: uv tool install 'ttyplayer[art]'" in result.output.splitlines()
+    assert "– album art not installed: uv tool install 'ttyplayer[art]'" in result.output.splitlines()
 
 
 def test_doctor_without_ffmpeg_shows_a_dash_row_and_passes(monkeypatch, tmp_path):
@@ -946,7 +946,7 @@ def test_doctor_without_ffmpeg_shows_a_dash_row_and_passes(monkeypatch, tmp_path
     monkeypatch.setattr(shutil, "which", lambda name: None if name == "ffmpeg" else f"/opt/bin/{name}")
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0, result.output
-    assert f"- ffmpeg not found on PATH; only serve --stream needs it. {cli.ffmpeg_install_hint()}" in result.output.splitlines()
+    assert f"– ffmpeg not found on PATH; only serve --stream needs it. {cli.ffmpeg_install_hint()}" in result.output.splitlines()
 
 
 def test_doctor_reports_an_ffmpeg_that_does_not_answer(monkeypatch, tmp_path):

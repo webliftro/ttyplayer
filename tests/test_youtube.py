@@ -245,3 +245,18 @@ def test_search_on_podcast_finds_shows_without_yt_dlp(fake_ydl, monkeypatch):
 def test_pc_prefix_picks_podcasts():
     assert youtube.split_source("pc: the daily", "youtube") == ("podcast", "the daily")
     assert youtube.search_key("podcast") == "pc"
+
+
+def test_stream_url_runs_the_full_extraction_and_answers_the_media_url(fake_ydl, monkeypatch):
+    options = []
+    monkeypatch.setattr(youtube, "YoutubeDL", lambda opts: options.append(opts) or fake_ydl(opts))
+    fake_ydl.info = {"id": "abc", "url": "https://media.example/abc.webm"}
+    assert youtube.stream_url("https://www.youtube.com/watch?v=abc") == "https://media.example/abc.webm"
+    assert options[0]["extract_flat"] is False
+    assert options[0]["format"] == "bestaudio/best"
+
+
+def test_stream_url_of_an_unavailable_video_is_a_youtube_error(fake_ydl):
+    fake_ydl.error = DownloadError("ERROR: [youtube] abc: Video unavailable")
+    with pytest.raises(youtube.YouTubeError, match="^\\[youtube\\] abc: Video unavailable$"):
+        youtube.stream_url("https://www.youtube.com/watch?v=abc")

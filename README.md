@@ -39,6 +39,7 @@ ttyplayer serve [--host] [--port]    play headless, driven over HTTP from any de
 ttyplayer serve --stream             the same, but the sound goes to the web remote, not the speakers
 ttyplayer config                     list the settings (see Settings below)
 ttyplayer doctor                     check Python, yt-dlp, mpv, ffmpeg (optional) and ttyplayer's folders
+ttyplayer selfcheck [--quick] [--json]   try every online part once (see Verify your install)
 ttyplayer version
 ```
 
@@ -408,6 +409,20 @@ uv tool install git+https://github.com/webliftro/ttyplayer
 </details>
 
 Upgrade with `uv tool upgrade ttyplayer`. Uninstall with `uv tool uninstall ttyplayer`.
+
+### Verify your install
+
+`ttyplayer doctor` checks what ttyplayer needs without touching the network. `ttyplayer selfcheck` then tries every part that talks to the outside once and prints a row for each: mpv plays a second of silence, a YouTube search and the stream of its first result, SoundCloud, a podcast search and its feed, lyrics from LRCLIB, album art, your Last.fm, ListenBrainz and Spotify logins (skipped until you log in), the web server's token check on a spare local port, ffmpeg, and the files in the data dir.
+
+```
+✓ mpv             mpv v0.39.0 Copyright © 2000-2024 mpv/MPlayer/mplayer2 projects; played 1 s of silence, started in 0.4 s  (0.6s)
+✓ YouTube search  found ttyplayer selfcheck  (1.9s)
+- Spotify         no spotify_client_id set (see the README's Spotify section)  (0.0s)
+...
+10 ok, 0 warn, 0 fail, 3 skipped in 14s
+```
+
+`✓` works, `⚠` works but wants attention (log in again), `✗` failed (the exit status is then 1), `-` skipped. Each check gets 10 seconds, the whole run two minutes. `--quick` leaves out the playback and the stream; `--json` prints the rows as JSON. Nothing it plays goes to your history, and nothing is scrobbled.
 
 ## Development
 

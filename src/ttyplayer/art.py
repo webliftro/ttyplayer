@@ -51,14 +51,21 @@ def fetch(url, opener=urllib.request.urlopen):
         return data
     except OSError:
         pass
-    try:
-        with opener(url, timeout=TIMEOUT) as response:
-            data = response.read()
-    except Exception:
+    data = download(url, opener)
+    if data is None:
         return None
     with contextlib.suppress(OSError):
         store(path, data)
     return data
+
+
+def download(url, opener=urllib.request.urlopen):
+    """The image bytes at url from the network, leaving the cache alone; None on any error, never raises."""
+    try:
+        with opener(url, timeout=TIMEOUT) as response:
+            return response.read()
+    except Exception:
+        return None
 
 
 def store(path, data):

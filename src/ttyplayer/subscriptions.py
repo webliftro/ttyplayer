@@ -261,22 +261,31 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
+class Unreadable(Exception):
+    """The subscriptions file exists but cannot be read as a map of feeds to shows."""
+
+
 def _read(path):
     """{feed_url: entry} of the file; {} when it is missing, and with one warning line when it is unreadable."""
+    try:
+        return read_strict(path)
+    except Unreadable as error:
+        print(f"Ignoring unreadable subscriptions file {path}: {error}", file=sys.stderr)
+        return {}
+
+
+def read_strict(path: Path | None = None) -> dict:
+    """{feed_url: entry} of the file; {} when it is missing, Unreadable (one line) when it cannot be read."""
+    path = path or subscriptions_path()
     try:
         entries = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     except (OSError, ValueError, RecursionError) as error:
-        return _corrupt(path, error)
+        raise Unreadable(" ".join(str(error).split())) from error
     if not isinstance(entries, dict) or any(not isinstance(entry, dict) for entry in entries.values()):
-        return _corrupt(path, "not a map of feeds to shows")
+        raise Unreadable("not a map of feeds to shows")
     return entries
-
-
-def _corrupt(path, reason):
-    print(f"Ignoring unreadable subscriptions file {path}: {' '.join(str(reason).split())}", file=sys.stderr)
-    return {}
 
 
 def _write(path, entries):

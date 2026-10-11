@@ -78,13 +78,40 @@ def doctor():
     """Check that ttyplayer has everything it needs to play"""
     passed = True
     for ok, text in doctor_checks():
-        typer.echo(f"{DOCTOR_MARKS[ok]} {text}")
+        typer.echo(mark_line(DOCTOR_STATUS[ok], text))
         passed = passed and ok is not False
     if not passed:
         raise typer.Exit(code=1)
 
 
-DOCTOR_MARKS = {True: "✓", False: "✗", None: "-"}  # None: an optional part is missing, which is no failure
+MARKS = {"ok": "✓", "warn": "⚠", "fail": "✗", "skip": "–"}  # each row's mark in doctor and selfcheck, by status
+DOCTOR_STATUS = {True: "ok", False: "fail", None: "skip"}  # None: an optional part is missing, which is no failure
+
+
+def mark_line(status, text):
+    return f"{MARKS[status]} {text}"
+
+
+@app.command(name="selfcheck")
+def selfcheck_command(
+    quick: bool = typer.Option(False, "--quick", help="Skip mpv's playback and the YouTube stream resolve"),
+    as_json: bool = typer.Option(False, "--json", help="Print the results as a JSON list"),
+):
+    """Try every live integration once (mpv, YouTube, SoundCloud, podcasts, lyrics, art, logins, server) and print a
+    row per check; exit 1 when one fails. doctor checks the install without the network."""
+    from ttyplayer import selfcheck  # yt-dlp and aiohttp load only for this command
+
+    began = time.monotonic()
+    results = selfcheck.run(selfcheck.CHECKS, quick)
+    if as_json:
+        typer.echo(json.dumps([dataclasses.asdict(result) for result in results], indent=2))
+    else:
+        width = max(len(result.name) for result in results)
+        for result in results:
+            typer.echo(mark_line(result.status, f"{result.name:<{width}}  {result.detail}  ({result.seconds:.1f}s)"))
+        typer.echo(selfcheck.summary(results, time.monotonic() - began))
+    if any(result.status == "fail" for result in results):
+        raise typer.Exit(code=1)
 
 
 def doctor_checks():

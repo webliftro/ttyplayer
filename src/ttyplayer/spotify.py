@@ -112,7 +112,12 @@ def login(client_id, echo) -> str:
         "code_verifier": verifier,
     })
     save_tokens(tokens)
-    me = _get("/me")
+    return user_name()
+
+
+def user_name(refresh=True) -> str:
+    """The logged-in user's display name, from /me with the stored login (refreshed only if refresh, see access_token)."""
+    me = _get("/me", refresh)
     return me.get("display_name") or me.get("id") or "Unknown"
 
 
@@ -200,11 +205,14 @@ def load_tokens() -> dict:
         raise SpotifyError(f"Cannot read {token_path()}: {error}; {LOGIN_AGAIN}") from error
 
 
-def access_token() -> str:
-    """The stored access token, refreshed and saved first when it has run out."""
+def access_token(refresh=True) -> str:
+    """The stored access token, refreshed and saved first when it has run out; with refresh False, a run out one is a
+    SpotifyError and nothing is written."""
     tokens = load_tokens()
     if tokens["expires_at"] - EXPIRY_MARGIN > time.time():
         return tokens["access_token"]
+    if not refresh:
+        raise SpotifyError(f"The stored Spotify access token has run out. {LOGIN_AGAIN}")
     form = {"grant_type": "refresh_token", "refresh_token": tokens.get("refresh_token") or ""}
     try:
         fresh = request_tokens(tokens["client_id"], form, old=tokens)
@@ -215,10 +223,10 @@ def access_token() -> str:
     return fresh["access_token"]
 
 
-def _get(path):
+def _get(path, refresh=True):
     """GET an API path (/me) or a full paging URL with the access token, as JSON."""
     url = path if path.startswith("https://") else API_URL + path
-    return _send(urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token()}"}))
+    return _send(urllib.request.Request(url, headers={"Authorization": f"Bearer {access_token(refresh)}"}))
 
 
 def _send(request) -> dict:

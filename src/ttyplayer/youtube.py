@@ -91,6 +91,12 @@ def fetch_playlist(url, end=None) -> tuple[str | None, list[Video]]:
     return None, [video_from_info(info)]
 
 
+def stream_url(url):
+    """The media URL yt-dlp resolves url's video to: the full extraction mpv's own yt-dlp runs, not the flat listing
+    search makes, so "this video is unavailable" shows here."""
+    return _extract(url, extract_flat=False, format="bestaudio/best").get("url")
+
+
 def related(video_id, limit=10) -> list[Video]:
     """Up to limit tracks YouTube's mix for video_id lists after it: the radio's next batch.
 

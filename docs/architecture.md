@@ -14,7 +14,8 @@ ttyplayer itself never decodes audio or talks to YouTube's HTML directly.
 ```
 src/ttyplayer/
   cli.py       Typer app: play, search, history, favorite, favorites, playlist, tui, serve, config,
-               version, pause, next, prev, stop, status; lastfm and listenbrainz login|logout|status (one
+               version, doctor, selfcheck, pause, next, prev, stop, status; MARKS and mark_line(status, text),
+               the one row format doctor and selfcheck print; lastfm and listenbrainz login|logout|status (one
                target_status/target_logout for both), scrobble status (every target). Glue only.
   tui.py       TtyplayerApp (Textual): header, search bar, Search/Queue/History/Favorites tables,
                now-playing panel, help and settings modals, command palette, themes, toasts over MpvClient;
@@ -30,7 +31,8 @@ src/ttyplayer/
   youtube.py   is_url, search(query, limit, source), fetch -> list[Video], fetch_playlist -> (title, list[Video]),
                related(video_id, limit=10) -> list[Video]: the RD<id> mix (the one place its URL is built),
                the seed dropped; radio mode's source. A mix pages on without end, so yt-dlp reads only its
-               first 2 * limit + 1 entries (fetch_playlist(url, end) -> playlistend).
+               first 2 * limit + 1 entries (fetch_playlist(url, end) -> playlistend). stream_url(url): the full
+               (not flat) extraction's media URL, as mpv's yt-dlp would resolve it; selfcheck's stream check.
                SOURCES = ("youtube", "soundcloud", "podcast") is the one list of search sources (settings
                checks search_source against it); YTDLP_SOURCES the first two, the ones yt-dlp searches.
                PREFIXES maps each source's two letters (yt, sc, pc), which are the TUI's prefix
@@ -55,7 +57,7 @@ src/ttyplayer/
                author, artwork, id, added, last_seen (the newest pubDate seen), written atomically.
                add(show), remove(feed_url), all() -> [Subscription(show, added, last_seen)], get(feed_url),
                mark_seen(feed_url, pub_date) (forward only); an unreadable file reads as empty with one
-               stderr line. refresh() -> [(show, [video], new_count)] (refresh_dated the same with pubDates)
+               stderr line (read_strict() raises Unreadable instead, for selfcheck). refresh() -> [(show, [video], new_count)] (refresh_dated the same with pubDates)
                fetches every feed through podcasts.feed on 4 threads, counts the episodes is_new
                (after last_seen, else after added), sorts by newest episode; a failed feed is (show, [], None)
                and on_error(show, error); an Unknown author (an imported show) takes the feed's, in one write. It only stores and compares: fetching and parsing stay in podcasts.
@@ -94,7 +96,7 @@ src/ttyplayer/
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
-               expired, and one Retry-After wait on a 429), user_playlists, playlist(ref) -> (name, [Track]),
+               expired unless refresh=False, and one Retry-After wait on a 429), user_name(refresh) (/me), user_playlists, playlist(ref) -> (name, [Track]),
                import_tracks: youtube.search per track, playlists.add of the first hit. SpotifyError.
   scrobble.py  Scrobble targets behind one Target protocol (now_playing(video), scrobble(video, started_at),
                send_queued(extra)); TARGETS = (LASTFM, LISTENBRAINZ), targets() the logged-in ones (a login
@@ -127,6 +129,7 @@ src/ttyplayer/
                other than {"status": "ok"} keeps them queued. Each listen names ttyplayer and its version.
   art.py       Album art for the TUI's panel: fetch(url) -> bytes | None (urllib, 3 s, never raises) through a
                disk cache under data_path("art") (sha1 of the URL, 0600, the 200 most recently used kept),
+               download(url), the network half of fetch without the cache,
                decode(bytes) -> PIL image | None, available() (the art extra: Pillow and textual-image),
                image_widget() (textual_image's Image, imported before the app runs). The only module that
                imports PIL or textual_image, and only inside those functions.
@@ -140,12 +143,21 @@ src/ttyplayer/
                `lyrics` command lookup() (it has no video id: status carries none). skipped(source) says why
                a source is never looked up (podcast: talk, not songs); the TUI, the server and the command
                show that instead of asking LRCLIB.
+  selfcheck.py ttyplayer selfcheck: CHECKS, 13 (name, check) pairs, each check(quick) -> (status, detail)
+               calling the product's own functions (youtube.search, youtube.stream_url, podcasts.latest,
+               lyrics.request, art.download, the scrobble targets, spotify.user_name(refresh=False), server.make_app on port 0,
+               doctor's check_mpv / check_ffmpeg / check_art), passed in as defaults so tests swap in fakes;
+               mpv plays a generated 1 s silent WAV through MpvClient until its playback-restart (3 s at most).
+               The checks only read: no token refresh, no art cache; the data dir check fails on corrupt
+               lines (utils.parse_lines) or an unreadable subscriptions.json.
+               run(checks, quick, timeout=10) -> [Result(name, status, detail, seconds)]: each check on a
+               daemon thread, a raise or a timeout is a fail, a 120 s budget skips the rest; never raises.
   models.py    Video dataclass: id, title, uploader, duration, source ("youtube" by default), link (the
                page URL yt-dlp reported, for every other source) and thumbnail (the cover's URL or None). url is the only place that builds a URL:
                the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title, "PC " before a podcast episode's.
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                thumbnail_url, the one choice of a cover: the widest thumbnail up to 480 px, else the last,
-               else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries (path, key="id": the key a line must have),
+               else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries (path, key="id": the key a line must have; parse_lines keeps None for each line it skips),
                append_entries, write_entries for the JSON lines files, stored_video for a line read back;
                write_atomic(path, text), the temp file + os.replace that positions and subscriptions write with
                (its thumbnail as saved, None in a line from before thumbnails).
