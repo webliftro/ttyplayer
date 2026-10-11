@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 import pytest
 
@@ -2956,8 +2957,8 @@ def scrobbling_client(monkeypatch, videos=(LONG_SONG, B)):
                 raise client.failure
         return call
 
-    monkeypatch.setattr(scrobble, "now_playing", record("now_playing"))
-    monkeypatch.setattr(scrobble, "scrobble", record("scrobble"))
+    target = types.SimpleNamespace(now_playing=record("now_playing"), scrobble=record("scrobble"))
+    monkeypatch.setattr(scrobble, "targets", lambda: [target])
     monkeypatch.setattr(player.time, "time", lambda: 1000.0)
     return client
 
@@ -3061,21 +3062,50 @@ def test_a_last_fm_failure_is_reported_never_raised(monkeypatch):
     assert client.index == 0 and not client.idle
 
 
+def test_every_target_is_called_on_a_worker_of_its_own_and_one_failure_never_blocks_another(monkeypatch):
+    client = scrobbling_client(monkeypatch)
+    calls, workers = [], []
+
+    def target(name, failing):
+        def call(method):
+            def run(*args):
+                calls.append((name, method, *args))
+                if failing:
+                    raise scrobble.ScrobbleError(f"{name} is down")
+            return run
+        return types.SimpleNamespace(now_playing=call("now_playing"), scrobble=call("scrobble"))
+
+    monkeypatch.setattr(scrobble, "targets", lambda: [target("Last.fm", True), target("ListenBrainz", False)])
+    client.background = lambda function, *args: workers.append((function, args))
+    started(client)
+    assert len(client.timers) == 1  # one timer whatever the number of targets
+    client.timers[0].fire()
+    assert len(workers) == 4  # now_playing and scrobble, one worker per target each
+    for function, args in workers:
+        function(*args)
+    assert calls == [
+        ("Last.fm", "now_playing", LONG_SONG),
+        ("ListenBrainz", "now_playing", LONG_SONG),
+        ("Last.fm", "scrobble", LONG_SONG, 1000.0),
+        ("ListenBrainz", "scrobble", LONG_SONG, 1000.0),
+    ]
+    assert client.scrobble_errors == ["Last.fm is down"] * 2
+
+
 def test_a_broken_login_or_reply_is_reported_never_raised(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    now_playing, scrobble_track = scrobble.now_playing, scrobble.scrobble
+    targets = scrobble.targets
     client = scrobbling_client(monkeypatch)
-    monkeypatch.setattr(scrobble, "now_playing", now_playing)
-    monkeypatch.setattr(scrobble, "scrobble", scrobble_track)
-    scrobble.session_path().parent.mkdir(parents=True)
-    scrobble.session_path().write_text("{}")
+    monkeypatch.setattr(scrobble, "targets", targets)
+    scrobble.LASTFM.session_path().parent.mkdir(parents=True)
+    scrobble.LASTFM.session_path().write_text("{}")
     started(client)
-    scrobble.save_session({"api_key": "KEY", "secret": "SECRET", "session_key": "SK", "user": "ann"})
+    scrobble.LASTFM.save_session({"api_key": "KEY", "secret": "SECRET", "session_key": "SK", "user": "ann"})
     monkeypatch.setattr(scrobble.urllib.request, "urlopen", lambda request, timeout=None: io.BytesIO(b"null"))
     client.timers[0].fire()
     assert client.scrobble_errors == [
-        f"{scrobble.session_path()} is not a Last.fm login; run ttyplayer lastfm login again",
+        f"{scrobble.LASTFM.session_path()} is not a Last.fm login; run ttyplayer lastfm login again",
         "Last.fm sent an unexpected reply to track.scrobble",
     ]
     assert scrobble.queued() == 1 and client.index == 0 and not client.idle
@@ -3088,7 +3118,7 @@ def test_the_track_mpv_goes_on_to_is_scrobbled_too(monkeypatch):
     client.timers, client.lastfm = [], []
     client.timer = lambda *args, **kwargs: client.timers.append(FakeTimer(*args, **kwargs)) or client.timers[-1]
     client.background = lambda function, *args: function(*args)
-    monkeypatch.setattr(scrobble, "now_playing", lambda video: client.lastfm.append(video))
+    monkeypatch.setattr(scrobble, "targets", lambda: [types.SimpleNamespace(now_playing=client.lastfm.append)])
     client.handle_message(EOF_EVENT)
     client.handle_message(START)
     client.handle_message(RESTART)

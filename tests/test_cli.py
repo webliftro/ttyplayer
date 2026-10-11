@@ -190,7 +190,7 @@ def test_start_mpv_scrobbles_once_logged_in_unless_scrobble_is_off(monkeypatch, 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(player, "MpvClient", FakeClient)
     assert cli.start_mpv(False).scrobbling == (False, True)
-    scrobble.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
+    scrobble.LASTFM.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
     settings.update("scrobble_podcasts", "false")
     assert cli.start_mpv(False).scrobbling == (True, False)
     settings.update("scrobble", "false")
@@ -2251,7 +2251,7 @@ def test_podcast_import_fails_in_one_line(subscribed, monkeypatch, tmp_path):
 
 
 def test_lastfm_login_without_an_api_key_points_at_the_readme(config_home, monkeypatch):
-    monkeypatch.setattr(scrobble, "login", lambda *args: pytest.fail("login ran"))
+    monkeypatch.setattr(scrobble.LASTFM, "login", lambda *args: pytest.fail("login ran"))
     result = runner.invoke(app, ["lastfm", "login"])
     assert result.exit_code == 1
     assert result.stderr == "Set lastfm_api_key first: ttyplayer config set lastfm_api_key <key> (see the README's Last.fm section)\n"
@@ -2265,7 +2265,7 @@ def test_lastfm_login_asks_for_the_secret_without_showing_it_then_greets(config_
         calls.append((api_key, secret, open_browser, wait))
         return "ann"
 
-    monkeypatch.setattr(scrobble, "login", login)
+    monkeypatch.setattr(scrobble.LASTFM, "login", login)
     result = runner.invoke(app, ["lastfm", "login"], input="SECRET\n")
     assert result.exit_code == 0, result.output
     assert calls == [("KEY", "SECRET", cli.webbrowser.open, input)]
@@ -2280,7 +2280,7 @@ def test_lastfm_login_reports_a_refusal_in_one_line(config_home, monkeypatch):
     def refused(*args):
         raise scrobble.ScrobbleError("Last.fm did not accept the login (Invalid API key); run ttyplayer lastfm login again")
 
-    monkeypatch.setattr(scrobble, "login", refused)
+    monkeypatch.setattr(scrobble.LASTFM, "login", refused)
     result = runner.invoke(app, ["lastfm", "login"], input="SECRET\n")
     assert result.exit_code == 1
     assert result.stderr == "Last.fm did not accept the login (Invalid API key); run ttyplayer lastfm login again\n"
@@ -2289,7 +2289,7 @@ def test_lastfm_login_reports_a_refusal_in_one_line(config_home, monkeypatch):
 def test_lastfm_status_and_logout(config_home, monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     assert runner.invoke(app, ["lastfm", "status"]).output == "Not logged in to Last.fm\n"
-    scrobble.save_session({"api_key": "KEY", "secret": "SECRET", "session_key": "SK", "user": "ann"})
+    scrobble.LASTFM.save_session({"api_key": "KEY", "secret": "SECRET", "session_key": "SK", "user": "ann"})
     assert runner.invoke(app, ["lastfm", "status"]).output == "Logged in as ann\n"
     scrobble.save_queue([{"artist": "A", "track": "T", "timestamp": 1}] * 3)
     settings.update("scrobble", "false")
@@ -2297,5 +2297,54 @@ def test_lastfm_status_and_logout(config_home, monkeypatch, tmp_path):
     assert status == "Logged in as ann (scrobble is off)\n3 scrobbles wait to be sent\n"
     assert "SECRET" not in status and "SK" not in status
     assert runner.invoke(app, ["lastfm", "logout"]).output == "Logged out of Last.fm\n"
-    assert not scrobble.session_path().exists()
+    assert not scrobble.LASTFM.session_path().exists()
     assert runner.invoke(app, ["lastfm", "logout"]).output == "Not logged in to Last.fm\n"
+
+
+# --- listenbrainz, scrobble status ---------------------------------------------
+
+
+def test_listenbrainz_login_asks_for_the_token_without_showing_it_then_greets(config_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(scrobble.LISTENBRAINZ, "login", lambda token: calls.append(token) or "ann")
+    result = runner.invoke(app, ["listenbrainz", "login"], input=" TOKEN \n")
+    assert result.exit_code == 0, result.output
+    assert calls == ["TOKEN"]
+    assert "TOKEN" not in result.output and result.output.endswith("Logged in as ann\n")
+
+
+def test_listenbrainz_login_reports_a_refusal_in_one_line(config_home, monkeypatch):
+    def refused(token):
+        raise scrobble.ScrobbleError("ListenBrainz did not accept the token; copy it again from listenbrainz.org/settings")
+
+    monkeypatch.setattr(scrobble.LISTENBRAINZ, "login", refused)
+    result = runner.invoke(app, ["listenbrainz", "login"], input="TOKEN\n")
+    assert (result.exit_code, result.stderr) == (1, "ListenBrainz did not accept the token; copy it again from listenbrainz.org/settings\n")
+
+
+def test_listenbrainz_status_and_logout(config_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert runner.invoke(app, ["listenbrainz", "status"]).output == "Not logged in to ListenBrainz\n"
+    scrobble.LISTENBRAINZ.save_session({"token": "TOKEN", "user_name": "ann"})
+    scrobble.save_queue([{"artist": "A", "track": "T", "timestamp": 1}] + [{"artist": "A", "track": "T", "timestamp": 1, "target": "listenbrainz"}] * 2)
+    status = runner.invoke(app, ["listenbrainz", "status"]).output
+    assert status == "Logged in as ann\n2 scrobbles wait to be sent\n" and "TOKEN" not in status
+    assert runner.invoke(app, ["listenbrainz", "logout"]).output == "Logged out of ListenBrainz\n"
+    assert not scrobble.LISTENBRAINZ.session_path().exists()
+    assert runner.invoke(app, ["listenbrainz", "logout"]).output == "Not logged in to ListenBrainz\n"
+
+
+def test_scrobble_status_summarises_both_targets(config_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert runner.invoke(app, ["scrobble", "status"]).output == "Last.fm: not logged in\nListenBrainz: not logged in\n"
+    scrobble.LISTENBRAINZ.save_session({"token": "TOKEN", "user_name": "bob"})
+    scrobble.save_queue([{"artist": "A", "track": "T", "timestamp": 1}] * 3 + [{"artist": "A", "track": "T", "timestamp": 1, "target": "listenbrainz"}])
+    settings.update("scrobble", "false")
+    status = runner.invoke(app, ["scrobble", "status"]).output
+    assert status == (
+        "Last.fm: not logged in, 3 scrobbles wait to be sent\n"
+        "ListenBrainz: logged in as bob, 1 scrobbles wait to be sent\n"
+        "(scrobble is off)\n"
+    )
+    assert "TOKEN" not in status
+

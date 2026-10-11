@@ -27,6 +27,10 @@ podcast_app = typer.Typer()
 app.add_typer(podcast_app, name="podcast")
 lastfm_app = typer.Typer()
 app.add_typer(lastfm_app, name="lastfm")
+listenbrainz_app = typer.Typer()
+app.add_typer(listenbrainz_app, name="listenbrainz")
+scrobble_app = typer.Typer()
+app.add_typer(scrobble_app, name="scrobble")
 
 # play, search and playlist add: where a search looks; empty means the search_source setting.
 SOURCE_OPTION = typer.Option("", "--source", help="Search youtube, soundcloud or podcast (default: search_source)")
@@ -611,7 +615,7 @@ def lastfm_login():
         fail("Set lastfm_api_key first: ttyplayer config set lastfm_api_key <key> (see the README's Last.fm section)")
     secret = typer.prompt("Shared secret", hide_input=True)
     try:
-        name = scrobble.login(api_key, secret.strip(), webbrowser.open, typer.echo, input)
+        name = scrobble.LASTFM.login(api_key, secret.strip(), webbrowser.open, typer.echo, input)
     except scrobble.ScrobbleError as error:
         fail(str(error))
     typer.echo(f"Logged in as {name}")
@@ -620,23 +624,80 @@ def lastfm_login():
 @lastfm_app.command(name="logout")
 def lastfm_logout():
     """Forget the Last.fm login and shared secret"""
-    typer.echo("Logged out of Last.fm" if scrobble.logout() else "Not logged in to Last.fm")
+    target_logout(scrobble.LASTFM)
 
 
 @lastfm_app.command(name="status")
 def lastfm_status():
     """Show who is logged in to Last.fm, and how many scrobbles wait to be sent"""
-    name = scrobble.user()
-    if name is None:
-        typer.echo("Not logged in to Last.fm")
-        return
-    typer.echo(f"Logged in as {name}" + ("" if load_settings().scrobble else " (scrobble is off)"))
+    target_status(scrobble.LASTFM)
+
+
+@listenbrainz_app.callback()
+def listenbrainz_group():
+    """Scrobble what you play to ListenBrainz (your user token, see the README's ListenBrainz section)"""
+
+
+@listenbrainz_app.command(name="login")
+def listenbrainz_login():
+    """Log in to ListenBrainz with the user token from listenbrainz.org/settings (asked for, not shown)"""
+    token = typer.prompt("User token", hide_input=True)
     try:
-        waiting = scrobble.queued()
+        name = scrobble.LISTENBRAINZ.login(token.strip())
     except scrobble.ScrobbleError as error:
         fail(str(error))
-    if waiting:
-        typer.echo(f"{waiting} scrobbles wait to be sent")
+    typer.echo(f"Logged in as {name}")
+
+
+@listenbrainz_app.command(name="logout")
+def listenbrainz_logout():
+    """Forget the ListenBrainz login and token"""
+    target_logout(scrobble.LISTENBRAINZ)
+
+
+@listenbrainz_app.command(name="status")
+def listenbrainz_status():
+    """Show who is logged in to ListenBrainz, and how many scrobbles wait to be sent"""
+    target_status(scrobble.LISTENBRAINZ)
+
+
+@scrobble_app.callback()
+def scrobble_group():
+    """Scrobbling to every target at once (log in with lastfm login or listenbrainz login)"""
+
+
+@scrobble_app.command(name="status")
+def scrobble_status():
+    """Show who is logged in to Last.fm and ListenBrainz, and how many scrobbles wait for each"""
+    for target in scrobble.TARGETS:
+        name = target.user()
+        typer.echo(f"{target.label}: " + (f"logged in as {name}" if name else "not logged in") + (f", {waits}" if (waits := waiting(target)) else ""))
+    if not load_settings().scrobble:
+        typer.echo("(scrobble is off)")
+
+
+def target_logout(target):
+    typer.echo(f"Logged out of {target.label}" if target.logout() else f"Not logged in to {target.label}")
+
+
+def target_status(target):
+    """lastfm status and listenbrainz status: who is logged in, and how many of target's scrobbles wait."""
+    name = target.user()
+    if name is None:
+        typer.echo(f"Not logged in to {target.label}")
+        return
+    typer.echo(f"Logged in as {name}" + ("" if load_settings().scrobble else " (scrobble is off)"))
+    if waits := waiting(target):
+        typer.echo(waits)
+
+
+def waiting(target):
+    """"<n> scrobbles wait to be sent" for target's queued scrobbles, "" when none wait."""
+    try:
+        count = scrobble.queued(target.name)
+    except scrobble.ScrobbleError as error:
+        fail(str(error))
+    return f"{count} scrobbles wait to be sent" if count else ""
 
 
 @podcast_app.callback()
@@ -988,7 +1049,7 @@ def start_playback(videos, with_video, radio=False, resume=True, on_queued=None)
 
 
 def start_mpv(with_video, on_state=None, pcm=None, radio=False, resume=True):
-    """An MpvClient that keeps history (radio on with radio or the radio setting), scrobbles once logged in to Last.fm,
+    """An MpvClient that keeps history (radio on with radio or the radio setting), scrobbles once logged in to a target,
     and follows the playback settings (long tracks resume where they were left unless resume is False), or a one-line
     message and exit 1 when mpv cannot start."""
     current = load_settings()

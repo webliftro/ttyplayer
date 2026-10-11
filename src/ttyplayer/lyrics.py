@@ -14,10 +14,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from importlib import metadata
 
 from ttyplayer import art
-from ttyplayer.utils import APP_NAME, data_path
+from ttyplayer.utils import APP_NAME, app_version, data_path
 
 API = "https://lrclib.net/api"
 TIMEOUT = 3  # seconds for one request; playback never waits on it
@@ -141,11 +140,7 @@ def get_json(endpoint, query, opener):
 
 def user_agent():
     """LRCLIB asks every client to say who it is."""
-    try:
-        version = metadata.version(APP_NAME)
-    except metadata.PackageNotFoundError:
-        version = "dev"
-    return f"{APP_NAME}/{version} (https://github.com/webliftro/ttyplayer)"
+    return f"{APP_NAME}/{app_version()} (https://github.com/webliftro/ttyplayer)"
 
 
 def pick(hits, duration):

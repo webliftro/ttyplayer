@@ -59,7 +59,7 @@ RADIO_NEEDS_YOUTUBE = "Radio needs a YouTube track to go on from"
 PREFETCH_OPTIONS = ["--prefetch-playlist=yes", "--gapless-audio=yes"]
 POSITION_SAVE_SECONDS = 10  # seconds of playback between two saves of a long track's position
 RESUME_MARK = "↻"
-SCROBBLE_MARK = "♫"  # the current track will be scrobbled to Last.fm once it has played long enough
+SCROBBLE_MARK = "♫"  # the current track will be scrobbled once it has played long enough
 
 
 def keys(seek=SEEK_SECONDS, step=VOLUME_STEP):
@@ -442,9 +442,9 @@ class MpvClient:
     resumed_at = None  # the saved position the loading track starts at, for status() until its restart's tick
     resume_expiring = False  # that track restarted: the next notify() is the last to show resumed_at
     prefetched_start = None  # the start the prefetched entry was appended with, its resumed_at once mpv goes on to it
-    scrobbling = False  # tell Last.fm what plays, and scrobble each track that plays long enough (scrobble.py)
+    scrobbling = False  # tell the scrobble targets what plays, and scrobble each track that plays long enough (scrobble.py)
     scrobble_podcasts = True  # podcast episodes too
-    on_scrobble_error = staticmethod(print_above)  # (message) for a failed Last.fm call, on the thread that made it
+    on_scrobble_error = staticmethod(print_above)  # (message) for a failed scrobble target call, on the thread that made it
     scrobble_timer = None  # the threading.Timer that scrobbles the current track; None once it fired, or when none is due
     scrobble_due = None  # (video, started_at) it scrobbles; the callback scrobbles only while it is still this one
     background = staticmethod(in_background)  # (function, *args) on a worker thread; tests run it in place
@@ -1272,12 +1272,13 @@ class MpvClient:
         self.positioned = None
         self._cancel_scrobble()
 
-    # --- scrobbling: Last.fm hears what plays (scrobble.py) ----------------
-    # Under queue_lock too. The calls run on a worker or the timer's own thread, never the reader thread,
-    # and their errors go to on_scrobble_error: Last.fm never stops the player.
+    # --- scrobbling: Last.fm and ListenBrainz hear what plays (scrobble.py) ----------------
+    # Under queue_lock too. One timer for every target; each target's call runs on a worker of its own, never the
+    # reader thread, so one slow or failing target never holds up another, and their errors go to on_scrobble_error:
+    # a target never stops the player.
 
     def _start_scrobble(self):
-        """The current track started: tell Last.fm, and arm the timer that scrobbles it once it played long enough.
+        """The current track started: tell each target, and arm the timer that scrobbles it once it played long enough.
 
         The timer runs on wall-clock time, so a pause does not hold it back: Last.fm counts a track the user
         started and kept for that long, and one Timer with no pause bookkeeping keeps that simple.
@@ -1286,7 +1287,7 @@ class MpvClient:
         video = self.queue[self.index]
         if not (self.scrobbling and scrobble.wanted(video, self.scrobble_podcasts)):
             return
-        self.background(self._report_scrobble, scrobble.now_playing, video)
+        self._to_targets("now_playing", video)
         seconds = scrobble.threshold(video.duration if video.duration is not None else self.state.get("duration"))
         if seconds is None:
             return
@@ -1307,7 +1308,12 @@ class MpvClient:
                 return  # cancelled as it fired
             self.scrobble_timer = self.scrobble_due = None
         self.notify()  # the ♫ goes
-        self._report_scrobble(scrobble.scrobble, *due)
+        self._to_targets("scrobble", *due)
+
+    def _to_targets(self, method, *args):
+        """Call method on every logged-in target, each on a worker of its own."""
+        for target in scrobble.targets():
+            self.background(self._report_scrobble, getattr(target, method), *args)
 
     def _report_scrobble(self, call, *args):
         try:

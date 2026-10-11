@@ -14,7 +14,8 @@ ttyplayer itself never decodes audio or talks to YouTube's HTML directly.
 ```
 src/ttyplayer/
   cli.py       Typer app: play, search, history, favorite, favorites, playlist, tui, serve, config,
-               version, pause, next, prev, stop, status. Glue only.
+               version, pause, next, prev, stop, status; lastfm and listenbrainz login|logout|status (one
+               target_status/target_logout for both), scrobble status (every target). Glue only.
   tui.py       TtyplayerApp (Textual): header, search bar, Search/Queue/History/Favorites tables,
                now-playing panel, help and settings modals, command palette, themes, toasts over MpvClient;
                styles in tui.tcss (see docs/tui-design.md).
@@ -70,11 +71,13 @@ src/ttyplayer/
                (on the time-pos change, no thread of its own), on pause, quit and track change;
                end-file eof or the last RESUME_TAIL seconds clear it. status()["resumed_at"].
                Scrobbling (with scrobbling=True, which cli and tui pass from scrobble.active()): a track's
-               first playback-restart sends scrobble.now_playing on a worker thread and arms one
-               threading.Timer for scrobble.threshold(duration) (wall-clock: a pause does not hold it);
-               a track change, removal, eof or quit cancels it; when it fires it calls scrobble.scrobble on
-               its own thread. ScrobbleError goes to on_scrobble_error (print_above in the CLI, a toast in the
-               TUI), never up into the player. status()["scrobble_pending"] while the timer is armed.
+               first playback-restart calls now_playing on each of scrobble.targets(), each on a worker
+               thread of its own, and arms one threading.Timer for scrobble.threshold(duration) (wall-clock:
+               a pause does not hold it; one timer whatever the number of targets); a track change, removal,
+               eof or quit cancels it; when it fires each target's scrobble runs on a worker of its own, so
+               one slow or failing target never holds up another. ScrobbleError goes to on_scrobble_error
+               (print_above in the CLI, a toast in the TUI), never up into the player.
+               status()["scrobble_pending"] while the timer is armed.
   control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
   history.py   JSON lines record of what was played; load() newest first, one per video.
   positions.py Where each long track was left: get(id), set(id, seconds), clear(id) on positions.jsonl
@@ -93,20 +96,35 @@ src/ttyplayer/
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
                expired, and one Retry-After wait on a 429), user_playlists, playlist(ref) -> (name, [Track]),
                import_tracks: youtube.search per track, playlists.add of the first hit. SpotifyError.
-  scrobble.py  Last.fm API 2.0: sign(params, secret) (md5 of the sorted name+value pairs and the secret),
-               call(method, params, …), the one HTTPS helper (a signed POST, format=json, Last.fm's
+  scrobble.py  Scrobble targets behind one Target protocol (now_playing(video), scrobble(video, started_at),
+               send_queued(extra)); TARGETS = (LASTFM, LISTENBRAINZ), targets() the logged-in ones (a login
+               file exists), active(settings). Account, their shared base: the login file <name>.json next to
+               settings.toml, 0600 (write_atomic), load_session/save_session/logout/user; scrobble() and
+               send_queued(), which sends that target's queued scrobbles and extra, `batch` per post(), and
+               keeps what was not sent. threshold(duration), the one scrobble rule (half the length or 240 s,
+               whichever first; 240 s when unknown; None for 30 s or less); track(video) (lyrics.guess, a
+               podcast's show as the artist), the one artist/title for every target.
+               One queue, scrobble-queue.jsonl under data_path: artist/track/timestamp and target per line (a
+               line without target is Last.fm's, from before ListenBrainz), the newest 500 per target;
+               queue_lock guards each read-modify-write, a per-target lock one sender per target, so one
+               target's slow send never blocks the other's.
+               LastFm (Last.fm API 2.0): sign(params, secret) (md5 of the sorted name+value pairs and the
+               secret), call(method, params, …), its one HTTPS helper (a signed POST, format=json, Last.fm's
                {"error", "message"} as a one-line ScrobbleError); login (auth.getToken, the user allows it
-               at last.fm/api/auth in the browser and presses Enter, auth.getSession), the session, its API
-               key and shared secret in lastfm.json next to settings.toml, 0600; logout, user, active(settings);
-               threshold(duration), the one scrobble rule (half the length or 240 s, whichever first; 240 s
-               when unknown; None for 30 s or less); track(video) (lyrics.guess, a podcast's show as the
-               artist); now_playing(video) (track.updateNowPlaying, then the queue); scrobble(video,
-               started_at): the queued scrobbles and this one, BATCH (50) per track.scrobble, whatever is not
-               sent kept in scrobble-queue.jsonl under data_path (the newest 500, artist/track/timestamp only);
-               each scrobble's ignoredMessage is read: code 5 (daily limit) stays queued, 1-4 are dropped,
-               both reported; a reply, session file or queue line of the wrong shape is a ScrobbleError (a
-               reply without a whole-number ignoredMessage code for each scrobble, an int or a digit string,
-               never a float or bool, keeps the whole batch queued).
+               at last.fm/api/auth in the browser and presses Enter, auth.getSession), lastfm.json holding
+               the API key, shared secret and session; now_playing (track.updateNowPlaying, then the queue);
+               50 per track.scrobble; each scrobble's ignoredMessage is read: code 5 (daily limit) stays
+               queued, 1-4 are dropped, both reported; a reply, session file or queue line of the wrong
+               shape is a ScrobbleError (a reply without a whole-number ignoredMessage code for each
+               scrobble, an int or a digit string, never a float or bool, keeps the whole batch queued).
+               ListenBrainz (API 1): request(endpoint, token, body), its one HTTPS helper (Authorization:
+               Token, JSON; a 429 waited out once for X-RateLimit-Reset-In when that is 60 s or less; any
+               other non-2xx, a redirect included (NoRedirect: the token never follows one), or a body that
+               is no JSON object a one-line ScrobbleError, a 401 saying to log in again); login(token)
+               checks /1/validate-token and keeps {token, user_name} in listenbrainz.json; now_playing
+               submits playing_now (no listened_at), a scrobble a single listen at its start time, sent
+               after the queue, which goes as imports of up to 1000 (one queued scrobble too); a reply
+               other than {"status": "ok"} keeps them queued. Each listen names ttyplayer and its version.
   art.py       Album art for the TUI's panel: fetch(url) -> bytes | None (urllib, 3 s, never raises) through a
                disk cache under data_path("art") (sha1 of the URL, 0600, the 200 most recently used kept),
                decode(bytes) -> PIL image | None, available() (the art extra: Pillow and textual-image),
@@ -145,7 +163,7 @@ cli  ->  youtube, player, history, favorites, playlists, control, settings, lyri
          server (imported only by the serve command), remote (imported only by tui --remote),
          spotify (imported only by the spotify commands), scrobble
 spotify  ->  youtube, playlists, settings (for the config dir only)
-scrobble  ->  lyrics (guess), utils, settings (for the config dir only, imported inside session_path: settings imports player)
+scrobble  ->  lyrics (guess), utils, settings (for the config dir only, imported inside Account.session_path: settings imports player)
 remote  ->  tui, server, control, models      (tui -> remote -> (HTTP) server: the server plays)
 server  ->  player, youtube, playlists, settings, control, history (through the client and callbacks cli wires)
 tui  ->  youtube, player, history, favorites, control, settings, lyrics, scrobble, utils, models

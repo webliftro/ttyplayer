@@ -5,6 +5,7 @@ import re
 import sys
 import tempfile
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 
 from ttyplayer.models import Video
@@ -125,6 +126,14 @@ def append_entries(path, entries):
 def write_entries(path, entries):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
+
+
+def app_version():
+    """ttyplayer's installed version, "dev" when it is run from a tree that was never installed."""
+    try:
+        return metadata.version(APP_NAME)
+    except metadata.PackageNotFoundError:
+        return "dev"
 
 
 def write_atomic(path, text):

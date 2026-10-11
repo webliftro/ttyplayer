@@ -3363,7 +3363,7 @@ async def test_the_panel_shows_the_scrobble_mark_while_one_is_pending(clients, s
 
 @drive
 async def test_the_player_scrobbles_once_logged_in_and_its_errors_are_toasts(clients, served):
-    scrobble.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
+    scrobble.LASTFM.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
     app = tui.TtyplayerApp(client_factory=clients, resolve=lambda text, limit, source: VIDEOS,
                            settings=settings.Settings(scrobble_podcasts=False))
     async with run(app) as pilot:
@@ -3387,5 +3387,5 @@ async def test_the_player_does_not_scrobble_logged_out_or_with_scrobble_off(clie
         await pilot.press("enter")
         await pilot.pause()
         assert clients.made[0].scrobbling is False
-    scrobble.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
+    scrobble.LASTFM.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
     assert not scrobble.active(settings.Settings(scrobble=False))

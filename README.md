@@ -154,6 +154,21 @@ From then on every player (`play`, the TUI, `serve`) scrobbles; `ttyplayer confi
 
 The shared secret signs every request, so it is kept with the session key in `lastfm.json` next to `settings.toml`, readable only by you, and never in `settings.toml`: that file is meant to be read, copied and shared, `ttyplayer config` prints it, and its settings are typed on command lines that shells keep in their history. Treat `lastfm.json` like a password. To revoke ttyplayer's access, remove it under **Applications** in your Last.fm settings (last.fm/settings/applications) and run `ttyplayer lastfm logout`.
 
+## ListenBrainz
+
+ttyplayer can scrobble to [ListenBrainz](https://listenbrainz.org), the open-source alternative, as well as, or instead of, Last.fm. The same rules and settings apply to both (*playing now* when a track starts, a listen after half its length or 4 minutes, `scrobble` and `scrobble_podcasts`); one timer serves every target you are logged in to, and each is sent on its own, so one that is down never holds up the other.
+
+```
+ttyplayer listenbrainz login    log in with your user token, once
+ttyplayer listenbrainz logout   forget the login and the token
+ttyplayer listenbrainz status   who is logged in, and how many listens wait to be sent
+ttyplayer scrobble status       Last.fm and ListenBrainz at once, with what waits for each
+```
+
+Logging in needs no app of your own: copy the **User token** from [listenbrainz.org/settings](https://listenbrainz.org/settings/), run `ttyplayer listenbrainz login` and paste it (typed, not shown); ttyplayer checks it with ListenBrainz and says `Logged in as <your name>`. A listen that cannot be sent waits in the same `scrobble-queue.jsonl` as Last.fm's (each line says which target it is for; the newest 500 per target) and goes, up to 1000 per request, with the next track ListenBrainz hears about. When ListenBrainz asks ttyplayer to slow down, it waits up to a minute once, then keeps the listen queued.
+
+The token is a password for your ListenBrainz account: it is kept in `listenbrainz.json` next to `settings.toml`, readable only by you, never in `settings.toml`, never printed, and sent only over HTTPS. To revoke it, reset the token on your ListenBrainz settings page and run `ttyplayer listenbrainz logout`.
+
 ## TUI
 
 `ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, `pc:` for podcasts (see Podcasts above), or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results`, `Podcast results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, start over, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
@@ -230,7 +245,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `volume_step` | `5` | how much `-` / `+` (and up / down in `ttyplayer play`) change the volume (1–50) |
 | `resume_minimum_minutes` | `10` | tracks at least this many minutes long start where they were left (0–600; `0` turns resuming off) |
 | `lastfm_api_key` | *none* | the API key of your own Last.fm API account, which `ttyplayer lastfm login` needs (see Last.fm above; the shared secret is never a setting) |
-| `scrobble` | `true` | once logged in to Last.fm, a new player sends now-playing and scrobbles; `false` stops it without logging out |
+| `scrobble` | `true` | once logged in to Last.fm or ListenBrainz, a new player sends now-playing and scrobbles; `false` stops it without logging out |
 | `scrobble_podcasts` | `true` | podcast episodes are scrobbled too, the show as the artist |
 
 ```
