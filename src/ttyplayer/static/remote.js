@@ -199,6 +199,8 @@ function renderNowPlaying() {
   const label = idle ? "Stopped" : state.paused ? "Paused" : "Playing";
   $("np-state").textContent = { Stopped: "■", Paused: "⏸", Playing: "▶" }[label];
   $("np-state").setAttribute("aria-label", label);
+  // resumed_at: the saved position a long track starts at, while it loads, as the TUI shows it.
+  $("np-resume").textContent = !idle && typeof state.resumed_at === "number" ? `↻ resumes at ${formatTime(state.resumed_at)}` : "";
   $("play-pause").textContent = label === "Playing" ? "⏸" : "▶";
   $("np-position").textContent = state.total ? `${state.index} / ${state.total}` : "";
   const hasVolume = typeof state.volume === "number";

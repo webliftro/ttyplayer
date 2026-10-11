@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ttyplayer.player import SEEK_SECONDS, VOLUME_STEP
+from ttyplayer.positions import RESUME_MINIMUM_MINUTES
 from ttyplayer.utils import APP_NAME, WINDOWS
 
 # The whole numbers each int key takes.
@@ -15,6 +16,7 @@ RANGES = {
     "server_port": range(1, 65536),
     "seek_seconds": range(1, 301),
     "volume_step": range(1, 51),
+    "resume_minimum_minutes": range(0, 601),
 }
 
 
@@ -42,6 +44,7 @@ class Settings:
     prefetch: bool = True  # mpv buffers the queue's next track ahead and plays it on with no gap
     seek_seconds: int = SEEK_SECONDS  # how far , . and left/right seek
     volume_step: int = VOLUME_STEP  # how much - + and up/down change the volume
+    resume_minimum_minutes: int = RESUME_MINIMUM_MINUTES  # tracks this long start where they were left; 0: none
 
 
 DEFAULTS = Settings()

@@ -1,4 +1,5 @@
 import _thread
+import contextlib
 import json
 import math
 import os
@@ -15,7 +16,7 @@ import threading
 import time
 from dataclasses import asdict
 
-from ttyplayer import control, history
+from ttyplayer import control, history, positions
 from ttyplayer.models import Video
 from ttyplayer.utils import APP_NAME, WINDOWS, format_time, unseen
 
@@ -56,6 +57,8 @@ RADIO_MARK = "∞"
 RADIO_NEEDS_YOUTUBE = "Radio needs a YouTube track to go on from"
 # prefetch: mpv opens and buffers the one upcoming playlist entry ahead, then plays it on without reopening the device.
 PREFETCH_OPTIONS = ["--prefetch-playlist=yes", "--gapless-audio=yes"]
+POSITION_SAVE_SECONDS = 10  # seconds of playback between two saves of a long track's position
+RESUME_MARK = "↻"
 
 
 def keys(seek=SEEK_SECONDS, step=VOLUME_STEP):
@@ -250,6 +253,8 @@ def status_line(status):
         state += f"  {sleep}"
     if radio := radio_text(status.get("radio")):
         state += f"  {radio}"
+    if resume := resume_text(status.get("resumed_at")):
+        state += f"  {resume}"
     volume = volume_meter(status["volume"], status["muted"])
     # The meter goes before the title, so a narrow terminal cuts the title, not the meter.
     line = f"{position} / {duration}  {state}  {volume}  {status['title']}"
@@ -258,6 +263,22 @@ def status_line(status):
     if timing() and status.get("started_in") is not None:
         line += f"  started in {status['started_in']:.1f}s"
     return line
+
+
+def resume_text(resumed_at):
+    """↻ resumes at m:ss for status()["resumed_at"]; "" when the track starts from its start."""
+    return "" if resumed_at is None else f"{RESUME_MARK} resumes at {format_time(resumed_at)}"
+
+
+def loadfile(url, append=False, start=None):
+    """mpv's loadfile of url, replacing its playlist or appended to it; start, in seconds, as its per-file start option.
+
+    With a start it goes as named arguments: mpv 0.38 put an index argument before the options one, so no
+    positional form passes options to mpv both before and after it.
+    """
+    if start is not None:
+        return {"name": "loadfile", "url": url, "flags": "append" if append else "replace", "options": f"start={start}"}
+    return ["loadfile", url, "append"] if append else ["loadfile", url]
 
 
 def interrupt_main():
@@ -399,6 +420,13 @@ class MpvClient:
     related = staticmethod(related_tracks)  # (video_id) -> [Video]; the radio's lookup, run off the reader thread
     recent = staticmethod(recent_plays)  # () -> [Video] the radio skips
     fade_wait = staticmethod(threading.Event.wait)  # (cancelled, seconds): a step's pause, cut short by a cancel
+    resume_minimum_minutes = positions.RESUME_MINIMUM_MINUTES  # tracks this long start where they were left; 0: none
+    resume = True  # whether a long track starts where it was left; False for play --from-start
+    positioned = None  # the track whose time-pos is saved, from its first restart until it ends or another one loads
+    saved_position = None  # positioned's time-pos at its last save (or its restart), for the save cadence
+    resumed_at = None  # the saved position the loading track starts at, for status() until its restart's tick
+    resume_expiring = False  # that track restarted: the next notify() is the last to show resumed_at
+    prefetched_start = None  # the start the prefetched entry was appended with, its resumed_at once mpv goes on to it
 
     def __init__(
         self,
@@ -412,6 +440,8 @@ class MpvClient:
         prefetch=True,
         seek_seconds=SEEK_SECONDS,
         volume_step=VOLUME_STEP,
+        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES,
+        resume=True,
     ):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
@@ -426,6 +456,8 @@ class MpvClient:
         self.normalize = normalize
         self.prefetch = prefetch
         self.keys = keys(seek_seconds, volume_step)
+        self.resume_minimum_minutes = resume_minimum_minutes
+        self.resume = resume
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
@@ -507,6 +539,12 @@ class MpvClient:
             self.state[message["name"]] = message.get("data")
             if message["name"] == "playlist-pos" and message.get("data") == -1:
                 self._edit(self._stopped_at_end)
+            elif message["name"] == "time-pos":
+                with self.queue_lock:
+                    self._save_position(every=POSITION_SAVE_SECONDS)
+            elif message["name"] == "pause" and message.get("data"):
+                with self.queue_lock:
+                    self._save_position()
             self.notify()
         elif message.get("event") == "start-file":
             self._edit(self._started_file, message.get("playlist_entry_id"))
@@ -543,8 +581,10 @@ class MpvClient:
             self.started_in = 0.0
             self.error = None
             self.send(["playlist-remove", 0])
-            return True
-        return self._mark_started()
+        elif not self._mark_started():
+            return False
+        self._start_positioning()
+        return True
 
     def poll(self):
         """Read the levels every LEVELS_INTERVAL while show_levels, the volumes every VOLUME_POLL_SECONDS, until quit()."""
@@ -666,6 +706,8 @@ class MpvClient:
 
     def quit(self):
         self.radio = False  # a lookup still running drops what it finds
+        with self.queue_lock:
+            self._save_position()
         self._disarm_sleep()
         with self.fade_lock:  # a fade, even of a cancelled timer, restores the volume before mpv goes
             pass
@@ -729,6 +771,10 @@ class MpvClient:
 
     def toggle_mute(self):
         self.send(["cycle", "mute"])
+
+    def start_over(self):
+        """Play the current track from its start, and forget where it was left."""
+        return self._edit(self._start_over)
 
     # --- remote control ---------------------------------------------------
 
@@ -908,8 +954,8 @@ class MpvClient:
         else:
             self.notify()  # the UIs' queue follows
 
-    def load(self, url):
-        self.send(["loadfile", url])
+    def load(self, url, start=None):
+        self.send(loadfile(url, start=start))
 
     def play_current(self):
         self.error = None
@@ -971,7 +1017,8 @@ class MpvClient:
         self.prefetched = upcoming
         self.prefetched_id = None
         if upcoming:
-            self.send(["loadfile", upcoming, "append"])
+            self.prefetched_start = self.resume_position(self.upcoming())
+            self.send(loadfile(upcoming, append=True, start=self.prefetched_start))
             self.get_property("playlist/1/id", lambda entry: self._prefetched_entry(upcoming, entry))
 
     def _prefetched_entry(self, url, entry):
@@ -984,6 +1031,7 @@ class MpvClient:
         """mpv's playlist holds nothing upcoming now (a loadfile or stop cleared it)."""
         self.prefetched = None
         self.prefetched_id = None
+        self.prefetched_start = None
         self.awaiting_advance = False
         self.advanced = False
 
@@ -998,10 +1046,12 @@ class MpvClient:
     def _play_index(self, index):
         if not 0 <= index < len(self.queue):
             return False
+        self._leave_track()
         self._forget_prefetched()  # loadfile replaces mpv's playlist
         self.started_in = None
         self.loaded_at = time.monotonic()
-        self.load(self.queue[index].url)
+        self._resume_at(self.resume_position(self.queue[index]))
+        self.load(self.queue[index].url, self.resumed_at)
         self._begin(index)
         return True
 
@@ -1030,6 +1080,8 @@ class MpvClient:
         self.awaiting_advance = False
         if entry != self.prefetched_id or not self._holds_upcoming():
             return self._next_or_idle()
+        self._resume_at(self.prefetched_start)
+        self.prefetched_start = None
         self.prefetched = None
         self.prefetched_id = None
         self.advanced = True
@@ -1054,7 +1106,8 @@ class MpvClient:
             self.on_play(self.queue[index])
 
     def _end_of_track(self):
-        """Go on to the next track, or after `sleep end` stop as `ttyplayer stop` does."""
+        """Forget where the track was left, then go on to the next one, or after `sleep end` stop as `ttyplayer stop` does."""
+        self._finish_track()
         if self.sleep_after_track:
             self.sleep_after_track = False
             self._drop_prefetched()
@@ -1082,6 +1135,8 @@ class MpvClient:
     def _remove(self, index):
         if not 0 <= index < len(self.queue):
             return False
+        if index == self.index:
+            self._leave_track()
         del self.queue[index]
         if index < self.index:
             self.index -= 1
@@ -1091,6 +1146,7 @@ class MpvClient:
                 self.idle = True
                 self.started_in = None
                 self.loaded_at = None
+                self._resume_at(None)
                 self._forget_prefetched()  # stop clears mpv's playlist
                 self.send(["stop"])
         return True
@@ -1107,6 +1163,77 @@ class MpvClient:
             self.index -= 1
         elif target <= current < source:
             self.index += 1
+        return True
+
+    # --- resume: where long tracks were left (positions) ------------------
+    # Under queue_lock too. The store's file errors are dropped: a position not saved only loses a resume.
+
+    def resume_position(self, video):
+        """Where video starts: where it was left, when it is long (by its own duration) and was left before its tail;
+        None from its start."""
+        if not (self.resume and positions.is_long(video.duration, self.resume_minimum_minutes)):
+            return None
+        try:
+            saved = positions.get(video.id)
+        except OSError:
+            return None
+        return saved if saved and saved < video.duration - positions.RESUME_TAIL else None
+
+    def _resume_at(self, start):
+        """The loading track starts at start (None: its start); status() says so until its restart's tick."""
+        self.resumed_at = start
+        self.resume_expiring = False
+
+    def _start_positioning(self):
+        """The current track restarted for the first time: its time-pos is its own from now on."""
+        self.positioned = self.queue[self.index]
+        self.saved_position = self.state.get("time-pos")
+        self.resume_expiring = self.resumed_at is not None
+
+    def _positioned_duration(self):
+        """positioned's duration if it is long enough to resume (its own, else mpv's); None otherwise."""
+        video = self.positioned
+        duration = video.duration if video.duration is not None else self.state.get("duration")
+        return duration if positions.is_long(duration, self.resume_minimum_minutes) else None
+
+    def _save_position(self, every=None):
+        """Save positioned's time-pos, or forget it past its tail; with every, only once playback moved every
+        seconds since the last save or crossed into or out of the tail. Short tracks and tracks of unknown
+        duration are never saved."""
+        position = self.state.get("time-pos")
+        if self.positioned is None or not isinstance(position, (int, float)) or not (duration := self._positioned_duration()):
+            return
+        tail = duration - positions.RESUME_TAIL
+        last = self.saved_position
+        if every and last is not None and (position >= tail) == (last >= tail) and abs(position - last) < every:
+            return
+        self.saved_position = position
+        with contextlib.suppress(OSError):
+            if position >= tail:
+                positions.clear(self.positioned.id)
+            else:
+                positions.set(self.positioned.id, position)
+
+    def _leave_track(self):
+        """Another track loads, or this one is removed: save where it was left."""
+        self._save_position()
+        self.positioned = None
+
+    def _finish_track(self):
+        """The track played to its end: it starts from its start next time."""
+        if self.positioned is not None and self._positioned_duration():
+            with contextlib.suppress(OSError):
+                positions.clear(self.positioned.id)
+        self.positioned = None
+
+    def _start_over(self):
+        if self.idle or not self.queue:
+            return False
+        self.send(["seek", 0, "absolute"])
+        self._resume_at(None)
+        self.saved_position = 0
+        with contextlib.suppress(OSError):
+            positions.clear(self.queue[self.index].id)
         return True
 
     def _clear_others(self):
@@ -1192,6 +1319,7 @@ class MpvClient:
             "levels_floor": LEVEL_FLOOR,
             "sleep": self.sleep_status(),
             "radio": self.radio_status(),
+            "resumed_at": self.resumed_at,
         }
 
     def notify(self):
@@ -1200,6 +1328,9 @@ class MpvClient:
             self.on_state(self.status())
         else:
             self.render()
+        if self.resume_expiring:
+            self.resume_expiring = False
+            self.resumed_at = None
 
     def render(self):
         status = self.status()

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from ttyplayer import player, remote, server, settings, tui, youtube
+from ttyplayer import player, positions, remote, server, settings, tui, youtube
 from ttyplayer.models import Video
 
 TOKEN = "secret-token"
@@ -162,6 +162,15 @@ def test_each_call_is_one_server_command(served, connect, method, args, command,
     assert served.posts() == [("/api/command", command)]
     assert served.player.sent[-1] == sent
     assert client.errors == []
+
+
+def test_start_over_runs_on_the_server(served, connect, monkeypatch, tmp_path):
+    monkeypatch.setattr(positions, "positions_path", lambda: tmp_path / "positions.jsonl")
+    served.player.queue[:] = VIDEOS
+    served.player.jump(0)
+    client = connected(connect(served.url))
+    assert client.start_over() is True
+    assert served.posts() == [("/api/command", {"name": "start_over"})]
 
 
 def test_clear_others_keeps_the_current_track_and_the_queue_follows(served, connect):

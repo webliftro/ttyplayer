@@ -31,7 +31,7 @@ TEXT_COMMANDS = {"sleep": '"30m", "end" or "off"', "radio": '"on", "off" or "tog
 VALUE_COMMANDS = {"seek": "seek", "volume": "change_volume"}  # name -> MpvClient method
 ROW_COMMANDS = {"jump": "jump", "remove": "remove"}
 PAIR_COMMANDS = {"move": "move"}  # [source, target]
-PLAIN_COMMANDS = {"clear_others": "clear_others"}
+PLAIN_COMMANDS = {"clear_others": "clear_others", "start_over": "start_over"}
 COMMANDS = sorted(
     CONTROL_COMMANDS | TEXT_COMMANDS.keys() | VALUE_COMMANDS.keys() | ROW_COMMANDS.keys() | PAIR_COMMANDS.keys() | PLAIN_COMMANDS.keys()
 )

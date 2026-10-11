@@ -14,7 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from ttyplayer import (
-    art, cli, control, favorites, history, lyrics, player, playlists, podcasts, settings, spotify, utils, youtube,
+    art, cli, control, favorites, history, lyrics, player, playlists, podcasts, positions, settings, spotify, utils, youtube,
 )
 from ttyplayer.cli import app
 from ttyplayer.models import Video
@@ -107,12 +107,14 @@ class FakeClient:
     def __init__(
         self, video=False, on_play=None, on_state=None, pcm=None, levels=True, radio=False, normalize=False,
         prefetch=True, seek_seconds=player.SEEK_SECONDS, volume_step=player.VOLUME_STEP,
+        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES, resume=True,
     ):
         self.video = video
         self.radio = radio
         self.normalize = normalize
         self.prefetch = prefetch
         self.steps = (seek_seconds, volume_step)
+        self.resume = (resume_minimum_minutes, resume)
         self.pcm = pcm
         self.headless_pcm = pcm is not None
         self.levels = levels
@@ -171,6 +173,25 @@ def test_play_radio_starts_the_player_with_the_radio_on(monkeypatch, tmp_path):
     assert runner.invoke(app, ["play", "--radio", "https://youtu.be/x"]).exit_code == 0
     assert runner.invoke(app, ["play", "https://youtu.be/x"]).exit_code == 0
     assert [client.radio for client in FakeClient.instances] == [True, False]
+
+
+def test_start_mpv_follows_the_resume_minimum_minutes_setting(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    assert cli.start_mpv(False).resume == (10, True)
+    settings.update("resume_minimum_minutes", "0")
+    assert cli.start_mpv(False, resume=False).resume == (0, False)
+
+
+def test_play_from_start_starts_the_player_without_resuming(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(youtube, "fetch", lambda url: [Video(id="a" * 11, title="Episode", uploader="u", duration=3600)])
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    monkeypatch.setattr(history, "history_path", lambda: tmp_path / "h.jsonl")
+    FakeClient.instances = []
+    assert runner.invoke(app, ["play", "--from-start", "https://youtu.be/x"]).exit_code == 0
+    assert runner.invoke(app, ["play", "https://youtu.be/x"]).exit_code == 0
+    assert [client.resume for client in FakeClient.instances] == [(10, False), (10, True)]
 
 
 def test_play_queues_the_picks_in_order_and_records_history(monkeypatch, tmp_path):
@@ -774,10 +795,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):

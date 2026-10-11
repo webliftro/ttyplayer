@@ -179,13 +179,14 @@ def play(
     limit: int = 5,
     source: str = SOURCE_OPTION,
     radio: bool = typer.Option(False, "--radio", help="When the queue runs out, go on with related tracks (default: radio)"),
+    from_start: bool = typer.Option(False, "--from-start", help="Start long tracks from the start, not where they were left"),
 ):
     """Play a YouTube link or playlist, or search and pick what to play.
 
     Keys while playing: space pause, left/right or , . seek (seek_seconds), up/down or - + volume (volume_step),
     n next, p previous, q quit.
     """
-    start_playback(resolve(target, limit, source), video, radio)
+    start_playback(resolve(target, limit, source), video, radio, resume=not from_start)
 
 
 @app.command()
@@ -783,18 +784,18 @@ def show_more(videos, more):
     videos.extend(fresh)
 
 
-def start_playback(videos, with_video, radio=False):
+def start_playback(videos, with_video, radio=False, resume=True):
     exit_if_empty(videos)
-    client = start_mpv(with_video, radio=radio)
+    client = start_mpv(with_video, radio=radio, resume=resume)
     for video in videos:
         client.add(video)
     client.play_current()
     client.run()
 
 
-def start_mpv(with_video, on_state=None, pcm=None, radio=False):
-    """An MpvClient that keeps history (radio on with radio or the radio setting) and follows the playback settings,
-    or a one-line message and exit 1 when mpv cannot start."""
+def start_mpv(with_video, on_state=None, pcm=None, radio=False, resume=True):
+    """An MpvClient that keeps history (radio on with radio or the radio setting) and follows the playback settings
+    (long tracks resume where they were left unless resume is False), or a one-line message and exit 1 when mpv cannot start."""
     current = load_settings()
     try:
         return player.MpvClient(
@@ -808,6 +809,8 @@ def start_mpv(with_video, on_state=None, pcm=None, radio=False):
             prefetch=current.prefetch,
             seek_seconds=current.seek_seconds,
             volume_step=current.volume_step,
+            resume_minimum_minutes=current.resume_minimum_minutes,
+            resume=resume,
         )
     except FileNotFoundError:
         fail(f"mpv is not installed. {mpv_install_hint()}")

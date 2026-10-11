@@ -11,12 +11,20 @@ import time
 
 import pytest
 
-from ttyplayer import control, player, utils, youtube
+from ttyplayer import control, player, positions, utils, youtube
 from ttyplayer.models import Video
 
 # Unix sockets and termios: the Windows paths are tested on every OS with WINDOWS patched.
 posix_only = pytest.mark.skipif(utils.WINDOWS, reason="POSIX socket or terminal")
 REAL_INTERRUPT_MAIN = player.interrupt_main  # make_remote_client replaces it
+
+
+@pytest.fixture(autouse=True)
+def positions_file(monkeypatch, tmp_path):
+    """Saved positions in tmp_path, never the user's own: a long track played here saves one."""
+    path = tmp_path / "positions.jsonl"
+    monkeypatch.setattr(positions, "positions_path", lambda: path)
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +159,7 @@ def make_client(videos):
     client.reply_lock = threading.Lock()
     client.replies = {}
     client.loaded = []
-    client.load = client.loaded.append
+    client.load = lambda url, start=None: client.loaded.append(url)
     for v in videos:
         client.add(v)
     return client
@@ -271,6 +279,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "levels_floor": -60.0,
         "sleep": None,
         "radio": False,
+        "resumed_at": None,
     }
 
 
@@ -669,7 +678,7 @@ def test_next_from_two_threads_moves_once(monkeypatch):
     client.queue = CheckBarrierQueue(client.queue)
     loaded = []
 
-    def slow_load(url):
+    def slow_load(url, start=None):
         time.sleep(0.05)
         loaded.append(url)
 
@@ -2642,3 +2651,255 @@ def test_a_podcast_episode_is_loaded_as_its_enclosure_url_and_prefetched_the_sam
     client.handle_message(RESTART)
     assert client.sent[0] == ["loadfile", "https://media.example.com/ep.mp3", "append"]
 
+
+
+# --- resume: long tracks start where they were left -------------------------------
+
+LONG = Video(id="long0000001", title="Episode", uploader="Show", duration=3000)  # 50 minutes
+SHORT = Video(id="short000001", title="Song", uploader="Band", duration=300)
+UNTIMED = Video(id="untimed0001", title="Mix", uploader="DJ", duration=None)
+PAUSED = {"event": "property-change", "name": "pause", "data": True}
+
+
+def tick(client, seconds):
+    client.handle_message({"event": "property-change", "name": "time-pos", "data": seconds})
+
+
+def sounding(videos, monkeypatch, at=0.0, **settings):
+    """A client playing videos[0] past its restart, at seconds in; loadfiles go out through the recorded send()."""
+    client = make_remote_client(videos, monkeypatch)
+    client.load = player.MpvClient.load.__get__(client)
+    for name, value in settings.items():
+        setattr(client, name, value)
+    client.play_current()
+    tick(client, at)
+    client.handle_message(RESTART)
+    return client
+
+
+def test_a_long_track_saves_its_position_every_ten_seconds_of_playback(monkeypatch):
+    client = sounding([LONG], monkeypatch)
+    assert player.POSITION_SAVE_SECONDS == 10
+    tick(client, 9.9)
+    assert positions.get(LONG.id) is None
+    tick(client, 10.0)
+    assert positions.get(LONG.id) == 10.0
+    tick(client, 19.5)
+    assert positions.get(LONG.id) == 10.0
+    tick(client, 20.0)
+    assert positions.get(LONG.id) == 20.0
+    tick(client, 3.0)  # a seek back moves the playback ten seconds away from the last save too
+    assert positions.get(LONG.id) == 3.0
+
+
+def test_pausing_a_long_track_saves_its_position(monkeypatch):
+    client = sounding([LONG], monkeypatch)
+    tick(client, 4.2)
+    client.handle_message(PAUSED)
+    assert positions.get(LONG.id) == 4.2
+
+
+def test_going_to_another_track_saves_the_long_ones_position(monkeypatch):
+    client = sounding([LONG, A], monkeypatch)
+    tick(client, 42.0)
+    client.next()
+    assert positions.get(LONG.id) == 42.0
+    tick(client, 0.5)  # A's time-pos, before its restart, belongs to no long track
+    client.prev()
+    assert positions.get(LONG.id) == 42.0
+
+
+def test_removing_the_playing_long_track_saves_its_position(monkeypatch):
+    client = sounding([LONG], monkeypatch)
+    tick(client, 77.0)
+    client.remove(0)
+    assert positions.get(LONG.id) == 77.0
+
+
+def test_quitting_saves_the_long_tracks_position(monkeypatch):
+    client, _ = piped_client(monkeypatch)
+    client.add(LONG)
+    client.play_current()
+    client.handle_message(RESTART)
+    tick(client, 123.4)
+    client.quit()
+    assert positions.get(LONG.id) == 123.4
+
+
+def test_the_end_of_a_long_track_forgets_its_position(monkeypatch):
+    positions.set(LONG.id, 100)
+    client = sounding([LONG, A], monkeypatch, at=100)
+    tick(client, 2999.0)
+    client.handle_message(EOF_EVENT)
+    assert positions.get(LONG.id) is None
+    assert client.index == 1
+
+
+def test_a_long_track_left_in_its_last_thirty_seconds_forgets_its_position(monkeypatch):
+    positions.set(LONG.id, 100)
+    client = sounding([LONG], monkeypatch, at=100)
+    assert positions.RESUME_TAIL == 30
+    tick(client, 2969.0)
+    client.handle_message(PAUSED)
+    assert positions.get(LONG.id) == 2969.0
+    tick(client, 2970.0)
+    client.handle_message(PAUSED)
+    assert positions.get(LONG.id) is None
+
+
+def test_playing_into_the_last_thirty_seconds_forgets_the_position_at_once(monkeypatch):
+    client = sounding([LONG], monkeypatch)
+    tick(client, 2969.0)
+    assert positions.get(LONG.id) == 2969.0
+    tick(client, 2971.0)  # within the save cadence, but past the tail: an abrupt exit now must not resume
+    assert positions.get(LONG.id) is None
+    tick(client, 100.0)  # a seek back out of the tail saves at once too
+    assert positions.get(LONG.id) == 100.0
+
+
+@pytest.mark.parametrize("video", [SHORT, UNTIMED])
+def test_short_tracks_and_tracks_of_unknown_duration_never_save(video, monkeypatch, positions_file):
+    client = sounding([video, A], monkeypatch)
+    for seconds in (10, 20, 200):
+        tick(client, seconds)
+    client.handle_message(PAUSED)
+    client.next()
+    assert not positions_file.exists()
+
+
+def test_a_track_of_unknown_duration_saves_once_mpv_knows_it_is_long(monkeypatch):
+    client = sounding([UNTIMED], monkeypatch)
+    tick(client, 15.0)
+    assert positions.get(UNTIMED.id) is None
+    client.handle_message({"event": "property-change", "name": "duration", "data": 3600.0})
+    tick(client, 16.0)
+    assert positions.get(UNTIMED.id) == 16.0
+
+
+def test_resume_minimum_minutes_sets_what_is_long(monkeypatch, positions_file):
+    client = sounding([SHORT], monkeypatch, resume_minimum_minutes=5)
+    tick(client, 30.0)
+    assert positions.get(SHORT.id) == 30.0
+    off = sounding([LONG], monkeypatch, resume_minimum_minutes=0)  # 0 turns resuming off
+    tick(off, 30.0)
+    off.handle_message(PAUSED)
+    assert positions.get(LONG.id) is None
+
+
+def test_a_long_track_with_a_saved_position_loads_with_mpvs_start_option(monkeypatch):
+    positions.set(LONG.id, 754.5)
+    client = make_remote_client([LONG], monkeypatch)
+    client.load = player.MpvClient.load.__get__(client)
+    client.play_current()
+    assert client.sent == [{"name": "loadfile", "url": LONG.url, "flags": "replace", "options": "start=754.5"}]
+
+
+def test_loadfile_takes_the_start_as_named_arguments_and_stays_positional_without_one():
+    assert player.loadfile("u") == ["loadfile", "u"]
+    assert player.loadfile("u", append=True) == ["loadfile", "u", "append"]
+    assert player.loadfile("u", start=12.5) == {"name": "loadfile", "url": "u", "flags": "replace", "options": "start=12.5"}
+    assert player.loadfile("u", append=True, start=3) == {"name": "loadfile", "url": "u", "flags": "append", "options": "start=3"}
+
+
+@pytest.mark.parametrize("saved", [None, 0, 2970.0, 2999.0])
+def test_a_long_track_starts_from_its_start_without_a_position_before_its_tail(saved, monkeypatch):
+    if saved is not None:
+        positions.set(LONG.id, saved)
+    client = sounding([LONG], monkeypatch)
+    assert client.sent[0] == ["loadfile", LONG.url]
+
+
+def test_a_short_track_starts_from_its_start_whatever_was_saved(monkeypatch):
+    positions.set(SHORT.id, 100)
+    client = sounding([SHORT], monkeypatch)
+    assert client.sent[0] == ["loadfile", SHORT.url]
+
+
+def test_from_start_loads_from_the_start_and_still_saves(monkeypatch):
+    positions.set(LONG.id, 754.5)
+    client = sounding([LONG], monkeypatch, resume=False)
+    assert client.sent[0] == ["loadfile", LONG.url]
+    assert client.status()["resumed_at"] is None
+    tick(client, 10.0)
+    assert positions.get(LONG.id) == 10.0
+
+
+def test_resumed_at_lasts_until_the_status_after_the_restart(monkeypatch):
+    positions.set(LONG.id, 754.5)
+    client = make_remote_client([LONG], monkeypatch)
+    client.states = []
+    client.on_state = client.states.append
+    client.play_current()
+    assert client.status()["resumed_at"] == 754.5
+    tick(client, 754.5)
+    assert client.states[-1]["resumed_at"] == 754.5  # still loading
+    client.handle_message(RESTART)
+    assert client.states[-1]["resumed_at"] == 754.5  # the restart's own status
+    tick(client, 755.0)
+    assert client.states[-1]["resumed_at"] is None
+    assert positions.get(LONG.id) == 754.5  # less than ten seconds played since the resume
+
+
+def test_resumed_at_is_none_for_a_track_that_starts_from_its_start(monkeypatch):
+    client = sounding([LONG, A], monkeypatch)
+    assert client.status()["resumed_at"] is None
+    positions.set(A.id, 100)  # A is short
+    client.next()
+    assert client.status()["resumed_at"] is None
+
+
+def test_the_prefetched_long_track_is_appended_with_its_start_and_resumes(monkeypatch):
+    positions.set(LONG.id, 754.5)
+    client = prefetching([A, LONG], monkeypatch)
+    client.move(1, 0)  # mirrored again: the prefetched entry is A now, then LONG again
+    client.move(0, 1)
+    assert client.sent[-2:] == [
+        {"name": "loadfile", "url": LONG.url, "flags": "append", "options": "start=754.5"},
+        ASK_ENTRY,
+    ]
+    mpv_names_entries(client)
+    client.handle_message(EOF_EVENT)
+    client.handle_message(START)
+    assert client.index == 1 and client.loaded == []  # mpv went on to it, already at its start
+    assert client.status()["resumed_at"] == 754.5
+    client.handle_message(RESTART)
+    tick(client, 755.0)
+    assert client.status()["resumed_at"] is None
+    tick(client, 765.0)
+    assert positions.get(LONG.id) == 765.0
+
+
+def test_start_over_seeks_to_zero_and_forgets_the_position(monkeypatch):
+    positions.set(LONG.id, 754.5)
+    client = sounding([LONG], monkeypatch, at=754.5)
+    client.sent.clear()
+    assert client.start_over() is True
+    assert client.sent == [["seek", 0, "absolute"]]
+    assert positions.get(LONG.id) is None
+    assert client.status()["resumed_at"] is None
+    tick(client, 5.0)
+    assert positions.get(LONG.id) is None  # ten seconds from 0 first
+    tick(client, 10.0)
+    assert positions.get(LONG.id) == 10.0
+
+
+def test_start_over_while_idle_does_nothing(monkeypatch):
+    client = make_remote_client([], monkeypatch)
+    assert client.start_over() is False
+    assert client.sent == []
+
+
+def test_a_position_that_cannot_be_saved_loses_only_the_resume(monkeypatch, positions_file):
+    positions_file.mkdir()  # a directory where the file should be: every write fails
+    client = sounding([LONG], monkeypatch)
+    tick(client, 10.0)
+    client.handle_message(PAUSED)
+    client.handle_message(EOF_EVENT)
+    assert client.idle
+
+
+def test_status_line_shows_where_the_track_resumes():
+    assert player.resume_text(754.5) == "↻ resumes at 12:34"
+    assert player.resume_text(None) == ""
+    status = {**TIMED, "paused": False, "resumed_at": 754.5}
+    assert player.status_line(status) == "1:23 / 4:56  Playing  ↻ resumes at 12:34  🔊 ▮▮▮▮▮▮▮▯▯▯ 70%  Song"

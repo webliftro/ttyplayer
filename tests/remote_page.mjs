@@ -5,9 +5,10 @@
 // {"click": label, "list": id} for that button on the first row of a list, "art-error" for the art failing to load,
 // {"lyrics": reply, "status"?: code} for opening Lyrics (reply: what /api/lyrics answers, with that status, 200 by default),
 // {"get": reply, "status"?: code} for what the next GETs answer, and "close-lyrics" for closing Lyrics.
-// stdout: after each, {queue, banner, listen, sleep, radio, art, levels, lyrics, posted}: the queue rows the page shows, each its title with a leading "▸"
+// stdout: after each, {queue, banner, listen, sleep, resume, radio, art, levels, lyrics, posted}: the queue rows the page shows, each its title with a leading "▸"
 // when marked as playing, the banner's text (null while it is hidden), the Listen here button
 // ({shown, label, src, playing}), the sleep timer ({text, label}: its zz text and the button's),
+// the resume notice (np-resume's text),
 // the Radio button ({label, pressed}), the art ({src, loads}: loads counts every src set),
 // the level bars ([left, right]: each --level), the Lyrics section ({open, stored, lines}: lines are its text,
 // the highlighted one with a leading "▸"; stored is what localStorage keeps of open),
@@ -157,6 +158,7 @@ for (const message of JSON.parse(readFileSync(0, "utf-8"))) {
       playing: !element("listen-audio").paused,
     },
     sleep: { text: element("np-sleep").textContent, label: element("sleep").textContent },
+    resume: element("np-resume").textContent,
     radio: { label: element("radio").textContent, pressed: element("radio").getAttribute("aria-pressed") },
     art: { src: element("np-art").getAttribute("src"), loads: element("np-art").loads ?? 0 },
     levels: [element("level-left").style.properties["--level"], element("level-right").style.properties["--level"]],

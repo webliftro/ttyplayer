@@ -80,6 +80,10 @@ NowPlaying.-no-levels .np-level {
     width: 3;
 }
 
+#np-resume {
+    width: auto;
+}
+
 #np-title {
     width: auto;
     max-width: 70%;

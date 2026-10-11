@@ -50,9 +50,16 @@ src/ttyplayer/
                the CLI's last show list for `podcast episodes <n>`.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
                handle_control for the control socket; append(videos), the one "add to the end, play if
-               idle" path (the server's /api/queue and radio mode use it); radio mode (see below).
+               idle" path (the server's /api/queue and radio mode use it); radio mode (see below);
+               resume: a long track loads with mpv's per-file start option at its positions.get(), and
+               its time-pos is saved through positions.set() every POSITION_SAVE_SECONDS of playback
+               (on the time-pos change, no thread of its own), on pause, quit and track change;
+               end-file eof or the last RESUME_TAIL seconds clear it. status()["resumed_at"].
   control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
   history.py   JSON lines record of what was played; load() newest first, one per video.
+  positions.py Where each long track was left: get(id), set(id, seconds), clear(id) on positions.jsonl
+               under data_path, the newest 500 kept, written atomically (temp file + os.replace);
+               is_long(duration, minimum_minutes), the one rule for what resumes (resume_minimum_minutes).
   favorites.py JSON lines list the user curates; add() dedupes by id, remove(n) by listed position,
                remove_id(id), ids() for the ♥ markers.
   playlists.py One JSON lines file per named playlist under data_path("playlists"), in the user's

@@ -84,6 +84,10 @@ class FakeClient:
         self.calls.append("clear_others")
         return True
 
+    def start_over(self):
+        self.calls.append("start_over")
+        return True
+
     def notify(self):
         self.calls.append("notify")
 
@@ -997,6 +1001,12 @@ def test_the_page_still_follows_a_status_that_carries_an_error():
 
 def test_the_page_shows_a_failed_commands_error_in_the_banner():
     assert run_page([status(VIDEOS[:2], 1), {"error": "no such row"}], shown="banner") == [None, "no such row"]
+
+
+def test_the_page_says_where_a_long_track_resumes_while_resumed_at_is_set():
+    shown = run_page([status(VIDEOS[:2], 1, resumed_at=754.5), status(None, 1, resumed_at=None),
+                      status(None, 1, idle=True, resumed_at=754.5)], shown="resume")
+    assert shown == ["↻ resumes at 12:34", "", ""]
 
 
 def test_the_page_shows_the_sleep_timer_and_its_button_arms_or_cancels_it():

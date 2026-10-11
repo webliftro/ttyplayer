@@ -62,6 +62,7 @@ COMMANDS = [
     ("Mute", "toggle_mute", "Mute or unmute"),
     ("Sleep…", "sleep", f"Stop after a while or at the track's end: {player.SLEEP_FORMS}"),
     ("Radio", "radio", "Turn radio on or off: related tracks follow when the queue runs out"),
+    ("Start over", "start_over", "Play the track from its start and forget where it was left"),
 ]
 SLEEP_PREFILL = "30m"
 
@@ -193,6 +194,7 @@ class NowPlaying(Horizontal):
             yield Static(IDLE_TEXT, id="np-idle", markup=False)
             with Horizontal(classes="np-line"):
                 yield Static(id="np-state")
+                yield Static(id="np-resume")
                 yield Static(id="np-title", markup=False)
                 yield Static(id="np-uploader", markup=False)
                 yield Static(id="np-position")
@@ -222,6 +224,8 @@ class NowPlaying(Horizontal):
         if idle:
             return
         self.query_one("#np-state", Static).update("⏸" if status["paused"] else "▶")
+        resume = player.resume_text(status.get("resumed_at"))
+        self.query_one("#np-resume", Static).update(f"{resume}  " if resume else "")
         self.query_one("#np-title", Static).update(status["title"])
         self.query_one("#np-uploader", Static).update(f" · {status['uploader']}" if status.get("uploader") else "")
         position = f"[{status['index']}/{status['total']}]" if status["total"] > 1 else ""
@@ -695,6 +699,7 @@ class TtyplayerApp(App):
         Binding("4", "show_tab('favorites')", "Favorites tab", show=False),
         Binding("5", "playlists", "Playlists tab", show=False),
         Binding("6", "show_tab('lyrics')", "Lyrics tab", show=False),
+        Binding("0", "start_over", "Start over", show=False),
         Binding("P", "save_queue", "Save queue"),
         Binding("t", "next_theme", "Next theme", show=False),
         Binding("S", "settings", "Settings"),
@@ -927,6 +932,7 @@ class TtyplayerApp(App):
                 radio=self.settings.radio,
                 normalize=self.settings.normalize_loudness,
                 prefetch=self.settings.prefetch,
+                resume_minimum_minutes=self.settings.resume_minimum_minutes,
             )
         except FileNotFoundError:
             self.toast("mpv is not installed. Install it with: brew install mpv", severity="error")
@@ -1246,6 +1252,10 @@ class TtyplayerApp(App):
     def action_toggle_mute(self):
         if self.client:
             self.client.toggle_mute()
+
+    def action_start_over(self):
+        if self.client:
+            self.client.start_over()
 
     def action_sleep(self):
         """Sleep…: a sleep timer's text (30m, end, off, …) for the player; Esc leaves the timer as it is."""

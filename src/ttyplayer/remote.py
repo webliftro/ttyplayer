@@ -142,6 +142,9 @@ class RemoteClient:
     def clear_others(self):
         return self.command("clear_others")
 
+    def start_over(self):
+        return self.command("start_over")
+
     def move(self, source, target):
         """Move a row of the server's queue; False, sending nothing, when either row is off the queue, as MpvClient."""
         with self.queue_lock:
@@ -288,8 +291,11 @@ class RemoteApp(tui.TtyplayerApp):
         self.token = token
         self.sub_title = f"remote: {urlsplit(url).netloc or url}"
 
-    def connect(self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True):
-        """A RemoteClient; levels, radio, normalize and prefetch are the server's own settings there."""
+    def connect(
+        self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True,
+        resume_minimum_minutes=None,
+    ):
+        """A RemoteClient; levels, radio, normalize, prefetch and resume_minimum_minutes are the server's own settings there."""
         return RemoteClient(self.url, self.token, on_play=on_play, on_state=on_state, on_error=self.server_error)
 
     def on_mount(self):

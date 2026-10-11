@@ -24,7 +24,7 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, remote, settings, tui, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, positions, remote, settings, tui, youtube
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -37,9 +37,13 @@ VIDEOS = [
 class FakeClient(player.MpvClient):
     """Stands in for MpvClient: the real queue edits and status(), never mpv; records the calls."""
 
-    def __init__(self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True):
+    def __init__(
+        self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True,
+        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES,
+    ):
         self.video = video
         self.prefetch_asked = prefetch  # the setting the app passed; this fake mirrors nothing into mpv
+        self.resume_minimum_minutes = resume_minimum_minutes
         self.show_levels = levels
         self.normalize = normalize
         self.radio = radio
@@ -84,6 +88,9 @@ class FakeClient(player.MpvClient):
     def toggle_mute(self):
         self.calls.append(("toggle_mute",))
 
+    def start_over(self):
+        self.calls.append(("start_over",))
+
     def handle_control(self, name):
         return control.ok()
 
@@ -101,10 +108,12 @@ class FakeRemote:
 
 @pytest.fixture(autouse=True)
 def library(monkeypatch, tmp_path):
-    """history and favorites in tmp_path files, as tests/test_cli.py does; never the user's own."""
-    paths = {"history": tmp_path / "history.jsonl", "favorites": tmp_path / "favorites.jsonl"}
+    """history, favorites and positions in tmp_path files, as tests/test_cli.py does; never the user's own."""
+    paths = {"history": tmp_path / "history.jsonl", "favorites": tmp_path / "favorites.jsonl",
+             "positions": tmp_path / "positions.jsonl"}
     monkeypatch.setattr(history, "history_path", lambda: paths["history"])
     monkeypatch.setattr(favorites, "favorites_path", lambda: paths["favorites"])
+    monkeypatch.setattr(positions, "positions_path", lambda: paths["positions"])
     return paths
 
 
@@ -166,8 +175,11 @@ def served(monkeypatch):
 def clients():
     made = []
 
-    def factory(video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True):
-        made.append(FakeClient(video, on_play, on_state, levels, radio, normalize, prefetch))
+    def factory(
+        video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True,
+        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES,
+    ):
+        made.append(FakeClient(video, on_play, on_state, levels, radio, normalize, prefetch, resume_minimum_minutes))
         return made[-1]
 
     factory.made = made
@@ -186,6 +198,7 @@ PLAYBACK_KEYS = [
     ("minus", ("change_volume", -player.VOLUME_STEP)),
     ("plus", ("change_volume", player.VOLUME_STEP)),
     ("M", ("toggle_mute",)),
+    ("0", ("start_over",)),
 ]
 
 
@@ -1679,7 +1692,7 @@ async def test_palette_provider_offers_every_command_and_runs_its_action(clients
         hits = [hit async for hit in provider.discover()]
         assert [hit.text for hit in hits] == [
             "Search…", "Playlists", "Save queue as playlist…", "Next theme", "Settings…", "Help", "Quit", "Pause / resume", "Next", "Previous", "Mute",
-            "Sleep…", "Radio",
+            "Sleep…", "Radio", "Start over",
         ]
         ran = []
         for _, action, _ in tui.COMMANDS:
@@ -1839,6 +1852,7 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["prefetch", "true", "(default true)"],
             ["seek_seconds", "5", "(default 5)"],
             ["volume_step", "5", "(default 5)"],
+            ["resume_minimum_minutes", "10", "(default 10)"],
         ]
         await pilot.press("escape")
         await pilot.pause()
@@ -1920,7 +1934,7 @@ async def test_seek_and_volume_steps_set_in_settings_apply_on_the_next_keypress_
         await pilot.pause()
         await type_number(pilot, "seek_seconds", "12")
         await type_number(pilot, "volume_step", "3")
-        assert settings_rows(app)[-2:] == [["seek_seconds", "12", "(default 5)"], ["volume_step", "3", "(default 5)"]]
+        assert settings_rows(app)[-3:-1] == [["seek_seconds", "12", "(default 5)"], ["volume_step", "3", "(default 5)"]]
         assert (settings.load().seek_seconds, settings.load().volume_step) == (12, 3)
         await pilot.press("escape", "full_stop", "minus")
         await pilot.pause()
@@ -2480,6 +2494,48 @@ async def test_the_panel_shows_the_sleep_timer_while_it_is_armed(clients, served
         app.on_player_state(status(sleep=None))
         await pilot.pause()
         assert text(app, "#np-sleep") == ""
+
+
+# --- resume -----------------------------------------------------------------
+
+
+@drive
+async def test_the_panel_says_where_a_long_track_resumes_while_resumed_at_is_set(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        app.on_player_state(status(resumed_at=754.5))
+        await pilot.pause()
+        assert text(app, "#np-resume") == "↻ resumes at 12:34  "  # two spaces before the title
+        app.on_player_state(status(resumed_at=None))
+        await pilot.pause()
+        assert text(app, "#np-resume") == ""
+
+
+@drive
+async def test_ctrl_p_start_over_runs_the_same_action_as_the_0_key(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        await pilot.press(*"start over")
+        await pilot.pause(0.5)
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+        assert clients.made[0].calls[-1] == ("start_over",)
+
+
+@drive
+async def test_the_player_gets_the_resume_minimum_minutes_setting(clients, served):
+    app = tui.TtyplayerApp(client_factory=clients, resolve=lambda text, limit, source: VIDEOS,
+                           settings=settings.Settings(resume_minimum_minutes=25))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert clients.made[0].resume_minimum_minutes == 25
 
 
 class NoTimer:

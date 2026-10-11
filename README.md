@@ -12,6 +12,7 @@ ttyplayer play ... --video           open a video window as well
 ttyplayer play ... --limit 10        show more search results
 ttyplayer play ... --source soundcloud   search SoundCloud instead of YouTube
 ttyplayer play ... --radio           when the queue runs out, go on with related tracks
+ttyplayer play ... --from-start      start long tracks from the start, not where they were left
 ttyplayer play --source podcast <words...>   queue the newest episodes of the first podcast found
 
 ttyplayer search <words...>          list results with durations
@@ -43,6 +44,8 @@ Search looks on YouTube or SoundCloud. `--source soundcloud` (on `play`, `search
 ### Podcasts
 
 Podcasts are the third source. `ttyplayer podcast search the daily` (or `ttyplayer search --source podcast the daily`) lists the shows Apple's podcast directory finds (the iTunes Search API, no account); `ttyplayer podcast episodes 1` lists the newest episodes of the first one, with their dates (a feed URL works too, and `--limit 25` lists more). `ttyplayer play --source podcast the daily` skips the picking: it says which show it found and queues its newest episodes (`--limit`, 5 by default), newest first. The web remote's search, with `search_source` set to `podcast`, likewise lists the first show's newest episodes. In the TUI, start a search with `pc:` (`pc: lex fridman`): the Search tab lists shows, Enter opens a show's episodes in the same table, Enter plays an episode, and Backspace or Esc goes back to the shows. Episodes come straight from the show's RSS feed and mpv plays the audio file itself, so yt-dlp is not involved. They carry a `PC` tag and are kept in history, favorites and playlists like any track; the cover is the episode's or the show's artwork. Lyrics are not looked up for them, and radio stops after one, as after a SoundCloud track.
+
+Long tracks (episodes, long mixes, audiobooks: 10 minutes or more, `resume_minimum_minutes`) continue where you left them. While one plays ttyplayer keeps its position every 10 seconds of playback, and when you pause, stop, quit or go to another track; play it again later and it starts there, the TUI panel and the web remote saying `↻ resumes at 12:34` while it loads. A track played to its end, or left within its last 30 seconds, starts from the start next time; so does every short song. `ttyplayer play --from-start` ignores the saved positions for one run, and in the TUI `0` (Start over in Ctrl-P) jumps back to 0:00 and forgets the position. The positions are kept in `positions.jsonl` in the data folder, the newest 500.
 
 While ttyplayer plays in one terminal, any other terminal can drive it:
 
@@ -124,7 +127,7 @@ ttyplayer asks only for read access to your playlists (`playlist-read-private pl
 
 ## TUI
 
-`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, `pc:` for podcasts (see Podcasts above), or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results`, `Podcast results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
+`ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, `pc:` for podcasts (see Podcasts above), or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results`, `Podcast results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, start over, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
 
 Under the volume, the panel's level meter shows two bars, `L` and `R`, that follow the sound's peaks about ten times a second (empty at −60 dBFS and below, full at 0 dBFS; empty while paused). `ttyplayer config set show_levels false`, or Enter on `show_levels` in the Settings screen, hides them and takes mpv's measuring filter out.
 
@@ -144,6 +147,7 @@ Read along: the Lyrics tab (`6`) shows the playing track's lyrics, the line bein
 | table | `P` | save the queue as a playlist (asks for a name; an existing playlist of that name is replaced) |
 | table | `S` | settings: Enter flips a true / false one or asks for a number, `esc` closes |
 | table | `R` | radio on / off (`∞` in the panel; `∞ fetching…` while it looks up related tracks) |
+| anywhere | `0` | start over: play the track from 0:00 and forget where it was left |
 | table | `q` | quit and stop mpv (in the search box it is just a letter) |
 | table | `space` | pause / resume |
 | table | `n` / `p` | next / previous |
@@ -195,6 +199,7 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `prefetch` | `true` | mpv buffers the queue's next track while the current one plays and goes on to it with no gap (gapless where the source allows); `false` loads each track only when the last one ends |
 | `seek_seconds` | `5` | how far `,` / `.` (and left / right in `ttyplayer play`) seek (1–300) |
 | `volume_step` | `5` | how much `-` / `+` (and up / down in `ttyplayer play`) change the volume (1–50) |
+| `resume_minimum_minutes` | `10` | tracks at least this many minutes long start where they were left (0–600; `0` turns resuming off) |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged

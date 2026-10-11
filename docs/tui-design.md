@@ -65,7 +65,10 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   present. Idle it reads
   `Nothing playing — press / to search` (dim). It is built only from `MpvClient.status()`:
   `title`, `uploader`, `position`, `duration`, `paused`, `index`, `total`, `up_next`, `volume`,
-  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`, `radio`.
+  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`, `radio`, `resumed_at`.
+- After the state glyph, `↻ resumes at 12:34` while a long track loads at its saved position, from
+  `player.resume_text(status["resumed_at"])` (set from the load until the status after its first
+  playback-restart); empty otherwise. `0` (palette **Start over**) seeks to 0:00 and forgets the saved position.
 - After the volume, `zz 27:13` (`zz end` for `sleep end`) while a sleep timer is armed, from
   `player.sleep_text(status["sleep"])`; empty otherwise. It refreshes with each status, like the
   time. The palette's **Sleep…** opens a one-line modal prefilled with `30m` (`player.parse_sleep()`'s
