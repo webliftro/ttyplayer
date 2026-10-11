@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from ttyplayer import positions
+from ttyplayer import positions, utils
 
 
 def test_set_then_get_round_trips(tmp_path):
@@ -72,8 +72,8 @@ def test_a_write_replaces_the_file_through_a_temp_file(tmp_path, monkeypatch):
     path = tmp_path / "positions.jsonl"
     positions.set("a", 10, path)
     replaced = []
-    real_replace = positions.os.replace
-    monkeypatch.setattr(positions.os, "replace", lambda src, dst: replaced.append((src, dst)) or real_replace(src, dst))
+    real_replace = utils.os.replace
+    monkeypatch.setattr(utils.os, "replace", lambda src, dst: replaced.append((src, dst)) or real_replace(src, dst))
     positions.set("b", 20, path)
     [(temp, target)] = replaced
     assert target == path and temp != str(path) and str(tmp_path) in temp
@@ -87,7 +87,7 @@ def test_a_failed_write_leaves_the_file_as_it_was_and_no_temp_file(tmp_path, mon
     def fail(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr(positions.os, "replace", fail)
+    monkeypatch.setattr(utils.os, "replace", fail)
     with pytest.raises(OSError):
         positions.set("b", 20, path)
     assert positions.get("a", path) == 10 and positions.get("b", path) is None

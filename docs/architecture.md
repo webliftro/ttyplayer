@@ -47,9 +47,19 @@ src/ttyplayer/
                id = sha1(enclosure url)[:11], link = the enclosure URL mpv plays, uploader = the show).
                urllib, http(s) only, 5 s a request; every failure (a bad URL, a reply of the wrong
                shape, an unreadable feed) is one line of PodcastError, a 502 on the server. remember/remembered keep
-               the CLI's last show list for `podcast episodes <n>`.
+               the CLI's last show list for `podcast episodes <n>` (and, under another name, the last
+               `podcast subscriptions` list); feed_show(feed_url) is the Show a feed describes.
+  subscriptions.py The podcasts the user follows: subscriptions.json under data_path, feed URL -> name,
+               author, artwork, id, added, last_seen (the newest pubDate seen), written atomically.
+               add(show), remove(feed_url), all() -> [Subscription(show, added, last_seen)], get(feed_url),
+               mark_seen(feed_url, pub_date) (forward only); an unreadable file reads as empty with one
+               stderr line. refresh() -> [(show, [video], new_count)] (refresh_dated the same with pubDates)
+               fetches every feed through podcasts.dated_episodes on 4 threads, counts the episodes is_new
+               (after last_seen, else after added), sorts by newest episode; a failed feed is (show, [], None)
+               and on_error(show, error). It only stores and compares: fetching and parsing stay in podcasts.
   player.py    MpvClient: spawn mpv, IPC socket, listener thread, keys, queue, status line,
-               handle_control for the control socket; append(videos), the one "add to the end, play if
+               handle_control for the control socket (`append <json videos>` queues them, for
+               `podcast new --play`); append(videos), the one "add to the end, play if
                idle" path (the server's /api/queue and radio mode use it); radio mode (see below);
                resume: a long track loads with mpv's per-file start option at its positions.get(), and
                its time-pos is saved through positions.set() every POSITION_SAVE_SECONDS of playback
@@ -93,7 +103,8 @@ src/ttyplayer/
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                thumbnail_url, the one choice of a cover: the widest thumbnail up to 480 px, else the last,
                else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries,
-               append_entries, write_entries for the JSON lines files, stored_video for a line read back
+               append_entries, write_entries for the JSON lines files, stored_video for a line read back;
+               write_atomic(path, text), the temp file + os.replace that positions and subscriptions write with
                (its thumbnail as saved, None in a line from before thumbnails).
 ```
 
@@ -189,9 +200,13 @@ Enter in the search box -> spinner on; lookup worker thread: split_source(text, 
 m on the Search table   -> spinner on; the same worker: unseen(resolve(text, shown + search_limit), shown)
                            -> call_from_thread: rows appended, numbered on (or No more results)
 pc: words               -> the same worker, resolve -> youtube.search -> podcasts.search_shows: show rows (#, Show, Author), heading
-                           Podcast results; Enter on one -> load_episodes worker: podcasts.episodes(feed_url)
+                           Podcast results; Enter on one -> load_episodes worker: podcasts.dated_episodes(feed_url)
                            -> its episodes in the same ResultsTable (opened = the show), heading
                            Episodes of <show>; Esc / Backspace -> the shows again; m -> more episodes
+pc: alone               -> load_subscriptions worker: subscriptions.refresh() -> show rows (#, Show, Author, New),
+                           heading Subscribed, a toast per failed feed; Enter on a followed show -> load_episodes
+                           (podcasts.dated_episodes): episodes after its since tagged NEW, then mark_seen(newest);
+                           s on any show row -> subscriptions.add / remove, the ✓ follows
 Enter / a on a row      -> first use: client_factory(video, on_play=app.on_play,
    (Search, History,                                 on_state=on_player_state), control.serve(...)
     Favorites)             Enter: queue = that row and the rows after it in that table, play_current();

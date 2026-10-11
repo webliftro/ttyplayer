@@ -1,3 +1,5 @@
+import dataclasses
+import json
 import os
 import random
 import shutil
@@ -622,7 +624,7 @@ def podcast_episodes(show: str = typer.Argument(..., help="A feed URL, or a numb
     """List a podcast's newest episodes, with their dates"""
     from ttyplayer import podcasts, youtube
 
-    feed_url = show if youtube.is_url(show) else remembered_feed(show)
+    feed_url = show if youtube.is_url(show) else remembered_show(show).feed_url
     dated = lookup(podcasts.dated_episodes, feed_url, limit)
     if not dated:
         fail("No episodes in that feed")
@@ -631,14 +633,109 @@ def podcast_episodes(show: str = typer.Argument(..., help="A feed URL, or a numb
         typer.echo(f"{number:>2}. {date}  {video.title}  ({format_time(video.duration)})")
 
 
-def remembered_feed(text):
-    """The feed URL of show number text in the last podcast search; a one-line message and exit 1 for anything else."""
+def remembered_show(text):
+    """Show number text in the last podcast search; a one-line message and exit 1 for anything else."""
     from ttyplayer import podcasts
 
     show = podcasts.remembered(int(text)) if text.isdigit() else None
     if show is None:
         fail(f"No show number {text} in the last podcast search (ttyplayer podcast search <words>)")
-    return show.feed_url
+    return show
+
+
+@podcast_app.command(name="subscribe")
+def podcast_subscribe(show: str = typer.Argument(..., help="A feed URL, or a number from the last podcast search")):
+    """Follow a podcast: podcast subscriptions and podcast new list what it publishes"""
+    from ttyplayer import podcasts, subscriptions, youtube
+
+    if youtube.is_url(show):
+        found = lookup(podcasts.feed_show, show)
+    else:
+        found = remembered_show(show)
+    if subscriptions.add(found):
+        typer.echo(f"Subscribed: {found.name}")
+    else:
+        typer.echo(f"Already subscribed: {found.name}")
+
+
+@podcast_app.command(name="unsubscribe")
+def podcast_unsubscribe(show: str = typer.Argument(..., help="A feed URL, or a number from podcast subscriptions")):
+    """Stop following a podcast"""
+    from ttyplayer import podcasts, subscriptions, youtube
+
+    if youtube.is_url(show):
+        feed_url = show
+    else:
+        listed = podcasts.remembered(int(show), subscriptions.LAST_LISTING) if show.isdigit() else None
+        if listed is None:
+            fail(f"No show number {show} in the last podcast subscriptions (ttyplayer podcast subscriptions)")
+        feed_url = listed.feed_url
+    subscribed = subscriptions.get(feed_url)
+    if subscribed is None or not subscriptions.remove(feed_url):
+        fail(f"Not subscribed to {feed_url}")
+    typer.echo(f"Unsubscribed: {subscribed.show.name}")
+
+
+@podcast_app.command(name="subscriptions")
+def podcast_subscriptions():
+    """List the podcasts you follow, newest episode first, with how many episodes are new"""
+    from ttyplayer import podcasts, subscriptions
+
+    results = refreshed_subscriptions()
+    podcasts.remember([show for show, _, _ in results], subscriptions.LAST_LISTING)
+    for number, (show, _, count) in enumerate(results, start=1):
+        typer.echo(f"{number:>2}. {show.name} · {show.author} · {subscriptions.new_text(count)}")
+
+
+@podcast_app.command(name="new")
+def podcast_new(
+    play: bool = typer.Option(False, "--play", help="Queue them in the playing ttyplayer, or play them"),
+    limit: int = 20,
+):
+    """List the new episodes of the podcasts you follow, newest first; --play queues them and marks them seen"""
+    from ttyplayer import subscriptions
+
+    results = refreshed_subscriptions()
+    new = sorted(
+        ((published, video, show) for show, dated, count in results for published, video in dated[: count or 0]),
+        key=lambda each: each[0], reverse=True,
+    )[:limit]
+    if not new:
+        fail("No new episodes")
+    for number, (published, video, _) in enumerate(new, start=1):
+        typer.echo(f"{number:>2}. {published.date().isoformat()}  {video.title}  ({format_time(video.duration)})  {video.uploader}")
+    if play:
+
+        def mark_seen():
+            for published, _, show in new:
+                subscriptions.mark_seen(show.feed_url, published)
+
+        queue_or_play([video for _, video, _ in new], on_queued=mark_seen)
+
+
+def refreshed_subscriptions():
+    """subscriptions.refresh_dated(), a line on stderr per feed that failed; a message and exit 1 when none is
+    followed."""
+    from ttyplayer import subscriptions
+
+    if not subscriptions.all():
+        fail("No subscriptions yet (ttyplayer podcast subscribe <feed | number>)")
+    return subscriptions.refresh_dated(on_error=lambda show, error: typer.echo(f"{show.name}: {error}", err=True))
+
+
+def queue_or_play(videos, on_queued=None):
+    """Add videos to the queue of the ttyplayer playing in another terminal, or play them here when none is;
+    on_queued() runs once the player took them, before playback here blocks, and never when that failed."""
+    try:
+        reply = control.send(f"append {json.dumps([dataclasses.asdict(video) for video in videos])}")
+    except control.ControlError:
+        start_playback(videos, False, on_queued=on_queued)
+        return
+    if not reply.get("ok"):
+        fail(reply.get("error", "The player refused"))
+    if on_queued:
+        on_queued()
+    typer.echo(f"Queued {len(videos)} in the playing ttyplayer")
 
 
 @app.command()
@@ -784,12 +881,14 @@ def show_more(videos, more):
     videos.extend(fresh)
 
 
-def start_playback(videos, with_video, radio=False, resume=True):
+def start_playback(videos, with_video, radio=False, resume=True, on_queued=None):
     exit_if_empty(videos)
     client = start_mpv(with_video, radio=radio, resume=resume)
     for video in videos:
         client.add(video)
     client.play_current()
+    if on_queued:
+        on_queued()
     client.run()
 
 

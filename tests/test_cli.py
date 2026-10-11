@@ -1,5 +1,6 @@
 import dataclasses
 import datetime
+import json
 import os
 import random
 import shutil
@@ -1941,3 +1942,210 @@ def test_play_source_podcast_without_a_show_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(podcasts, "latest", lambda words, limit: (None, []))
     result = runner.invoke(app, ["play", "--source", "podcast", "zzz"])
     assert (result.exit_code, result.stderr) == (1, "No videos found\n")
+
+
+# --- podcast subscriptions --------------------------------------------------------
+
+
+def day(number):
+    return datetime.datetime(2026, 10, number, 12, tzinfo=datetime.timezone.utc)
+
+
+@pytest.fixture
+def subscribed(monkeypatch, tmp_path):
+    """XDG homes in tmp_path, SHOWS followed since Oct 1, and podcasts.dated_episodes answering FEEDS by URL (a
+    PodcastError value is raised); .asked records the URLs."""
+    from ttyplayer import subscriptions
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    for show in SHOWS:
+        subscriptions.add(show)
+        subscriptions.mark_seen(show.feed_url, day(1))
+    feeds = {
+        SHOWS[0].feed_url: [(day(5), episode(5)), (day(3), episode(3)), (day(1), episode(1))],
+        SHOWS[1].feed_url: [(day(4), episode(4)), (None, episode(9))],
+    }
+
+    def dated_episodes(url, limit, opener=None):
+        dated_episodes.asked.append(url)
+        if isinstance(feeds[url], Exception):
+            raise feeds[url]
+        return feeds[url][:limit]
+
+    dated_episodes.asked = []
+    dated_episodes.feeds = feeds
+    dated_episodes.real = podcasts.dated_episodes
+    monkeypatch.setattr(podcasts, "dated_episodes", dated_episodes)
+    return dated_episodes
+
+
+@pytest.mark.parametrize("show", ["2", "https://lexfridman.com/feed"])
+def test_podcast_subscribe_by_search_number_or_feed_url(show, monkeypatch, tmp_path):
+    from ttyplayer import subscriptions
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    podcasts.remember(SHOWS)
+    monkeypatch.setattr(podcasts, "feed_show", lambda url: dataclasses.replace(SHOWS[1], id=0))
+    result = runner.invoke(app, ["podcast", "subscribe", show])
+    assert (result.exit_code, result.stdout) == (0, "Subscribed: Lex Fridman Podcast\n")
+    assert [each.show.feed_url for each in subscriptions.all()] == ["https://lexfridman.com/feed"]
+    result = runner.invoke(app, ["podcast", "subscribe", show])
+    assert (result.exit_code, result.stdout) == (0, "Already subscribed: Lex Fridman Podcast\n")
+
+
+def test_podcast_subscribe_fails_in_one_line(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    result = runner.invoke(app, ["podcast", "subscribe", "3"])
+    assert result.exit_code == 1 and result.stderr.startswith("No show number 3 in the last podcast search")
+
+    def fail(url):
+        raise podcasts.PodcastError("not an RSS feed (no channel)")
+
+    monkeypatch.setattr(podcasts, "feed_show", fail)
+    result = runner.invoke(app, ["podcast", "subscribe", "https://a.example/feed"])
+    assert (result.exit_code, result.stderr) == (1, "Podcast lookup failed: not an RSS feed (no channel)\n")
+
+
+def test_feed_show_reads_the_channel():
+    import io
+
+    body = b"""<rss xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"><channel><title>Plain</title>
+        <itunes:author>Ann</itunes:author><itunes:image href="https://a.example/c.jpg"/></channel></rss>"""
+    show = podcasts.feed_show("https://a.example/feed", lambda request, timeout: io.BytesIO(body))
+    assert show == podcasts.Show("Plain", "Ann", "https://a.example/feed", "https://a.example/c.jpg", 0)
+
+
+def test_podcast_subscriptions_lists_numbered_shows_with_new_counts_and_failures_on_stderr(subscribed):
+    subscribed.feeds[SHOWS[1].feed_url] = podcasts.PodcastError("HTTP 404 from lexfridman.com")
+    result = runner.invoke(app, ["podcast", "subscriptions"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == " 1. The Daily · The New York Times · 2 new\n 2. Lex Fridman Podcast · Lex Fridman · failed\n"
+    assert result.stderr == "Lex Fridman Podcast: HTTP 404 from lexfridman.com\n"
+
+
+def test_podcast_unsubscribe_by_listed_number_or_feed_url(subscribed):
+    from ttyplayer import subscriptions
+
+    runner.invoke(app, ["podcast", "subscriptions"])  # The Daily is 1: its episode 5 is the newest
+    result = runner.invoke(app, ["podcast", "unsubscribe", "1"])
+    assert (result.exit_code, result.stdout) == (0, "Unsubscribed: The Daily\n")
+    result = runner.invoke(app, ["podcast", "unsubscribe", "https://lexfridman.com/feed"])
+    assert (result.exit_code, result.stdout) == (0, "Unsubscribed: Lex Fridman Podcast\n")
+    assert subscriptions.all() == []
+    result = runner.invoke(app, ["podcast", "unsubscribe", "1"])
+    assert (result.exit_code, result.stderr) == (1, "Not subscribed to https://feeds.example.com/daily\n")
+    result = runner.invoke(app, ["podcast", "unsubscribe", "5"])
+    assert result.exit_code == 1 and result.stderr.startswith("No show number 5 in the last podcast subscriptions")
+
+
+def test_podcast_subscriptions_and_new_without_any_fail(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    for command in ("subscriptions", "new"):
+        result = runner.invoke(app, ["podcast", command])
+        assert (result.exit_code, result.stderr) == (1, "No subscriptions yet (ttyplayer podcast subscribe <feed | number>)\n")
+
+
+def test_podcast_new_lists_new_episodes_across_shows_newest_first_and_marks_nothing_seen(subscribed):
+    from ttyplayer import subscriptions
+
+    result = runner.invoke(app, ["podcast", "new"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == (
+        " 1. 2026-10-05  Episode 5  (5:00)  The Daily\n"
+        " 2. 2026-10-04  Episode 4  (4:00)  The Daily\n"
+        " 3. 2026-10-03  Episode 3  (3:00)  The Daily\n"
+    )
+    assert {each.last_seen for each in subscriptions.all()} == {day(1)}
+    result = runner.invoke(app, ["podcast", "new", "--limit", "1"])
+    assert result.stdout == " 1. 2026-10-05  Episode 5  (5:00)  The Daily\n"
+
+
+def test_podcast_new_with_nothing_new_fails(subscribed):
+    from ttyplayer import subscriptions
+
+    for show in SHOWS:
+        subscriptions.mark_seen(show.feed_url, day(9))
+    result = runner.invoke(app, ["podcast", "new"])
+    assert (result.exit_code, result.stderr) == (1, "No new episodes\n")
+
+
+def test_podcast_new_play_queues_in_the_playing_ttyplayer_and_marks_what_it_queued_seen(subscribed, monkeypatch):
+    from ttyplayer import subscriptions
+
+    send = fake_send({"ok": True, "message": "Queued 2"})
+    monkeypatch.setattr(control, "send", send)
+    result = runner.invoke(app, ["podcast", "new", "--play", "--limit", "2"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.endswith("Queued 2 in the playing ttyplayer\n")
+    [name] = send.names
+    assert name.startswith("append ")
+    assert [utils.stored_video(entry) for entry in json.loads(name.removeprefix("append "))] == [episode(5), episode(4)]
+    assert subscriptions.get(SHOWS[0].feed_url).last_seen == day(5)
+    assert subscriptions.get(SHOWS[1].feed_url).last_seen == day(4)
+    result = runner.invoke(app, ["podcast", "new"])  # last_seen is a high-water mark: Episode 3, left out, is seen too
+    assert (result.exit_code, result.stderr) == (1, "No new episodes\n")
+
+
+def test_podcast_new_play_without_a_player_starts_one(subscribed, monkeypatch):
+    monkeypatch.setattr(control, "send", no_player)
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    FakeClient.instances = []
+    result = runner.invoke(app, ["podcast", "new", "--play"])
+    assert result.exit_code == 0, result.output
+    assert FakeClient.instances[0].queue == [episode(5), episode(4), episode(3)]
+    assert FakeClient.instances[0].ran
+
+
+def test_podcast_new_play_refused_by_the_player_fails_and_marks_nothing_seen(subscribed, monkeypatch):
+    from ttyplayer import subscriptions
+
+    monkeypatch.setattr(control, "send", fake_send({"ok": False, "error": "append takes a JSON list of videos"}))
+    result = runner.invoke(app, ["podcast", "new", "--play"])
+    assert (result.exit_code, result.stderr) == (1, "append takes a JSON list of videos\n")
+    assert {each.last_seen for each in subscriptions.all()} == {day(1)}
+
+
+def test_podcast_new_play_marks_seen_before_playback_blocks_and_not_when_mpv_cannot_start(subscribed, monkeypatch):
+    from ttyplayer import subscriptions
+
+    monkeypatch.setattr(control, "send", no_player)
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("mpv")
+
+    monkeypatch.setattr(player, "MpvClient", missing)
+    result = runner.invoke(app, ["podcast", "new", "--play"])
+    assert result.exit_code == 1 and result.stderr.startswith("mpv is not installed.")
+    assert {each.last_seen for each in subscriptions.all()} == {day(1)}
+
+    seen_when_run = []
+
+    class Recording(FakeClient):
+        def run(self):
+            seen_when_run.append(subscriptions.get(SHOWS[0].feed_url).last_seen)
+
+    monkeypatch.setattr(player, "MpvClient", Recording)
+    result = runner.invoke(app, ["podcast", "new", "--play"])
+    assert result.exit_code == 0, result.output
+    assert seen_when_run == [day(5)]
+
+
+def test_podcast_new_reads_every_new_episode_of_a_long_feed(subscribed, monkeypatch):
+    """25 new episodes in one real-parsed feed: subscriptions counts them all and --limit 20 lists 20."""
+    from ttyplayer import subscriptions
+
+    subscriptions.remove(SHOWS[1].feed_url)
+    items = "".join(
+        f"<item><title>Episode {n}</title><pubDate>{day(n).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>"
+        f'<enclosure url="https://media.example.org/{n}.mp3" type="audio/mpeg"/></item>'
+        for n in range(26, 1, -1)
+    )
+    monkeypatch.setattr(podcasts, "dated_episodes", subscribed.real)
+    monkeypatch.setattr(podcasts, "get", lambda url, opener: f"<rss><channel><title>D</title>{items}</channel></rss>".encode())
+    result = runner.invoke(app, ["podcast", "subscriptions"])
+    assert result.stdout == " 1. The Daily · The New York Times · 25 new\n"
+    result = runner.invoke(app, ["podcast", "new", "--limit", "20"])
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert (len(lines), lines[0][:24], lines[-1][:24]) == (20, " 1. 2026-10-26  Episode ", "20. 2026-10-07  Episode ")

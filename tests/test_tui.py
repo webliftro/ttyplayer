@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import datetime
 import functools
+import json
 import importlib.resources
 import pathlib
 import random
@@ -24,7 +25,9 @@ from textual.widgets import (
     TabbedContent,
 )
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, positions, remote, settings, tui, youtube
+from ttyplayer import (
+    art, control, favorites, history, lyrics, player, playlists, podcasts, positions, remote, settings, subscriptions, tui, youtube,
+)
 from ttyplayer.models import Video
 
 VIDEOS = [
@@ -115,6 +118,14 @@ def library(monkeypatch, tmp_path):
     monkeypatch.setattr(favorites, "favorites_path", lambda: paths["favorites"])
     monkeypatch.setattr(positions, "positions_path", lambda: paths["positions"])
     return paths
+
+
+@pytest.fixture(autouse=True)
+def subscriptions_file(monkeypatch, tmp_path):
+    """Podcast subscriptions in tmp_path too: pc: alone lists them, s and opening a show write them."""
+    path = tmp_path / "subscriptions.json"
+    monkeypatch.setattr(subscriptions, "subscriptions_path", lambda: path)
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -3058,27 +3069,30 @@ EPISODES = [
           link=f"https://media.example.com/{n}.mp3", thumbnail="https://lexfridman.com/cover.jpg")
     for n in (3, 2, 1)
 ]
+EPISODE_DATES = {episode.id: datetime.datetime(2026, 10, n, tzinfo=datetime.timezone.utc) for episode, n in zip(EPISODES, (3, 2, 1))}
 
 
 @pytest.fixture
 def fake_podcasts(monkeypatch):
-    """podcasts.search_shows answers SHOWS and podcasts.episodes EPISODES (or raise .error); both record their calls,
-    as does yt-dlp, which a podcast never reaches. Apps get the real resolve, whose youtube.search finds the shows."""
+    """podcasts.search_shows answers SHOWS and podcasts.dated_episodes EPISODES dated Oct 3, 2, 1 (or raise .error,
+    or for a feed in .errors its error); both record their calls, as does yt-dlp, which a podcast never reaches. Apps
+    get the real resolve, whose youtube.search finds the shows."""
     calls = []
 
     def search_shows(query, limit):
         calls.append(("search", query, limit))
         return SHOWS
 
-    def episodes(feed_url, limit):
+    def episodes(feed_url, limit, opener=None):
         calls.append(("episodes", feed_url, limit))
-        if episodes.error:
-            raise episodes.error
-        return EPISODES[:limit]
+        if episodes.error or feed_url in episodes.errors:
+            raise episodes.error or episodes.errors[feed_url]
+        return [(EPISODE_DATES[episode.id], episode) for episode in EPISODES[:limit]]
 
     episodes.error = None
+    episodes.errors = {}
     monkeypatch.setattr(podcasts, "search_shows", search_shows)
-    monkeypatch.setattr(podcasts, "episodes", episodes)
+    monkeypatch.setattr(podcasts, "dated_episodes", episodes)
     monkeypatch.setattr(youtube, "_extract", lambda target, **options: calls.append(("yt-dlp", target)) or {})
     search_shows.calls = episodes.calls = calls
     return episodes
@@ -3183,3 +3197,143 @@ async def test_a_search_after_the_shows_lists_videos_again(clients, served, fake
         await pilot.press("backspace")  # no show is open: nothing to go back to
         await pilot.pause()
         assert rows(app)[0] == [" 1", "Alpha", "Ann", "1:01"]
+
+
+# --- podcast subscriptions: pc: alone, s, NEW ------------------------------------
+
+
+def follow(show, seen_day=None):
+    """Subscribe to show, seen up to that day of October 2026 (None: never opened, added Oct 1)."""
+    subscriptions.add(show)
+    entries = json.loads(subscriptions.subscriptions_path().read_text())
+    entries[show.feed_url]["added"] = "2026-10-01T00:00:00+00:00"
+    subscriptions.subscriptions_path().write_text(json.dumps(entries))
+    if seen_day:
+        subscriptions.mark_seen(show.feed_url, datetime.datetime(2026, 10, seen_day, tzinfo=datetime.timezone.utc))
+
+
+@drive
+async def test_pc_alone_lists_the_shows_followed_with_their_new_counts(clients, served, fake_podcasts):
+    follow(SHOWS[0], seen_day=2)
+    follow(SHOWS[1])
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc:")
+        assert search_heading(app) == tui.SUBSCRIBED_HEADING
+        assert column_labels(app) == ["#", "Show", "Author", "New"]
+        assert rows(app) == [  # both newest on Oct 3: in the order followed
+            [" 1", "The Daily ✓", "The New York Times", "1 new"],  # Oct 3 only: seen up to Oct 2
+            [" 2", "Lex Fridman Podcast ✓", "Lex Fridman", "2 new"],  # added at Oct 1's midnight, Episode 1's date
+        ]
+        assert not [call for call in fake_podcasts.calls if call[0] in ("search", "yt-dlp")]
+
+
+@drive
+async def test_pc_alone_says_a_feed_failed_and_lists_it_as_failed(clients, served, fake_podcasts):
+    follow(SHOWS[0])
+    fake_podcasts.errors[SHOWS[0].feed_url] = podcasts.PodcastError("HTTP 404 from feeds.example.com")
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc:")
+        assert rows(app) == [[" 1", "The Daily ✓", "The New York Times", "failed"]]
+        assert toasts(app) == [("The Daily: Podcast lookup failed: HTTP 404 from feeds.example.com", "error")]
+
+
+@drive
+async def test_pc_alone_without_subscriptions_says_how_to_subscribe(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc:")
+        assert toasts(app) == [("No subscriptions yet: s on a show subscribes", "warning")]
+        assert fake_podcasts.calls == []
+
+
+@drive
+async def test_s_on_a_searched_show_subscribes_and_again_unsubscribes(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await pilot.press("down", "s")
+        await pilot.pause()
+        assert [subscription.show for subscription in subscriptions.all()] == [SHOWS[1]]
+        assert rows(app)[1] == [" 2", "Lex Fridman Podcast ✓", "Lex Fridman"]
+        assert app.query_one(tui.ResultsTable).cursor_row == 1
+        assert ("Subscribed: Lex Fridman Podcast", "information") in toasts(app)
+        await pilot.press("s")
+        await pilot.pause()
+        assert subscriptions.all() == []
+        assert rows(app)[1] == [" 2", "Lex Fridman Podcast", "Lex Fridman"]
+        assert ("Unsubscribed: Lex Fridman Podcast", "information") in toasts(app)
+
+
+@drive
+async def test_s_in_the_list_of_subscriptions_toggles_the_show_and_keeps_its_row(clients, served, fake_podcasts):
+    follow(SHOWS[0])
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc:")
+        await pilot.press("s")
+        await pilot.pause()
+        assert subscriptions.all() == []
+        assert rows(app) == [[" 1", "The Daily", "The New York Times", "2 new"]]
+        await pilot.press("s")
+        await pilot.pause()
+        assert [subscription.show for subscription in subscriptions.all()] == [SHOWS[0]]
+
+
+@drive
+async def test_s_on_an_episode_row_does_nothing(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        await pilot.press("s")
+        await pilot.pause()
+        assert subscriptions.all() == []
+
+
+@drive
+async def test_opening_a_followed_show_tags_its_new_episodes_then_marks_it_seen(clients, served, fake_podcasts):
+    follow(SHOWS[0], seen_day=1)
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc:")
+        assert rows(app)[0][3] == "2 new"
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        assert [row[1] for row in rows(app)] == ["PC Episode 3 NEW", "PC Episode 2 NEW", "PC Episode 1"]
+        assert subscriptions.get(SHOWS[0].feed_url).last_seen == EPISODE_DATES[EPISODES[0].id]
+        await pilot.press("f")  # the ♥ goes after NEW, and the tags stay
+        await pilot.pause()
+        assert rows(app)[0][1] == "PC Episode 3 NEW" + tui.FAVORITE_MARK
+        await pilot.press("escape")
+        await pilot.pause()
+        assert search_heading(app) == tui.SUBSCRIBED_HEADING
+        assert rows(app) == [[" 1", "The Daily ✓", "The New York Times", "0 new"]]
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        assert [row[1] for row in rows(app)] == ["PC Episode 3" + tui.FAVORITE_MARK, "PC Episode 2", "PC Episode 1"]
+
+
+@drive
+async def test_a_show_not_followed_has_no_new_tags(clients, served, fake_podcasts):
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc: lex")
+        await pilot.press("enter")
+        await settle_workers(pilot)
+        assert [row[1] for row in rows(app)] == ["PC Episode 3", "PC Episode 2", "PC Episode 1"]
+        assert not subscriptions.subscriptions_path().exists()
+
+
+@drive
+async def test_a_search_after_the_subscriptions_forgets_their_new_column(clients, served, fake_podcasts):
+    follow(SHOWS[0])
+    app = make_app(clients, resolve=tui.resolve)
+    async with run(app) as pilot:
+        await search(pilot, "pc:")
+        await search(pilot, "pc: lex")
+        assert search_heading(app) == "Podcast results"
+        assert column_labels(app) == ["#", "Show", "Author"]
+        assert rows(app)[0] == [" 1", "The Daily ✓", "The New York Times"]

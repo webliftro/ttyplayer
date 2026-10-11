@@ -18,7 +18,7 @@ from dataclasses import asdict
 
 from ttyplayer import control, history, positions
 from ttyplayer.models import Video
-from ttyplayer.utils import APP_NAME, WINDOWS, format_time, unseen
+from ttyplayer.utils import APP_NAME, WINDOWS, format_time, stored_video, unseen
 
 if WINDOWS:
     import msvcrt
@@ -794,6 +794,8 @@ class MpvClient:
             return self.sleep_control(name.removeprefix("sleep").strip())
         elif name.partition(" ")[0] == "radio":
             return self.radio_control(name.removeprefix("radio").strip())
+        elif name.partition(" ")[0] == "append":
+            return self.append_control(name.removeprefix("append").strip())
         elif name == "status":
             return control.ok(**self.status())
         elif name == "queue":
@@ -820,6 +822,18 @@ class MpvClient:
         elif text:
             return control.failure(f"Radio takes {RADIO_FORMS}, not {text!r}")
         return control.ok(message=radio_message(self.radio_status()))
+
+    def append_control(self, text):
+        """`append <JSON list of videos, as asdict() gives them>`: add them to the end of the queue, as append()."""
+        try:
+            entries = json.loads(text)
+            if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+                raise TypeError
+            videos = [stored_video(entry) for entry in entries]
+        except (ValueError, TypeError, KeyError, RecursionError):
+            return control.failure("append takes a JSON list of videos")
+        self.append(videos)
+        return control.ok(message=f"Queued {len(videos)}")
 
     # --- radio ------------------------------------------------------------
 

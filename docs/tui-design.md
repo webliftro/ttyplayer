@@ -40,6 +40,11 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   each title tagged `PC`), and Esc or Backspace goes back to the shows, the cursor on the one that was
   open. On an episode Enter, `a`, `f` and `A` work as on any result; `m` lists more shows or more episodes.
   The Lyrics tab says `No lyrics for podcasts` for an episode.
+  `pc:` with no words lists the shows the user follows instead (heading `Subscribed`, columns `#`, `Show`,
+  `Author`, `New`: `3 new`, or `failed` when the feed could not be read, with a toast), newest episode first.
+  `s` on any show row subscribes or unsubscribes; a followed show's name ends in ` ✓`. Opening a followed
+  show tags each episode published since it was last opened ` NEW` (before the ♥), then counts the show as
+  seen once the episodes render, so back on the list its count is `0 new`.
 - Tabs: **Search** (results), **Queue** (what will play, reorderable), **History**, **Favorites**,
   **Playlists**, **Lyrics**. Digits `1`–`6` switch tabs. Every tab but Lyrics is a `DataTable` with the same columns so the eye never
   re-learns the screen: `#`, `Title`, `Uploader`, `Length`. The row being played shows `▸` in `#`.
@@ -139,7 +144,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 | Search · History · Favorites · Queue row | `A` | add to a playlist: a picker of the playlists plus `New playlist…` (then the name modal) |
 | Search · History · Favorites row | `f` | favorite / unfavorite this row |
 | Search | `m` | more results (the next batch, same dedupe as the CLI's `m`); more shows or more episodes after `pc:` |
-| Search: podcast show row | Enter | open the show's episodes |
+| Search: podcast show row | Enter | open the show's episodes (a followed show's new ones tagged `NEW`; then seen) |
+| Search: podcast show row | `s` | subscribe / unsubscribe |
 | Search: a show's episodes | Esc / Backspace | back to the shows |
 | Queue row | Enter | jump to this item |
 | Queue row | `d` | remove from the queue |

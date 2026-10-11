@@ -1,11 +1,9 @@
 """Where each long track was left, one JSON object per line, newest at the bottom: the player resumes there."""
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
-from ttyplayer.utils import data_path, read_entries
+from ttyplayer.utils import data_path, read_entries, write_atomic
 
 RESUME_MINIMUM_MINUTES = 10  # the resume_minimum_minutes default: tracks this long or longer resume
 RESUME_TAIL = 30  # seconds: a track left this close to its end counts as finished, and starts over next time
@@ -52,13 +50,4 @@ def _without(entries, video_id):
 
 
 def _write(path, entries):
-    """Write entries to a temp file beside path, then replace path with it: a reader never sees half a file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.writelines(json.dumps(entry) + "\n" for entry in entries)
-        os.replace(temp, path)
-    except BaseException:
-        Path(temp).unlink(missing_ok=True)
-        raise
+    write_atomic(path, "".join(json.dumps(entry) + "\n" for entry in entries))

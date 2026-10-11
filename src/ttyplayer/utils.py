@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -124,6 +125,19 @@ def append_entries(path, entries):
 def write_entries(path, entries):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
+
+
+def write_atomic(path, text):
+    """Write text to a temp file beside path, then replace path with it: a reader never sees half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
 
 
 def is_video(entry):

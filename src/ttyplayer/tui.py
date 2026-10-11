@@ -30,12 +30,15 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, subscriptions, youtube
 from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
 HISTORY_LIMIT = 50
 FAVORITE_MARK = " ♥"
+NEW_MARK = " NEW"  # after the title of a followed show's episode published since the user last opened the show
+SUBSCRIBED_MARK = " ✓"  # after the name of a show the user follows
+SUBSCRIBED_HEADING = "Subscribed"  # the Search tab's label over pc: alone, the shows followed
 IDLE_TEXT = "Nothing playing — press / to search"
 LYRICS_IDLE_TEXT = "Nothing playing"
 LYRICS_LOADING_TEXT = "Looking up…"
@@ -44,6 +47,7 @@ LONG_SEEK_SECONDS = 30
 VIDEO_COLUMNS = ("Title", "Uploader", "Length")
 PLAYLIST_COLUMNS = ("Name", "Tracks", "Length")
 SHOW_COLUMNS = ("Show", "Author")
+SUBSCRIPTION_COLUMNS = ("Show", "Author", "New")
 NEW_PLAYLIST = "New playlist…"  # … is not allowed in a name, so it can never be a playlist's
 shuffler = random.Random()  # s on an open playlist; tests swap in a seeded one
 
@@ -88,10 +92,16 @@ def number_cell(number, playing):
     return f"{'▸' if playing else ' '}{number}"
 
 
-def video_cells(video, number, playing=False, favorite=False):
-    """One table row in column order: #, Title (♥ when a favorite), Uploader, Length."""
-    title = video.tagged_title + FAVORITE_MARK if favorite else video.tagged_title
+def video_cells(video, number, playing=False, favorite=False, new=False):
+    """One table row in column order: #, Title (NEW when new, ♥ when a favorite), Uploader, Length."""
+    title = video.tagged_title + (NEW_MARK if new else "") + (FAVORITE_MARK if favorite else "")
     return number_cell(number, playing), Text(title), Text(video.uploader), format_time(video.duration)
+
+
+def show_cells(show, number, subscribed, new_count=False):
+    """One row of shows in column order: #, Show (✓ when followed), Author, and with a new_count (False: none) New."""
+    cells = (number_cell(number, False), Text(show.name + (SUBSCRIBED_MARK if subscribed else "")), Text(show.author))
+    return cells if new_count is False else (*cells, subscriptions.new_text(new_count))
 
 
 def tab_label(title, count):
@@ -409,6 +419,8 @@ class VideoTable(DataTable):
 class VideoList(VideoTable):
     """A table whose rows are videos: videos holds them in row order, picked() is the cursor's."""
 
+    new_ids = frozenset()  # the ids of the rows tagged NEW: only the Search tab has any
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.videos = []
@@ -416,7 +428,7 @@ class VideoList(VideoTable):
     def show(self, videos, playing, favorite_ids):
         self.videos = list(videos)
         rows = [
-            video_cells(video, number, video == playing, video.id in favorite_ids)
+            video_cells(video, number, video == playing, video.id in favorite_ids, video.id in self.new_ids)
             for number, video in enumerate(self.videos, start=1)
         ]
         self.fill(rows)
@@ -435,27 +447,32 @@ class PickTable(VideoList):
 
 
 class ResultsTable(PickTable):
-    """Tab 1: search results; after a pc: search, the shows found or the episodes of the one opened, in the same table."""
+    """Tab 1: search results; after a pc: search, the shows found (pc: alone: the shows followed) or the episodes of
+    the one opened, in the same table."""
 
     BINDINGS = [
         Binding("m", "app.more", "More"),
+        Binding("s", "app.toggle_subscription", "Subscribe"),
         Binding("escape,backspace", "app.close_show", "Back to the shows", show=False),
     ]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.shows = []  # the shows of the last podcast search
+        self.new_counts = None  # {feed_url: new count} when the shows are the ones followed; None for a search's
         self.opened = None  # the show whose episodes are the rows
+        self.since = None  # the opened show's episodes published after this are NEW; None when it is not followed
 
     def listing_shows(self):
         return bool(self.shows) and self.opened is None
 
-    def show_shows(self, shows):
-        """One row per show: #, Show, Author."""
-        self.shows, self.opened, self.videos = list(shows), None, []
-        self.set_columns(SHOW_COLUMNS)
+    def show_shows(self, shows, new_counts=None):
+        """One row per show: #, Show, Author, and for the shows followed (new_counts given) New."""
+        self.shows, self.new_counts, self.opened, self.videos, self.new_ids = list(shows), new_counts, None, [], frozenset()
+        self.set_columns(SHOW_COLUMNS if new_counts is None else SUBSCRIPTION_COLUMNS)
+        followed = {subscription.show.feed_url for subscription in subscriptions.all()}
         self.fill(
-            (number_cell(number, False), Text(show.name), Text(show.author))
+            show_cells(show, number, show.feed_url in followed, False if new_counts is None else new_counts[show.feed_url])
             for number, show in enumerate(self.shows, start=1)
         )
 
@@ -463,7 +480,7 @@ class ResultsTable(PickTable):
         """Rows of videos: a search's (the shows forgotten), or the episodes of opened."""
         self.opened = opened
         if opened is None:
-            self.shows = []
+            self.shows, self.new_counts, self.new_ids = [], None, frozenset()
         self.show(videos, playing, favorite_ids)
 
     def show(self, videos, playing, favorite_ids):
@@ -772,8 +789,12 @@ class TtyplayerApp(App):
 
     def on_input_submitted(self, event: Input.Submitted):
         text = event.value.strip()
-        if text:
-            self.set_searching(True)
+        if not text:
+            return
+        self.set_searching(True)
+        if youtube.split_source(text, self.settings.search_source) == ("podcast", ""):
+            self.load_subscriptions(text)  # pc: alone
+        else:
             self.lookup(text)
 
     def action_more(self):
@@ -782,6 +803,8 @@ class TtyplayerApp(App):
         if table.opened is not None:
             self.set_searching(True)
             self.load_episodes(table.opened, table.videos)
+        elif table.new_counts is not None:
+            self.toast("No more results", severity="warning")  # the shows followed are all listed
         elif self.searched is not None:
             self.set_searching(True)
             self.lookup(self.searched, table.shows if table.listing_shows() else table.videos)
@@ -837,36 +860,72 @@ class TtyplayerApp(App):
 
     # --- podcasts -------------------------------------------------------
 
+    @work(thread=True, exclusive=True)
+    def load_subscriptions(self, text):
+        """pc: alone: the shows followed, refreshed, with how many episodes of each are new."""
+        failed = []
+        found = subscriptions.refresh(on_error=lambda show, error: failed.append((show, error)))
+        if not get_current_worker().is_cancelled:
+            self.call_from_thread(self.subscriptions_done, text, found, failed)
+
+    def subscriptions_done(self, text, found, failed):
+        self.set_searching(False)
+        for show, error in failed:
+            self.toast(f"{show.name}: {lookup_failed(error)}", severity="error")
+        if not found:
+            self.toast("No subscriptions yet: s on a show subscribes", severity="warning")
+            return
+        self.searched = text
+        self.query_one(TabbedContent).get_tab("search").label = SUBSCRIBED_HEADING
+        table = self.query_one(ResultsTable)
+        table.show_shows([show for show, _, _ in found], {show.feed_url: count for show, _, count in found})
+        table.move_cursor(row=0)
+        table.focus()
+
     def open_show(self, show):
         """The show's newest episodes in the Search tab, in place of the shows."""
         self.set_searching(True)
+        subscription = subscriptions.get(show.feed_url)
+        self.query_one(ResultsTable).since = subscription and subscription.since
         self.load_episodes(show)
 
     @work(thread=True, exclusive=True)
     def load_episodes(self, show, shown=None):
-        """The show's newest podcasts.EPISODES episodes; with shown, the ones after those."""
-        episodes, error = None, None
+        """The show's newest podcasts.EPISODES episodes, as (published, video); with shown, the ones after those."""
+        dated, error = None, None
         try:
             if shown is None:
-                episodes = podcasts.episodes(show.feed_url, podcasts.EPISODES)
+                dated = podcasts.dated_episodes(show.feed_url, podcasts.EPISODES)
             else:
-                episodes = unseen(podcasts.episodes(show.feed_url, len(shown) + podcasts.EPISODES), shown)
+                dated = podcasts.dated_episodes(show.feed_url, len(shown) + podcasts.EPISODES)
+                fresh = unseen([video for _, video in dated], shown)
+                dated = [pair for pair in dated if pair[1] in fresh]
         except podcasts.PodcastError as caught:
             error = caught
         if not get_current_worker().is_cancelled:
-            self.call_from_thread(self.episodes_done, show, episodes, error, shown)
+            self.call_from_thread(self.episodes_done, show, dated, error, shown)
 
-    def episodes_done(self, show, episodes, error, shown):
+    def episodes_done(self, show, dated, error, shown):
         self.set_searching(False)
+        table = self.query_one(ResultsTable)
         if error is not None:
             self.toast(lookup_failed(error), severity="error")
-        elif not episodes:
+            return
+        if not dated:
             self.toast("No more episodes" if shown else "No episodes in this feed", severity="warning")
-        elif shown:
+            return
+        episodes = [video for _, video in dated]
+        new_ids = {video.id for published, video in dated if subscriptions.is_new(published, table.since)}
+        if shown:
+            table.new_ids = table.new_ids | new_ids
             self.show_found(shown + episodes, show)
-        else:
-            self.query_one(TabbedContent).get_tab("search").label = f"Episodes of {show.name}"
-            self.show_results(episodes, show)
+            return
+        table.new_ids = frozenset(new_ids)
+        self.query_one(TabbedContent).get_tab("search").label = f"Episodes of {show.name}"
+        self.show_results(episodes, show)
+        # Seen once they are on screen: back on the shows, its New count is 0.
+        if subscriptions.mark_seen(show.feed_url, dated[0][0]) and table.new_counts is not None:
+            table.new_counts[show.feed_url] = 0
 
     def action_close_show(self):
         """Back from a show's episodes to the shows, the cursor on the one that was open."""
@@ -874,9 +933,23 @@ class TtyplayerApp(App):
         if table.opened is None:
             return
         row = table.shows.index(table.opened)
-        table.show_shows(table.shows)
+        table.show_shows(table.shows, table.new_counts)
         table.move_cursor(row=row)
-        self.query_one(TabbedContent).get_tab("search").label = results_heading("podcast")
+        heading = results_heading("podcast") if table.new_counts is None else SUBSCRIBED_HEADING
+        self.query_one(TabbedContent).get_tab("search").label = heading
+
+    def action_toggle_subscription(self):
+        """s on a show's row: follow it, or stop following it."""
+        table = self.query_one(ResultsTable)
+        if not table.listing_shows():
+            return
+        show = table.shows[table.cursor_row]
+        if subscriptions.remove(show.feed_url):
+            self.toast(f"Unsubscribed: {show.name}", severity="information")
+        else:
+            subscriptions.add(show)
+            self.toast(f"Subscribed: {show.name}", severity="information")
+        table.show_shows(table.shows, table.new_counts)
 
     # --- playing --------------------------------------------------------
 

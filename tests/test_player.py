@@ -304,6 +304,30 @@ def test_handle_control_stop_interrupts_the_main_thread(monkeypatch):
     assert client.sent == []
 
 
+def test_handle_control_append_queues_the_videos_after_the_rest(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    client.play_current()
+    client.idle = False
+    sent = json.dumps([dataclasses.asdict(B), dataclasses.asdict(EPISODE)])
+    assert client.handle_control(f"append {sent}") == {"ok": True, "message": "Queued 2"}
+    assert client.queue == [A, B, EPISODE]
+    assert client.loaded == [A.url]  # what plays goes on playing
+
+
+def test_handle_control_append_when_idle_plays_the_first_appended(monkeypatch):
+    client = make_remote_client([A], monkeypatch)
+    client.idle = True
+    client.handle_control(f"append {json.dumps([dataclasses.asdict(B)])}")
+    assert client.index == 1 and client.loaded == [B.url]
+
+
+@pytest.mark.parametrize("text", ["", "{}", "[1]", '[{"title": "no id"}]', "not json"])
+def test_handle_control_append_refuses_what_is_not_a_list_of_videos(monkeypatch, text):
+    client = make_remote_client([A], monkeypatch)
+    assert client.handle_control(f"append {text}") == {"ok": False, "error": "append takes a JSON list of videos"}
+    assert client.queue == [A]
+
+
 def test_handle_control_unknown_command(monkeypatch):
     client = make_remote_client([A], monkeypatch)
     assert client.handle_control("dance") == {"ok": False, "error": "unknown command dance"}

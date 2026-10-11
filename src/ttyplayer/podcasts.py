@@ -120,6 +120,29 @@ def parse_feed(body):
     ElementTree resolves no external entities and fetches no DTD, so an untrusted feed cannot make it read files
     or the network; the body's size is capped by get().
     """
+    channel = parse_channel(body)
+    show = text(channel, "title") or "Unknown"
+    items = [episode(item, show, channel_artwork(channel)) for item in channel.iter("item")]
+    dated = [each for each in items if each is not None]
+    # Newest first; a stable sort keeps the feed's order among the undated, which go last.
+    dated.sort(key=lambda pair: pair[0].timestamp() if pair[0] else float("-inf"), reverse=True)
+    return dated
+
+
+def feed_show(feed_url, opener=urllib.request.urlopen) -> Show:
+    """The show the feed at feed_url describes (its id 0: it does not come from iTunes)."""
+    channel = parse_channel(get(feed_url, opener))
+    return Show(
+        name=text(channel, "title") or "Unknown",
+        author=text(channel, f"{ITUNES}author") or "Unknown",
+        feed_url=feed_url,
+        artwork=channel_artwork(channel),
+        id=0,
+    )
+
+
+def parse_channel(body):
+    """The channel element of an RSS feed; PodcastError when body is not one."""
     try:
         channel = ElementTree.fromstring(body).find("channel")
     # LookupError: an encoding Python does not know; ValueError: one the parser cannot read (UTF-7, multi-byte)
@@ -127,13 +150,11 @@ def parse_feed(body):
         raise PodcastError(f"not an RSS feed ({error})") from error
     if channel is None:
         raise PodcastError("not an RSS feed (no channel)")
-    show = text(channel, "title") or "Unknown"
-    artwork = image(channel) or text(channel, "image/url")
-    items = [episode(item, show, artwork) for item in channel.iter("item")]
-    dated = [each for each in items if each is not None]
-    # Newest first; a stable sort keeps the feed's order among the undated, which go last.
-    dated.sort(key=lambda pair: pair[0].timestamp() if pair[0] else float("-inf"), reverse=True)
-    return dated
+    return channel
+
+
+def channel_artwork(channel):
+    return image(channel) or text(channel, "image/url")
 
 
 def episode(item, show, artwork):
@@ -194,14 +215,14 @@ def published(value):
     return date.replace(tzinfo=datetime.timezone.utc) if date and date.tzinfo is None else date
 
 
-def remember(shows):
-    """Keep the shows a search listed, so `podcast episodes <number>` can name one by its number."""
-    write_entries(data_path(LAST_SEARCH), [dataclasses.asdict(show) for show in shows])
+def remember(shows, name=LAST_SEARCH):
+    """Keep the shows a listing numbered (by default the last search's), so a command can name one by its number."""
+    write_entries(data_path(name), [dataclasses.asdict(show) for show in shows])
 
 
-def remembered(number):
-    """Show number (from 1) of the last search; None when there is none."""
-    shows = read_entries(data_path(LAST_SEARCH))
+def remembered(number, name=LAST_SEARCH):
+    """Show number (from 1) of the listing remember() kept under name; None when there is none."""
+    shows = read_entries(data_path(name))
     if not 1 <= number <= len(shows):
         return None
     return Show(**{field.name: shows[number - 1].get(field.name) for field in dataclasses.fields(Show)})
