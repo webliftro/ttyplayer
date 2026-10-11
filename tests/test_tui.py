@@ -26,7 +26,8 @@ from textual.widgets import (
 )
 
 from ttyplayer import (
-    art, control, favorites, history, lyrics, player, playlists, podcasts, positions, remote, settings, subscriptions, tui, youtube,
+    art, control, favorites, history, lyrics, player, playlists, podcasts, positions, remote, scrobble, settings, subscriptions, tui,
+    youtube,
 )
 from ttyplayer.models import Video
 
@@ -42,9 +43,12 @@ class FakeClient(player.MpvClient):
 
     def __init__(
         self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True,
-        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES,
+        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES, scrobbling=False, scrobble_podcasts=True, on_scrobble_error=None,
     ):
         self.video = video
+        self.scrobbling = scrobbling
+        self.scrobble_podcasts = scrobble_podcasts
+        self.on_scrobble_error = on_scrobble_error
         self.prefetch_asked = prefetch  # the setting the app passed; this fake mirrors nothing into mpv
         self.resume_minimum_minutes = resume_minimum_minutes
         self.show_levels = levels
@@ -186,11 +190,8 @@ def served(monkeypatch):
 def clients():
     made = []
 
-    def factory(
-        video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True,
-        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES,
-    ):
-        made.append(FakeClient(video, on_play, on_state, levels, radio, normalize, prefetch, resume_minimum_minutes))
+    def factory(*args, **kwargs):
+        made.append(FakeClient(*args, **kwargs))
         return made[-1]
 
     factory.made = made
@@ -1864,6 +1865,9 @@ async def test_s_lists_every_setting_with_its_default(clients, served):
             ["seek_seconds", "5", "(default 5)"],
             ["volume_step", "5", "(default 5)"],
             ["resume_minimum_minutes", "10", "(default 10)"],
+            ["lastfm_api_key", "", "(default )"],
+            ["scrobble", "true", "(default true)"],
+            ["scrobble_podcasts", "true", "(default true)"],
         ]
         await pilot.press("escape")
         await pilot.pause()
@@ -1945,7 +1949,10 @@ async def test_seek_and_volume_steps_set_in_settings_apply_on_the_next_keypress_
         await pilot.pause()
         await type_number(pilot, "seek_seconds", "12")
         await type_number(pilot, "volume_step", "3")
-        assert settings_rows(app)[-3:-1] == [["seek_seconds", "12", "(default 5)"], ["volume_step", "3", "(default 5)"]]
+        rows = settings_rows(app)
+        assert [rows[settings.KEYS.index(key)] for key in ("seek_seconds", "volume_step")] == [
+            ["seek_seconds", "12", "(default 5)"], ["volume_step", "3", "(default 5)"],
+        ]
         assert (settings.load().seek_seconds, settings.load().volume_step) == (12, 3)
         await pilot.press("escape", "full_stop", "minus")
         await pilot.pause()
@@ -3337,3 +3344,46 @@ async def test_a_search_after_the_subscriptions_forgets_their_new_column(clients
         assert search_heading(app) == "Podcast results"
         assert column_labels(app) == ["#", "Show", "Author"]
         assert rows(app)[0] == [" 1", "The Daily ✓", "The New York Times"]
+
+
+# --- scrobbling -------------------------------------------------------------
+
+
+@drive
+async def test_the_panel_shows_the_scrobble_mark_while_one_is_pending(clients, served):
+    app = make_app(clients)
+    async with run(app) as pilot:
+        for pending, shown in [(True, "♫"), (False, "")]:
+            app.on_player_state(status(scrobble_pending=pending))
+            await pilot.pause()
+            assert text(app, "#np-scrobble") == shown
+
+
+@drive
+async def test_the_player_scrobbles_once_logged_in_and_its_errors_are_toasts(clients, served):
+    scrobble.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
+    app = tui.TtyplayerApp(client_factory=clients, resolve=lambda text, limit, source: VIDEOS,
+                           settings=settings.Settings(scrobble_podcasts=False))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        client = clients.made[0]
+        assert (client.scrobbling, client.scrobble_podcasts) == (True, False)
+        failed = "Cannot reach Last.fm: offline"
+        await asyncio.to_thread(client.on_scrobble_error, failed)  # from the scrobble timer's thread
+        await pilot.pause()
+        assert toasts(app) == [(failed, "warning")]
+
+
+@drive
+async def test_the_player_does_not_scrobble_logged_out_or_with_scrobble_off(clients, served):
+    app = tui.TtyplayerApp(client_factory=clients, resolve=lambda text, limit, source: VIDEOS,
+                           settings=settings.Settings(scrobble=True))
+    async with run(app) as pilot:
+        await search(pilot)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert clients.made[0].scrobbling is False
+    scrobble.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
+    assert not scrobble.active(settings.Settings(scrobble=False))

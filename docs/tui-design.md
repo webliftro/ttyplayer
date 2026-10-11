@@ -24,7 +24,7 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
 │ ┌ Now playing ──────────────────────────────────────────────────────────┐
 │ │ ▓▓▓▓▓▓▓▓▓▓ ▶  Never Gonna Give You Up · Rick Astley             [2/5] │  art (show_art) · title bold accent
 │ │ ▓▓▓▓▓▓▓▓▓▓ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  1:23 / 3:33 │  ProgressBar
-│ │ ▓▓▓▓▓▓▓▓▓▓ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  ∞  Up next: lofi hip…  started 2.4s │  volume · sleep · radio · queue · timing
+│ │ ▓▓▓▓▓▓▓▓▓▓ 🔊 ▮▮▮▮▮▮▯▯▯▯ 60%  zz 27:13  ∞  ♫  Up next: lofi…  started 2.4s │  volume · sleep · radio · scrobble · queue · timing
 │ │ ▓▓▓▓▓▓▓▓▓▓ L ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │  level meter (show_levels)
 │ │ ▓▓▓▓▓▓▓▓▓▓ R ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯ │
 │ └───────────────────────────────────────────────────────────────────────┘
@@ -70,7 +70,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   present. Idle it reads
   `Nothing playing — press / to search` (dim). It is built only from `MpvClient.status()`:
   `title`, `uploader`, `position`, `duration`, `paused`, `index`, `total`, `up_next`, `volume`,
-  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`, `radio`, `resumed_at`.
+  `started_in` (the last one only when `player.timing()`), `levels`, `sleep`, `radio`, `resumed_at`,
+  `scrobble_pending`.
 - After the state glyph, `↻ resumes at 12:34` while a long track loads at its saved position, from
   `player.resume_text(status["resumed_at"])` (set from the load until the status after its first
   playback-restart); empty otherwise. `0` (palette **Start over**) seeks to 0:00 and forgets the saved position.
@@ -83,6 +84,11 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   `player.radio_text(status["radio"])`; empty while it is off. `R` (palette **Radio**) sends
   `radio toggle` through `handle_control`, the control socket's path, and toasts the reply
   (`Radio on` / `Radio off`); the `radio` setting is what a new player starts with.
+- After the radio, `♫` (one character) while the playing track waits to be scrobbled to Last.fm,
+  from `player.scrobble_text(status["scrobble_pending"])`: from its first playback-restart until the
+  scrobble timer fires, or the track is skipped or stopped; empty otherwise, and always when not logged
+  in or `scrobble` is off. A failed Last.fm call is a warning toast (`on_scrobble_error`, through
+  `call_from_thread`); a remote TUI shows the server's `♫` and the server reports its own errors.
 - Left of the lines, the art column (`Art`): the playing track's thumbnail, 10 cells wide and as
   tall as the panel's lines (five, three without levels), on `$panel`, one cell before the text.
   `textual_image`'s `Image` widget draws it: the real picture over the Kitty graphics protocol (TGP)
@@ -107,7 +113,8 @@ Textual 8 (the app, `tui.py`) over the same `MpvClient`, `youtube`, `history`, `
   on at once), `radio`, `normalize_loudness`
   (a new player starts with the loudness filter; Enter in the modal sends `set_normalize`, `af pre` /
   `af remove @norm`), `prefetch` (a new player starts with it; it is mpv's command line, so a
-  running player keeps what it started with), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
+  running player keeps what it started with), `scrobble` and `scrobble_podcasts` (a new player starts
+  with them, as with `prefetch`), `seek_seconds` and `volume_step`. The last two build the tables' `,` `.` `-` `+`
   bindings (`step_bindings()`, from `player.keys()`'s numbers) when a table mounts and again when
   either changes, so the next key press uses the new step and `?` shows it.
 - The Footer is Textual's own, fed by `BINDINGS` — key hints are never typed by hand twice. `?`

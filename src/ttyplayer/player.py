@@ -16,7 +16,7 @@ import threading
 import time
 from dataclasses import asdict
 
-from ttyplayer import control, history, positions
+from ttyplayer import control, history, positions, scrobble
 from ttyplayer.models import Video
 from ttyplayer.utils import APP_NAME, WINDOWS, format_time, stored_video, unseen
 
@@ -59,6 +59,7 @@ RADIO_NEEDS_YOUTUBE = "Radio needs a YouTube track to go on from"
 PREFETCH_OPTIONS = ["--prefetch-playlist=yes", "--gapless-audio=yes"]
 POSITION_SAVE_SECONDS = 10  # seconds of playback between two saves of a long track's position
 RESUME_MARK = "↻"
+SCROBBLE_MARK = "♫"  # the current track will be scrobbled to Last.fm once it has played long enough
 
 
 def keys(seek=SEEK_SECONDS, step=VOLUME_STEP):
@@ -265,6 +266,20 @@ def status_line(status):
     return line
 
 
+def scrobble_text(pending):
+    """The TUI panel's mark while the current track waits to be scrobbled; empty otherwise."""
+    return SCROBBLE_MARK if pending else ""
+
+
+def print_above(message):
+    """One line of its own on stderr, above the status line, which redraws below it."""
+    print(f"\r{message}\x1b[K", file=sys.stderr, flush=True)
+
+
+def in_background(function, *args):
+    threading.Thread(target=function, args=args, daemon=True).start()
+
+
 def resume_text(resumed_at):
     """↻ resumes at m:ss for status()["resumed_at"]; "" when the track starts from its start."""
     return "" if resumed_at is None else f"{RESUME_MARK} resumes at {format_time(resumed_at)}"
@@ -427,6 +442,12 @@ class MpvClient:
     resumed_at = None  # the saved position the loading track starts at, for status() until its restart's tick
     resume_expiring = False  # that track restarted: the next notify() is the last to show resumed_at
     prefetched_start = None  # the start the prefetched entry was appended with, its resumed_at once mpv goes on to it
+    scrobbling = False  # tell Last.fm what plays, and scrobble each track that plays long enough (scrobble.py)
+    scrobble_podcasts = True  # podcast episodes too
+    on_scrobble_error = staticmethod(print_above)  # (message) for a failed Last.fm call, on the thread that made it
+    scrobble_timer = None  # the threading.Timer that scrobbles the current track; None once it fired, or when none is due
+    scrobble_due = None  # (video, started_at) it scrobbles; the callback scrobbles only while it is still this one
+    background = staticmethod(in_background)  # (function, *args) on a worker thread; tests run it in place
 
     def __init__(
         self,
@@ -442,6 +463,9 @@ class MpvClient:
         volume_step=VOLUME_STEP,
         resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES,
         resume=True,
+        scrobbling=False,
+        scrobble_podcasts=True,
+        on_scrobble_error=None,
     ):
         # on_play(video) is called whenever a queued video starts; the CLI uses
         # it to keep history, the player itself knows nothing about files.
@@ -458,6 +482,10 @@ class MpvClient:
         self.keys = keys(seek_seconds, volume_step)
         self.resume_minimum_minutes = resume_minimum_minutes
         self.resume = resume
+        self.scrobbling = scrobbling
+        self.scrobble_podcasts = scrobble_podcasts
+        if on_scrobble_error:
+            self.on_scrobble_error = on_scrobble_error
         # A private socket (or pipe) per client, so two ttyplayers never share one mpv.
         self.socket_dir, self.socket_path = ipc_path()
         try:
@@ -584,6 +612,7 @@ class MpvClient:
         elif not self._mark_started():
             return False
         self._start_positioning()
+        self._start_scrobble()
         return True
 
     def poll(self):
@@ -708,6 +737,7 @@ class MpvClient:
         self.radio = False  # a lookup still running drops what it finds
         with self.queue_lock:
             self._save_position()
+            self._cancel_scrobble()
         self._disarm_sleep()
         with self.fade_lock:  # a fade, even of a cancelled timer, restores the volume before mpv goes
             pass
@@ -1229,9 +1259,10 @@ class MpvClient:
                 positions.set(self.positioned.id, position)
 
     def _leave_track(self):
-        """Another track loads, or this one is removed: save where it was left."""
+        """Another track loads, or this one is removed: save where it was left; a scrobble not due yet is dropped."""
         self._save_position()
         self.positioned = None
+        self._cancel_scrobble()
 
     def _finish_track(self):
         """The track played to its end: it starts from its start next time."""
@@ -1239,6 +1270,50 @@ class MpvClient:
             with contextlib.suppress(OSError):
                 positions.clear(self.positioned.id)
         self.positioned = None
+        self._cancel_scrobble()
+
+    # --- scrobbling: Last.fm hears what plays (scrobble.py) ----------------
+    # Under queue_lock too. The calls run on a worker or the timer's own thread, never the reader thread,
+    # and their errors go to on_scrobble_error: Last.fm never stops the player.
+
+    def _start_scrobble(self):
+        """The current track started: tell Last.fm, and arm the timer that scrobbles it once it played long enough.
+
+        The timer runs on wall-clock time, so a pause does not hold it back: Last.fm counts a track the user
+        started and kept for that long, and one Timer with no pause bookkeeping keeps that simple.
+        """
+        self._cancel_scrobble()
+        video = self.queue[self.index]
+        if not (self.scrobbling and scrobble.wanted(video, self.scrobble_podcasts)):
+            return
+        self.background(self._report_scrobble, scrobble.now_playing, video)
+        seconds = scrobble.threshold(video.duration if video.duration is not None else self.state.get("duration"))
+        if seconds is None:
+            return
+        self.scrobble_due = due = (video, time.time())
+        self.scrobble_timer = self.timer(seconds, self._scrobble_now, args=(due,))
+        self.scrobble_timer.daemon = True
+        self.scrobble_timer.start()
+
+    def _cancel_scrobble(self):
+        if self.scrobble_timer:
+            self.scrobble_timer.cancel()
+        self.scrobble_timer = self.scrobble_due = None
+
+    def _scrobble_now(self, due):
+        """The timer's callback, on its own thread: scrobble the track it was armed for, unless it was cancelled meanwhile."""
+        with self.queue_lock:
+            if self.scrobble_due is not due:
+                return  # cancelled as it fired
+            self.scrobble_timer = self.scrobble_due = None
+        self.notify()  # the ♫ goes
+        self._report_scrobble(scrobble.scrobble, *due)
+
+    def _report_scrobble(self, call, *args):
+        try:
+            call(*args)
+        except scrobble.ScrobbleError as error:
+            self.on_scrobble_error(str(error))
 
     def _start_over(self):
         if self.idle or not self.queue:
@@ -1334,6 +1409,7 @@ class MpvClient:
             "sleep": self.sleep_status(),
             "radio": self.radio_status(),
             "resumed_at": self.resumed_at,
+            "scrobble_pending": self.scrobble_timer is not None,
         }
 
     def notify(self):
@@ -1349,8 +1425,7 @@ class MpvClient:
     def render(self):
         status = self.status()
         if status["error"] and status["error"] != self.shown_error:
-            # One line of its own above the status line, which redraws below it.
-            print(f"\r{status['error']}\x1b[K", file=sys.stderr, flush=True)
+            print_above(status["error"])
         self.shown_error = status["error"]
         line = status_line(status)
         if status["total"] > 1:

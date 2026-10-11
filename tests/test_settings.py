@@ -19,12 +19,12 @@ def test_settings_fields_and_defaults():
         ("server_host", "127.0.0.1"), ("server_port", 7700), ("server_token", ""),
         ("remote_url", ""), ("stream_enabled", False), ("spotify_client_id", ""), ("show_levels", True), ("show_art", True), ("show_lyrics", True), ("search_source", "youtube"),
         ("radio", False), ("normalize_loudness", False), ("prefetch", True), ("seek_seconds", 5), ("volume_step", 5),
-        ("resume_minimum_minutes", 10),
+        ("resume_minimum_minutes", 10), ("lastfm_api_key", ""), ("scrobble", True), ("scrobble_podcasts", True),
     ]
     assert settings.KEYS == [
         "show_clock", "theme", "search_limit", "server_host", "server_port", "server_token", "remote_url", "stream_enabled",
         "spotify_client_id", "show_levels", "show_art", "show_lyrics", "search_source", "radio", "normalize_loudness", "prefetch", "seek_seconds", "volume_step",
-        "resume_minimum_minutes",
+        "resume_minimum_minutes", "lastfm_api_key", "scrobble", "scrobble_podcasts",
     ]
 
 

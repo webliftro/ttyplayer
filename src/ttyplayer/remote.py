@@ -293,9 +293,10 @@ class RemoteApp(tui.TtyplayerApp):
 
     def connect(
         self, video=False, on_play=None, on_state=None, levels=True, radio=False, normalize=False, prefetch=True,
-        resume_minimum_minutes=None,
+        resume_minimum_minutes=None, scrobbling=False, scrobble_podcasts=True, on_scrobble_error=None,
     ):
-        """A RemoteClient; levels, radio, normalize, prefetch and resume_minimum_minutes are the server's own settings there."""
+        """A RemoteClient; levels, radio, normalize, prefetch, resume_minimum_minutes and scrobbling are the server's own
+        settings there."""
         return RemoteClient(self.url, self.token, on_play=on_play, on_state=on_state, on_error=self.server_error)
 
     def on_mount(self):
@@ -307,12 +308,4 @@ class RemoteApp(tui.TtyplayerApp):
 
     def server_error(self, message):
         """on_error for RemoteClient: a toast, whichever thread the failure happened on."""
-        if self.closing:
-            return
-        if threading.get_ident() == self.app_thread:
-            self.toast(message, severity="error")
-            return
-        try:
-            self.call_from_thread(self.toast, message, severity="error")
-        except RuntimeError:
-            pass  # the app stopped while this message was on its way
+        self.toast_from_any_thread(message, severity="error")

@@ -8,11 +8,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import webbrowser
 from importlib import metadata
 
 import typer
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, settings
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, scrobble, settings
 from ttyplayer.utils import APP_NAME, data_path, format_time, parse_picks, unseen, video_from_info
 
 app = typer.Typer()
@@ -24,6 +25,8 @@ spotify_app = typer.Typer()
 app.add_typer(spotify_app, name="spotify")
 podcast_app = typer.Typer()
 app.add_typer(podcast_app, name="podcast")
+lastfm_app = typer.Typer()
+app.add_typer(lastfm_app, name="lastfm")
 
 # play, search and playlist add: where a search looks; empty means the search_source setting.
 SOURCE_OPTION = typer.Option("", "--source", help="Search youtube, soundcloud or podcast (default: search_source)")
@@ -595,6 +598,47 @@ def on_spotify(func, *args):
         fail(youtube_failed(error))
 
 
+@lastfm_app.callback()
+def lastfm_group():
+    """Scrobble what you play to Last.fm (your own API account, see the README's Last.fm section)"""
+
+
+@lastfm_app.command(name="login")
+def lastfm_login():
+    """Log in to Last.fm in the browser, once (needs the lastfm_api_key setting; asks for the shared secret)"""
+    api_key = load_settings().lastfm_api_key
+    if not api_key:
+        fail("Set lastfm_api_key first: ttyplayer config set lastfm_api_key <key> (see the README's Last.fm section)")
+    secret = typer.prompt("Shared secret", hide_input=True)
+    try:
+        name = scrobble.login(api_key, secret.strip(), webbrowser.open, typer.echo, input)
+    except scrobble.ScrobbleError as error:
+        fail(str(error))
+    typer.echo(f"Logged in as {name}")
+
+
+@lastfm_app.command(name="logout")
+def lastfm_logout():
+    """Forget the Last.fm login and shared secret"""
+    typer.echo("Logged out of Last.fm" if scrobble.logout() else "Not logged in to Last.fm")
+
+
+@lastfm_app.command(name="status")
+def lastfm_status():
+    """Show who is logged in to Last.fm, and how many scrobbles wait to be sent"""
+    name = scrobble.user()
+    if name is None:
+        typer.echo("Not logged in to Last.fm")
+        return
+    typer.echo(f"Logged in as {name}" + ("" if load_settings().scrobble else " (scrobble is off)"))
+    try:
+        waiting = scrobble.queued()
+    except scrobble.ScrobbleError as error:
+        fail(str(error))
+    if waiting:
+        typer.echo(f"{waiting} scrobbles wait to be sent")
+
+
 @podcast_app.callback()
 def podcast_group():
     """Find podcasts and list their episodes (play one with play --source podcast, or in the TUI with pc:)"""
@@ -893,8 +937,9 @@ def start_playback(videos, with_video, radio=False, resume=True, on_queued=None)
 
 
 def start_mpv(with_video, on_state=None, pcm=None, radio=False, resume=True):
-    """An MpvClient that keeps history (radio on with radio or the radio setting) and follows the playback settings
-    (long tracks resume where they were left unless resume is False), or a one-line message and exit 1 when mpv cannot start."""
+    """An MpvClient that keeps history (radio on with radio or the radio setting), scrobbles once logged in to Last.fm,
+    and follows the playback settings (long tracks resume where they were left unless resume is False), or a one-line
+    message and exit 1 when mpv cannot start."""
     current = load_settings()
     try:
         return player.MpvClient(
@@ -910,6 +955,8 @@ def start_mpv(with_video, on_state=None, pcm=None, radio=False, resume=True):
             volume_step=current.volume_step,
             resume_minimum_minutes=current.resume_minimum_minutes,
             resume=resume,
+            scrobbling=scrobble.active(current),
+            scrobble_podcasts=current.scrobble_podcasts,
         )
     except FileNotFoundError:
         fail(f"mpv is not installed. {mpv_install_hint()}")

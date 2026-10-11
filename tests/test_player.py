@@ -1,5 +1,6 @@
 import concurrent.futures
 import dataclasses
+import io
 import json
 import os
 import socket
@@ -11,7 +12,7 @@ import time
 
 import pytest
 
-from ttyplayer import control, player, positions, utils, youtube
+from ttyplayer import control, player, positions, scrobble, utils, youtube
 from ttyplayer.models import Video
 
 # Unix sockets and termios: the Windows paths are tested on every OS with WINDOWS patched.
@@ -280,6 +281,7 @@ def test_handle_control_status_reports_what_render_shows(monkeypatch):
         "sleep": None,
         "radio": False,
         "resumed_at": None,
+        "scrobble_pending": False,
     }
 
 
@@ -2927,3 +2929,177 @@ def test_status_line_shows_where_the_track_resumes():
     assert player.resume_text(None) == ""
     status = {**TIMED, "paused": False, "resumed_at": 754.5}
     assert player.status_line(status) == "1:23 / 4:56  Playing  ↻ resumes at 12:34  🔊 ▮▮▮▮▮▮▮▯▯▯ 70%  Song"
+
+
+# --- scrobbling ------------------------------------------------------------
+
+LONG_SONG = Video(id="s", title="Artist - Song", uploader="u", duration=600)
+JINGLE = Video(id="t", title="Artist - Jingle", uploader="u", duration=20)
+SHOW_EPISODE = Video(id="e", title="Episode", uploader="Show", duration=3600, source="podcast", link="https://x/e.mp3")
+
+
+def scrobbling_client(monkeypatch, videos=(LONG_SONG, B)):
+    """make_remote_client with scrobbling on: FakeTimers in .timers, workers run in place, the Last.fm calls
+    recorded in .lastfm (raising .failure when set), errors in .scrobble_errors, the clock at 1000."""
+    client = make_remote_client(list(videos), monkeypatch)
+    client.scrobbling = True
+    client.timers, client.lastfm, client.scrobble_errors = [], [], []
+    client.failure = None
+    client.timer = lambda *args, **kwargs: client.timers.append(FakeTimer(*args, **kwargs)) or client.timers[-1]
+    client.background = lambda function, *args: function(*args)
+    client.on_scrobble_error = client.scrobble_errors.append
+
+    def record(name):
+        def call(*args):
+            client.lastfm.append((name, *args))
+            if client.failure:
+                raise client.failure
+        return call
+
+    monkeypatch.setattr(scrobble, "now_playing", record("now_playing"))
+    monkeypatch.setattr(scrobble, "scrobble", record("scrobble"))
+    monkeypatch.setattr(player.time, "time", lambda: 1000.0)
+    return client
+
+
+def started(client, index=0):
+    client.jump(index)
+    client.handle_message(RESTART)
+
+
+def test_a_started_track_is_now_playing_and_arms_one_scrobble_timer(monkeypatch):
+    client = scrobbling_client(monkeypatch)
+    client.jump(0)
+    assert client.lastfm == [] and client.timers == []  # nothing before it sounds
+    client.handle_message(RESTART)
+    assert client.lastfm == [("now_playing", LONG_SONG)]
+    [timer] = client.timers
+    assert (timer.interval, timer.started, timer.daemon) == (scrobble.SCROBBLE_AFTER, True, True)
+    assert client.status()["scrobble_pending"] is True
+    client.handle_message(RESTART)  # a seek is no new start
+    assert len(client.timers) == 1 and len(client.lastfm) == 1
+
+
+def test_the_timer_scrobbles_the_track_with_its_start_time_and_the_mark_goes(monkeypatch):
+    client = scrobbling_client(monkeypatch)
+    started(client)
+    client.states = []
+    client.on_state = client.states.append
+    client.timers[0].fire()
+    assert client.lastfm[-1] == ("scrobble", LONG_SONG, 1000.0)
+    assert client.status()["scrobble_pending"] is False
+    assert client.states[-1]["scrobble_pending"] is False
+
+
+def test_the_timer_waits_for_half_the_track_or_mpvs_duration_when_the_queue_has_none(monkeypatch):
+    unknown = dataclasses.replace(LONG_SONG, duration=None)
+    client = scrobbling_client(monkeypatch, [Video(id="h", title="Song", uploader="u", duration=200), unknown])
+    started(client)
+    assert client.timers[-1].interval == 100
+    client.state["duration"] = 300.0
+    started(client, 1)
+    assert client.timers[-1].interval == 150
+
+
+def test_skipping_before_the_timer_fires_cancels_the_scrobble(monkeypatch):
+    client = scrobbling_client(monkeypatch)
+    started(client)
+    first = client.timers[0]
+    client.next()
+    assert first.cancelled and client.status()["scrobble_pending"] is False
+    first.fire()  # cancel() raced the timer
+    assert [call[0] for call in client.lastfm] == ["now_playing"]
+
+
+@pytest.mark.parametrize("stop", ["remove", "eof", "quit"])
+def test_stopping_the_track_cancels_the_scrobble(monkeypatch, stop):
+    client = scrobbling_client(monkeypatch, [LONG_SONG])
+    started(client)
+    if stop == "remove":
+        client.remove(0)
+    elif stop == "eof":
+        client.handle_message(EOF_EVENT)
+    else:
+        ready_to_quit(client)
+        client.quit()
+    assert client.timers[0].cancelled
+    assert client.status()["scrobble_pending"] is False
+
+
+def test_pause_does_not_hold_the_timer(monkeypatch):
+    client = scrobbling_client(monkeypatch)
+    started(client)
+    client.handle_message({"event": "property-change", "name": "pause", "data": True})
+    assert not client.timers[0].cancelled and client.status()["scrobble_pending"] is True
+
+
+def test_off_or_not_wanted_nothing_is_sent(monkeypatch):
+    client = scrobbling_client(monkeypatch, [LONG_SONG, SHOW_EPISODE, JINGLE])
+    client.scrobbling = False
+    started(client)
+    client.scrobbling = True
+    client.scrobble_podcasts = False
+    started(client, 1)
+    assert client.lastfm == [] and client.timers == []
+    client.scrobble_podcasts = True
+    started(client, 1)
+    assert client.lastfm == [("now_playing", SHOW_EPISODE)] and len(client.timers) == 1
+
+
+def test_a_track_too_short_to_scrobble_is_still_now_playing(monkeypatch):
+    client = scrobbling_client(monkeypatch, [JINGLE])
+    started(client)
+    assert client.lastfm == [("now_playing", JINGLE)] and client.timers == []
+
+
+def test_a_last_fm_failure_is_reported_never_raised(monkeypatch):
+    client = scrobbling_client(monkeypatch)
+    client.failure = scrobble.ScrobbleError("Cannot reach Last.fm: offline")
+    started(client)
+    client.timers[0].fire()
+    assert client.scrobble_errors == ["Cannot reach Last.fm: offline"] * 2
+    assert client.index == 0 and not client.idle
+
+
+def test_a_broken_login_or_reply_is_reported_never_raised(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    now_playing, scrobble_track = scrobble.now_playing, scrobble.scrobble
+    client = scrobbling_client(monkeypatch)
+    monkeypatch.setattr(scrobble, "now_playing", now_playing)
+    monkeypatch.setattr(scrobble, "scrobble", scrobble_track)
+    scrobble.session_path().parent.mkdir(parents=True)
+    scrobble.session_path().write_text("{}")
+    started(client)
+    scrobble.save_session({"api_key": "KEY", "secret": "SECRET", "session_key": "SK", "user": "ann"})
+    monkeypatch.setattr(scrobble.urllib.request, "urlopen", lambda request, timeout=None: io.BytesIO(b"null"))
+    client.timers[0].fire()
+    assert client.scrobble_errors == [
+        f"{scrobble.session_path()} is not a Last.fm login; run ttyplayer lastfm login again",
+        "Last.fm sent an unexpected reply to track.scrobble",
+    ]
+    assert scrobble.queued() == 1 and client.index == 0 and not client.idle
+
+
+def test_the_track_mpv_goes_on_to_is_scrobbled_too(monkeypatch):
+    following = dataclasses.replace(LONG_SONG, id="s2")
+    client = prefetching([LONG_SONG, following, C], monkeypatch)
+    client.scrobbling = True
+    client.timers, client.lastfm = [], []
+    client.timer = lambda *args, **kwargs: client.timers.append(FakeTimer(*args, **kwargs)) or client.timers[-1]
+    client.background = lambda function, *args: function(*args)
+    monkeypatch.setattr(scrobble, "now_playing", lambda video: client.lastfm.append(video))
+    client.handle_message(EOF_EVENT)
+    client.handle_message(START)
+    client.handle_message(RESTART)
+    assert client.lastfm == [following] and len(client.timers) == 1
+
+
+def test_scrobble_errors_print_one_line_above_the_status_line(capsys):
+    assert player.MpvClient.on_scrobble_error is player.print_above
+    player.print_above("Cannot reach Last.fm: offline")
+    assert capsys.readouterr().err == "\rCannot reach Last.fm: offline\x1b[K\n"
+
+
+def test_scrobble_text_is_one_mark_while_pending():
+    assert player.scrobble_text(True) == "♫" and player.scrobble_text(False) == ""

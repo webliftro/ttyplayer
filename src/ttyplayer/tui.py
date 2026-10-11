@@ -30,7 +30,7 @@ from textual.widgets import (
 )
 from textual.worker import get_current_worker
 
-from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, subscriptions, youtube
+from ttyplayer import art, control, favorites, history, lyrics, player, playlists, podcasts, scrobble, subscriptions, youtube
 from ttyplayer import settings as config
 from ttyplayer.utils import APP_NAME, format_time, unseen
 
@@ -215,6 +215,7 @@ class NowPlaying(Horizontal):
                 yield Static(id="np-volume")
                 yield Static(id="np-sleep")
                 yield Static(id="np-radio")
+                yield Static(id="np-scrobble")
                 yield Static(id="np-next", markup=False)
                 yield Static(id="np-timing")
             yield LevelMeter("L", id="np-level-left", classes="np-level")
@@ -247,6 +248,7 @@ class NowPlaying(Horizontal):
         self.query_one("#np-volume", Static).update(player.volume_meter(status["volume"], status["muted"]))
         self.query_one("#np-sleep", Static).update(player.sleep_text(status.get("sleep")))
         self.query_one("#np-radio", Static).update(player.radio_text(status.get("radio")))
+        self.query_one("#np-scrobble", Static).update(player.scrobble_text(status.get("scrobble_pending")))
         self.query_one("#np-next", Static).update(queue_text(status))
         self.query_one("#np-timing", Static).update(timing_text(status))
 
@@ -1006,6 +1008,9 @@ class TtyplayerApp(App):
                 normalize=self.settings.normalize_loudness,
                 prefetch=self.settings.prefetch,
                 resume_minimum_minutes=self.settings.resume_minimum_minutes,
+                scrobbling=scrobble.active(self.settings),
+                scrobble_podcasts=self.settings.scrobble_podcasts,
+                on_scrobble_error=self.scrobble_failed,
             )
         except FileNotFoundError:
             self.toast("mpv is not installed. Install it with: brew install mpv", severity="error")
@@ -1035,6 +1040,21 @@ class TtyplayerApp(App):
             self.call_from_thread(self.show_status, status)
         except RuntimeError:
             pass  # the app stopped while this status was on its way
+
+    def scrobble_failed(self, message):
+        """on_scrobble_error for the player: a Last.fm call failed on a worker or the scrobble timer's thread."""
+        self.toast_from_any_thread(message, severity="warning")
+
+    def toast_from_any_thread(self, message, severity):
+        if self.closing:
+            return
+        if threading.get_ident() == self.app_thread:
+            self.toast(message, severity=severity)
+            return
+        try:
+            self.call_from_thread(self.toast, message, severity=severity)
+        except RuntimeError:
+            pass  # the app stopped while this message was on its way
 
     def on_play(self, video):
         """on_play for the player: the CLI's history.record; the History tab follows on the next on_state.

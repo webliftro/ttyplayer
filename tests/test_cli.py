@@ -15,7 +15,8 @@ import pytest
 from typer.testing import CliRunner
 
 from ttyplayer import (
-    art, cli, control, favorites, history, lyrics, player, playlists, podcasts, positions, settings, spotify, utils, youtube,
+    art, cli, control, favorites, history, lyrics, player, playlists, podcasts, positions, scrobble, settings, spotify, utils,
+    youtube,
 )
 from ttyplayer.cli import app
 from ttyplayer.models import Video
@@ -108,10 +109,11 @@ class FakeClient:
     def __init__(
         self, video=False, on_play=None, on_state=None, pcm=None, levels=True, radio=False, normalize=False,
         prefetch=True, seek_seconds=player.SEEK_SECONDS, volume_step=player.VOLUME_STEP,
-        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES, resume=True,
+        resume_minimum_minutes=positions.RESUME_MINIMUM_MINUTES, resume=True, scrobbling=False, scrobble_podcasts=True,
     ):
         self.video = video
         self.radio = radio
+        self.scrobbling = (scrobbling, scrobble_podcasts)
         self.normalize = normalize
         self.prefetch = prefetch
         self.steps = (seek_seconds, volume_step)
@@ -182,6 +184,17 @@ def test_start_mpv_follows_the_resume_minimum_minutes_setting(monkeypatch, tmp_p
     assert cli.start_mpv(False).resume == (10, True)
     settings.update("resume_minimum_minutes", "0")
     assert cli.start_mpv(False, resume=False).resume == (0, False)
+
+
+def test_start_mpv_scrobbles_once_logged_in_unless_scrobble_is_off(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(player, "MpvClient", FakeClient)
+    assert cli.start_mpv(False).scrobbling == (False, True)
+    scrobble.save_session({"api_key": "k", "secret": "s", "session_key": "sk", "user": "ann"})
+    settings.update("scrobble_podcasts", "false")
+    assert cli.start_mpv(False).scrobbling == (True, False)
+    settings.update("scrobble", "false")
+    assert cli.start_mpv(False).scrobbling == (False, False)
 
 
 def test_play_from_start_starts_the_player_without_resuming(monkeypatch, tmp_path):
@@ -796,10 +809,10 @@ def test_config_path_prints_the_file(settings_file):
 @pytest.mark.parametrize(
     "args, message",
     [
-        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes\n"),
-        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes\n"),
+        (["get", "clock"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes, lastfm_api_key, scrobble, scrobble_podcasts\n"),
+        (["set", "clock", "1"], "Unknown setting 'clock'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes, lastfm_api_key, scrobble, scrobble_podcasts\n"),
         (["set", "search_limit", "99"], "search_limit must be between 1 and 50, not 99\n"),
-        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes\n"),
+        (["set", "show_clock", "nope"], "show_clock must be true or false, not 'nope'; valid keys: show_clock, theme, search_limit, server_host, server_port, server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, normalize_loudness, prefetch, seek_seconds, volume_step, resume_minimum_minutes, lastfm_api_key, scrobble, scrobble_podcasts\n"),
     ],
 )
 def test_config_errors_are_one_line_and_exit_1(settings_file, args, message):
@@ -2149,3 +2162,57 @@ def test_podcast_new_reads_every_new_episode_of_a_long_feed(subscribed, monkeypa
     assert result.exit_code == 0, result.output
     lines = result.stdout.splitlines()
     assert (len(lines), lines[0][:24], lines[-1][:24]) == (20, " 1. 2026-10-26  Episode ", "20. 2026-10-07  Episode ")
+
+
+# --- lastfm ------------------------------------------------------------------
+
+
+def test_lastfm_login_without_an_api_key_points_at_the_readme(config_home, monkeypatch):
+    monkeypatch.setattr(scrobble, "login", lambda *args: pytest.fail("login ran"))
+    result = runner.invoke(app, ["lastfm", "login"])
+    assert result.exit_code == 1
+    assert result.stderr == "Set lastfm_api_key first: ttyplayer config set lastfm_api_key <key> (see the README's Last.fm section)\n"
+
+
+def test_lastfm_login_asks_for_the_secret_without_showing_it_then_greets(config_home, monkeypatch):
+    settings.update("lastfm_api_key", "KEY")
+    calls = []
+
+    def login(api_key, secret, open_browser, echo, wait):
+        calls.append((api_key, secret, open_browser, wait))
+        return "ann"
+
+    monkeypatch.setattr(scrobble, "login", login)
+    result = runner.invoke(app, ["lastfm", "login"], input="SECRET\n")
+    assert result.exit_code == 0, result.output
+    assert calls == [("KEY", "SECRET", cli.webbrowser.open, input)]
+    assert "SECRET" not in result.output
+    assert result.output.endswith("Logged in as ann\n")
+    assert "SECRET" not in (config_home / "ttyplayer" / "settings.toml").read_text(encoding="utf-8")
+
+
+def test_lastfm_login_reports_a_refusal_in_one_line(config_home, monkeypatch):
+    settings.update("lastfm_api_key", "KEY")
+
+    def refused(*args):
+        raise scrobble.ScrobbleError("Last.fm did not accept the login (Invalid API key); run ttyplayer lastfm login again")
+
+    monkeypatch.setattr(scrobble, "login", refused)
+    result = runner.invoke(app, ["lastfm", "login"], input="SECRET\n")
+    assert result.exit_code == 1
+    assert result.stderr == "Last.fm did not accept the login (Invalid API key); run ttyplayer lastfm login again\n"
+
+
+def test_lastfm_status_and_logout(config_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert runner.invoke(app, ["lastfm", "status"]).output == "Not logged in to Last.fm\n"
+    scrobble.save_session({"api_key": "KEY", "secret": "SECRET", "session_key": "SK", "user": "ann"})
+    assert runner.invoke(app, ["lastfm", "status"]).output == "Logged in as ann\n"
+    scrobble.save_queue([{"artist": "A", "track": "T", "timestamp": 1}] * 3)
+    settings.update("scrobble", "false")
+    status = runner.invoke(app, ["lastfm", "status"]).output
+    assert status == "Logged in as ann (scrobble is off)\n3 scrobbles wait to be sent\n"
+    assert "SECRET" not in status and "SK" not in status
+    assert runner.invoke(app, ["lastfm", "logout"]).output == "Logged out of Last.fm\n"
+    assert not scrobble.session_path().exists()
+    assert runner.invoke(app, ["lastfm", "logout"]).output == "Not logged in to Last.fm\n"

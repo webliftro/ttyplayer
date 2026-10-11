@@ -65,6 +65,12 @@ src/ttyplayer/
                its time-pos is saved through positions.set() every POSITION_SAVE_SECONDS of playback
                (on the time-pos change, no thread of its own), on pause, quit and track change;
                end-file eof or the last RESUME_TAIL seconds clear it. status()["resumed_at"].
+               Scrobbling (with scrobbling=True, which cli and tui pass from scrobble.active()): a track's
+               first playback-restart sends scrobble.now_playing on a worker thread and arms one
+               threading.Timer for scrobble.threshold(duration) (wall-clock: a pause does not hold it);
+               a track change, removal, eof or quit cancels it; when it fires it calls scrobble.scrobble on
+               its own thread. ScrobbleError goes to on_scrobble_error (print_above in the CLI, a toast in the
+               TUI), never up into the player. status()["scrobble_pending"] while the timer is armed.
   control.py   Control socket: control_path, Server(handler), send(name) -> reply dict.
   history.py   JSON lines record of what was played; load() newest first, one per video.
   positions.py Where each long track was left: get(id), set(id, seconds), clear(id) on positions.jsonl
@@ -76,12 +82,27 @@ src/ttyplayer/
                order, repeats kept; names, load, create, delete, add, remove(n), move(i, j), replace;
                names checked against NAME, PlaylistError when bad or missing.
   settings.py  Settings dataclass (show_clock, theme, search_limit, server_host, server_port,
-               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, …), settings_path, load, save,
+               server_token, remote_url, stream_enabled, spotify_client_id, show_levels, show_art, show_lyrics, search_source, radio, …,
+               lastfm_api_key, scrobble, scrobble_podcasts), settings_path, load, save,
                update(key, text), change(key, value); a flat settings.toml, SettingsError when broken.
   spotify.py   ttyplayer spotify: login (OAuth PKCE, a one-shot callback listener on 127.0.0.1:8765, the
                tokens in spotify.json next to settings.toml, 0600), _get(path) (the token, refreshed when
                expired, and one Retry-After wait on a 429), user_playlists, playlist(ref) -> (name, [Track]),
                import_tracks: youtube.search per track, playlists.add of the first hit. SpotifyError.
+  scrobble.py  Last.fm API 2.0: sign(params, secret) (md5 of the sorted name+value pairs and the secret),
+               call(method, params, …), the one HTTPS helper (a signed POST, format=json, Last.fm's
+               {"error", "message"} as a one-line ScrobbleError); login (auth.getToken, the user allows it
+               at last.fm/api/auth in the browser and presses Enter, auth.getSession), the session, its API
+               key and shared secret in lastfm.json next to settings.toml, 0600; logout, user, active(settings);
+               threshold(duration), the one scrobble rule (half the length or 240 s, whichever first; 240 s
+               when unknown; None for 30 s or less); track(video) (lyrics.guess, a podcast's show as the
+               artist); now_playing(video) (track.updateNowPlaying, then the queue); scrobble(video,
+               started_at): the queued scrobbles and this one, BATCH (50) per track.scrobble, whatever is not
+               sent kept in scrobble-queue.jsonl under data_path (the newest 500, artist/track/timestamp only);
+               each scrobble's ignoredMessage is read: code 5 (daily limit) stays queued, 1-4 are dropped,
+               both reported; a reply, session file or queue line of the wrong shape is a ScrobbleError (a
+               reply without a whole-number ignoredMessage code for each scrobble, an int or a digit string,
+               never a float or bool, keeps the whole batch queued).
   art.py       Album art for the TUI's panel: fetch(url) -> bytes | None (urllib, 3 s, never raises) through a
                disk cache under data_path("art") (sha1 of the URL, 0600, the 200 most recently used kept),
                decode(bytes) -> PIL image | None, available() (the art extra: Pillow and textual-image),
@@ -102,7 +123,7 @@ src/ttyplayer/
                the watch URL from id for youtube, else link; tagged_title puts "SC " before a SoundCloud title, "PC " before a podcast episode's.
   utils.py     data_path, format_time, is_video, video_from_info, handle_many_entries, unseen, parse_picks;
                thumbnail_url, the one choice of a cover: the widest thumbnail up to 480 px, else the last,
-               else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries,
+               else thumbnail, else YouTube's hqdefault.jpg for the id; video_entry, read_entries (path, key="id": the key a line must have),
                append_entries, write_entries for the JSON lines files, stored_video for a line read back;
                write_atomic(path, text), the temp file + os.replace that positions and subscriptions write with
                (its thumbnail as saved, None in a line from before thumbnails).
@@ -118,18 +139,19 @@ Dependencies point one way:
 ```
 cli  ->  youtube, player, history, favorites, playlists, control, settings, lyrics, tui (imported only by the tui command),
          server (imported only by the serve command), remote (imported only by tui --remote),
-         spotify (imported only by the spotify commands)
+         spotify (imported only by the spotify commands), scrobble
 spotify  ->  youtube, playlists, settings (for the config dir only)
+scrobble  ->  lyrics (guess), utils, settings (for the config dir only, imported inside session_path: settings imports player)
 remote  ->  tui, server, control, models      (tui -> remote -> (HTTP) server: the server plays)
 server  ->  player, youtube, playlists, settings, control, history (through the client and callbacks cli wires)
-tui  ->  youtube, player, history, favorites, control, settings, lyrics, utils, models
+tui  ->  youtube, player, history, favorites, control, settings, lyrics, scrobble, utils, models
 lyrics  ->  art (its disk cache's store), utils
 settings  ->  utils
-player  ->  control
+player  ->  control, history, positions, scrobble
 youtube, player, history, favorites, playlists  ->  models, utils
 ```
 
-`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli`, `tui` and `server` imports `settings.py`, except `spotify.py`, which keeps its tokens beside it (`settings_path()`'s folder) and reads no setting. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
+`youtube.py`, `player.py`, `history.py`, `favorites.py` and `playlists.py` know nothing about each other or about Typer; nothing below `cli`, `tui` and `server` imports `settings.py`, except `spotify.py` and `scrobble.py`, which keep their tokens beside it (`settings_path()`'s folder); `scrobble.active(settings)` reads the setting its caller passes. The settings are read once per process: the `tui` command loads them and passes them to `TtyplayerApp(settings=…)`. `control.py` knows nothing about Typer or mpv: it moves JSON lines and calls a `handler(name) -> dict`. No business logic lives in Typer command bodies.
 
 ## Data flow
 

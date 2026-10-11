@@ -45,6 +45,9 @@ class Settings:
     seek_seconds: int = SEEK_SECONDS  # how far , . and left/right seek
     volume_step: int = VOLUME_STEP  # how much - + and up/down change the volume
     resume_minimum_minutes: int = RESUME_MINIMUM_MINUTES  # tracks this long start where they were left; 0: none
+    lastfm_api_key: str = ""  # the user's own Last.fm API account, for lastfm login (its secret stays in lastfm.json)
+    scrobble: bool = True  # once logged in to Last.fm, a new player scrobbles what it plays
+    scrobble_podcasts: bool = True  # podcast episodes are scrobbled too, the show as the artist
 
 
 DEFAULTS = Settings()

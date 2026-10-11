@@ -101,8 +101,8 @@ def video_entry(video, stamp):
     }
 
 
-def read_entries(path):
-    """The entries of a JSON-lines file in file order, skipping corrupt lines; [] if it is missing."""
+def read_entries(path, key="id"):
+    """The entries of a JSON-lines file in file order, skipping corrupt lines and those without key; [] if it is missing."""
     if not path.exists():
         return []
     entries = []
@@ -111,7 +111,7 @@ def read_entries(path):
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(entry, dict) and "id" in entry:
+        if isinstance(entry, dict) and key in entry:
             entries.append(entry)
     return entries
 

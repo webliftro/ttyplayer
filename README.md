@@ -130,6 +130,26 @@ Logging in needs a Spotify app of your own (free, once):
 
 ttyplayer asks only for read access to your playlists (`playlist-read-private playlist-read-collaborative`) and uses no client secret (the login is OAuth with PKCE). The login is kept in `spotify.json` next to `settings.toml`, readable only by you; it holds a refresh token, so treat it like a password. To revoke ttyplayer's access, remove the app under **Manage apps** on your Spotify account page (spotify.com/account/apps) and delete `spotify.json`.
 
+## Last.fm
+
+ttyplayer can scrobble what you play to your [Last.fm](https://www.last.fm) profile. When a track starts, Last.fm shows it as *now playing*; once it has played for half its length, or for 4 minutes when that comes first (Last.fm's own rule; 4 minutes when the length is unknown), it is scrobbled with the time it started. Tracks of 30 seconds or less are never scrobbled, as Last.fm takes none. Skipping or stopping a track before then drops it; pausing does not hold the clock back. The artist and title are guessed from the video's title and uploader, the same guess the Lyrics tab uses (`Artist - Song (Official Video)`, `Song | Artist`, an `Artist - Topic` channel, …); SoundCloud tracks are scrobbled the same way, and podcast episodes with the show as the artist (`scrobble_podcasts = false` leaves them out).
+
+```
+ttyplayer lastfm login    log in to Last.fm in the browser, once
+ttyplayer lastfm logout   forget the login and the shared secret
+ttyplayer lastfm status   who is logged in, and how many scrobbles wait to be sent
+```
+
+Logging in needs a Last.fm API account of your own (free, once):
+
+1. Open [last.fm/api/account/create](https://www.last.fm/api/account/create) while logged in to Last.fm, give the application any name and description (leave the callback URL empty), and submit.
+2. Copy its **API key** and run `ttyplayer config set lastfm_api_key <api key>`.
+3. Run `ttyplayer lastfm login`: it asks for the account's **Shared secret** (typed, not shown), then opens Last.fm in the browser; allow ttyplayer there, go back to the terminal and press Enter, and it says `Logged in as <your name>`.
+
+From then on every player (`play`, the TUI, `serve`) scrobbles; `ttyplayer config set scrobble false` (or Enter on `scrobble` in the TUI's Settings screen, for the next player) turns it off without logging out. While a track waits to be scrobbled the TUI's panel shows `♫`. A Last.fm error never stops the music: it is one line on stderr (a toast in the TUI). A scrobble that cannot be sent, offline for one, is kept in `scrobble-queue.jsonl` in the data folder (the newest 500, artist, title and time only) and sent, up to 50 per request, with the next track Last.fm hears about. One Last.fm turns down over its daily scrobble limit stays queued for later; one it will never take (a time too old, an artist it ignores) is dropped, and either is reported.
+
+The shared secret signs every request, so it is kept with the session key in `lastfm.json` next to `settings.toml`, readable only by you, and never in `settings.toml`: that file is meant to be read, copied and shared, `ttyplayer config` prints it, and its settings are typed on command lines that shells keep in their history. Treat `lastfm.json` like a password. To revoke ttyplayer's access, remove it under **Applications** in your Last.fm settings (last.fm/settings/applications) and run `ttyplayer lastfm logout`.
+
 ## TUI
 
 `ttyplayer tui` opens a full-screen player: a search box, Search / Queue / History / Favorites / Playlists / Lyrics tabs, and a now-playing panel. Type a search or paste a link and press Enter; start the search with `sc:` (`sc: boards of canada`) to search SoundCloud, `pc:` for podcasts (see Podcasts above), or `yt:` for YouTube, whatever `search_source` says. The Search tab's heading then reads `SoundCloud results`, `Podcast results` or `YouTube results`. Ctrl-P opens the command palette (search, playlists, save queue as playlist, next theme, settings, help, quit, pause, next, previous, mute, sleep, radio, start over, and Textual's own theme picker); **Sleep…** asks for a sleep timer (`30m` filled in; `end`, `off`, `1h30m`, … work as on the command line; Esc leaves the timer alone); `?` lists every key and command.
@@ -205,6 +225,9 @@ ttyplayer keeps its preferences in `~/.config/ttyplayer/settings.toml` (`$XDG_CO
 | `seek_seconds` | `5` | how far `,` / `.` (and left / right in `ttyplayer play`) seek (1–300) |
 | `volume_step` | `5` | how much `-` / `+` (and up / down in `ttyplayer play`) change the volume (1–50) |
 | `resume_minimum_minutes` | `10` | tracks at least this many minutes long start where they were left (0–600; `0` turns resuming off) |
+| `lastfm_api_key` | *none* | the API key of your own Last.fm API account, which `ttyplayer lastfm login` needs (see Last.fm above; the shared secret is never a setting) |
+| `scrobble` | `true` | once logged in to Last.fm, a new player sends now-playing and scrobbles; `false` stops it without logging out |
+| `scrobble_podcasts` | `true` | podcast episodes are scrobbled too, the show as the artist |
 
 ```
 ttyplayer config                     every setting, (default) when unchanged
