@@ -359,7 +359,7 @@ The script:
 
 It prints every command before running it. `TTYPLAYER_INSTALL_DRY_RUN=1 ./install.sh` and `install.ps1 -DryRun` only print them. If Homebrew (macOS) or winget (Windows) is missing, the script tells you how to install it and stops. If `ttyplayer` is not found in a new terminal, run `uv tool update-shell`.
 
-With Homebrew (macOS), once the `webliftro/homebrew-tap` tap exists, one command installs ttyplayer and mpv:
+With Homebrew (macOS), one command installs ttyplayer and mpv:
 
 ```
 brew install webliftro/tap/ttyplayer
