@@ -28,7 +28,10 @@ TIMEOUT = 10  # seconds one check may take
 BUDGET = 120  # seconds the whole run may take; the checks left after it are skipped
 PLAYBACK_WAIT = 3  # seconds mpv may take from loading the silent WAV to its playback-restart
 QUICK_SKIP = "skipped with --quick"
-QUERY = "ttyplayer selfcheck"  # the YouTube search; its first result is also the stream and the thumbnail checked
+# The YouTube search; its first result is also the stream and the thumbnail checked. A famous song, the one
+# LYRICS_TRACK probes, and not the app's own name: a phrase with no video makes a working search look broken.
+QUERY = "Queen Bohemian Rhapsody"
+NEEDS_SEARCH = ("skip", "needs the YouTube search check to pass")
 SOUNDCLOUD_QUERY = "lofi"
 PODCAST_QUERY = "npr news"
 LYRICS_TRACK = ("Queen", "Bohemian Rhapsody")  # a track LRCLIB has synced lyrics for
@@ -56,7 +59,9 @@ def run(checks, quick=False, timeout=TIMEOUT, budget=BUDGET, clock=time.monotoni
     raises fails with the exception's first line; one still running at its timeout fails and is left to its daemon
     thread. Once budget seconds have gone by, the checks left are skipped.
     """
+    global searches
     began = clock()
+    searches = {}
     results = []
     for name, check in checks:
         left = budget - (clock() - began)
@@ -107,12 +112,34 @@ def from_doctor(row):
     return cli.DOCTOR_STATUS[ok], text
 
 
+searches = {}  # search -> its first video for QUERY, or what it raised; one search per run(), which starts a new dict
+
+
 def first_video(search):
-    """The first YouTube result for QUERY; CheckFailed when there is none."""
-    videos = search(QUERY, 1)
-    if not videos:
-        raise CheckFailed(f"YouTube found nothing for {QUERY!r}")
-    return videos[0]
+    """The first YouTube result for QUERY; CheckFailed when there is none. Searched once per run(): a check that
+    asks while the search still runs (its check timed out) gets CheckFailed, it does not search again."""
+    run_searches = searches  # a search that outlives its run() answers into that run's dict, not the next one's
+    if search not in run_searches:
+        run_searches[search] = CheckFailed("the YouTube search is still running")
+        try:
+            videos = search(QUERY, 1)
+            if not videos:
+                raise CheckFailed(f"YouTube found nothing for {QUERY!r}")
+            run_searches[search] = videos[0]
+        except Exception as error:
+            run_searches[search] = error
+    found = run_searches[search]
+    if isinstance(found, Exception):
+        raise found
+    return found
+
+
+def searched_video(search):
+    """first_video for a check that needs it; None when the search failed, which that check skips on."""
+    try:
+        return first_video(search)
+    except Exception:
+        return None
 
 
 # --- mpv ----------------------------------------------------------------
@@ -174,7 +201,9 @@ def check_youtube_search(quick, search=youtube.search):
 def check_youtube_stream(quick, search=youtube.search, resolve=youtube.stream_url):
     if quick:
         return "skip", QUICK_SKIP
-    video = first_video(search)
+    video = searched_video(search)
+    if video is None:
+        return NEEDS_SEARCH
     if not resolve(video.url):
         raise CheckFailed(f"yt-dlp found no stream for {video.url}")
     return "ok", f"resolved {video.title}"
@@ -210,7 +239,9 @@ def check_art(quick, doctor=cli.check_art, search=youtube.search, fetch=art.down
     status, text = from_doctor(doctor())
     if status != "ok":
         return status, text
-    video = first_video(search)
+    video = searched_video(search)
+    if video is None:
+        return NEEDS_SEARCH
     if not video.thumbnail:
         raise CheckFailed(f"{video.title} has no thumbnail")
     data = fetch(video.thumbnail)

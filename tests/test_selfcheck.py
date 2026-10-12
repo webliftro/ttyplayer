@@ -1,3 +1,4 @@
+import functools
 import inspect
 import io
 import json
@@ -189,7 +190,7 @@ def searching(*videos):
 def test_youtube_search_names_the_first_result():
     search = searching(SONG)
     assert selfcheck.check_youtube_search(False, search=search) == ("ok", "found Song")
-    assert search.calls == [("ttyplayer selfcheck", 1, "youtube")]
+    assert search.calls == [("Queen Bohemian Rhapsody", 1, "youtube")]
 
 
 def test_youtube_search_with_no_result_fails():
@@ -270,6 +271,79 @@ def test_art_fails_without_a_thumbnail_or_its_bytes():
         selfcheck.check_art(False, doctor=lambda: (True, "album art"), search=searching(bare))
     with pytest.raises(selfcheck.CheckFailed, match="cannot fetch the thumbnail"):
         selfcheck.check_art(False, doctor=lambda: (True, "album art"), search=searching(SONG), fetch=lambda url: None)
+
+
+def youtube_checks(search, doctor=lambda: (True, "album art")):
+    """The three checks that use the YouTube search, all given the one fake search."""
+    return [
+        ("YouTube search", functools.partial(selfcheck.check_youtube_search, search=search)),
+        ("YouTube stream", functools.partial(selfcheck.check_youtube_stream, search=search, resolve=lambda url: "https://media")),
+        ("Album art", functools.partial(selfcheck.check_art, doctor=doctor, search=search, fetch=lambda url: b"jpeg")),
+    ]
+
+
+def test_the_youtube_search_runs_once_per_run():
+    search = searching(SONG)
+    results = selfcheck.run(youtube_checks(search))
+    assert [result.status for result in results] == ["ok", "ok", "ok"]
+    assert len(search.calls) == 1
+    selfcheck.run(youtube_checks(search))
+    assert len(search.calls) == 2
+
+
+def test_an_empty_search_fails_once_and_its_dependents_skip():
+    search = searching()
+    results = selfcheck.run(youtube_checks(search))
+    assert [(result.status, result.detail) for result in results] == [
+        ("fail", "YouTube found nothing for 'Queen Bohemian Rhapsody'"),
+        ("skip", "needs the YouTube search check to pass"),
+        ("skip", "needs the YouTube search check to pass"),
+    ]
+    assert len(search.calls) == 1
+    assert selfcheck.summary(results, 0).startswith("0 ok, 0 warn, 1 fail, 2 skipped")
+
+
+def test_a_search_that_raises_fails_once_with_its_error_and_its_dependents_skip():
+    calls = []
+
+    def search(query, limit, source="youtube"):
+        calls.append(query)
+        raise OSError("no route to host")
+
+    results = selfcheck.run(youtube_checks(search))
+    assert [(result.status, result.detail) for result in results] == [
+        ("fail", "no route to host"),
+        ("skip", "needs the YouTube search check to pass"),
+        ("skip", "needs the YouTube search check to pass"),
+    ]
+    assert calls == ["Queen Bohemian Rhapsody"]
+    assert selfcheck.summary(results, 0).startswith("0 ok, 0 warn, 1 fail, 2 skipped")
+
+
+def test_a_search_past_its_timeout_is_not_repeated_and_its_dependents_skip():
+    release = threading.Event()
+    calls = []
+
+    def search(query, limit, source="youtube"):
+        calls.append(query)
+        release.wait(5)
+        return [SONG]
+
+    try:
+        results = selfcheck.run(youtube_checks(search), timeout=0.05)
+    finally:
+        release.set()
+    assert [(result.status, result.detail) for result in results] == [
+        ("fail", "no answer in 0.05 s"),
+        ("skip", "needs the YouTube search check to pass"),
+        ("skip", "needs the YouTube search check to pass"),
+    ]
+    assert calls == ["Queen Bohemian Rhapsody"]
+
+
+def test_art_reports_a_missing_extra_before_looking_at_the_search():
+    results = selfcheck.run(youtube_checks(searching(), doctor=lambda: (None, "album art not installed: hint")))
+    assert (results[2].status, results[2].detail) == ("skip", "album art not installed: hint")
 
 
 # --- logins -------------------------------------------------------------
