@@ -482,9 +482,17 @@ def test_server_that_lets_a_wrong_token_in_fails():
         selfcheck.check_server(False, opener=lambda request, timeout: Opened())
 
 
-def test_server_that_answers_a_wrong_token_otherwise_fails():
+@pytest.mark.parametrize("prefix", ["", "x"])
+def test_server_that_answers_a_wrong_token_otherwise_fails(monkeypatch, prefix):
+    token_urlsafe = selfcheck.secrets.token_urlsafe
+    monkeypatch.setattr(selfcheck.secrets, "token_urlsafe", lambda nbytes: prefix + token_urlsafe(nbytes))
+    good = []
+
     def opener(request, timeout):
-        if request.headers["Authorization"].startswith("Bearer x"):
+        header = request.headers["Authorization"]
+        if not good:
+            good.append(header)
+        if header != good[0]:
             raise urllib.error.HTTPError(request.full_url, 500, "boom", {}, None)
         return selfcheck.direct_open(request, timeout=timeout)
 
