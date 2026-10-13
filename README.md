@@ -1,6 +1,43 @@
 # ttyplayer
 
-A modern YouTube player for the terminal. Search YouTube, queue videos and playlists, and play audio, or video too, through mpv: from the command line, or from a full-screen TUI. Keep a history and favorites, and drive the player from any other terminal.
+Play YouTube, SoundCloud and podcasts from the terminal: search, queue, a full-screen TUI and a web remote for your phone, with mpv doing the playing.
+
+[![PyPI](https://img.shields.io/pypi/v/ttyplayer)](https://pypi.org/project/ttyplayer/) ![Python](https://img.shields.io/pypi/pyversions/ttyplayer) ![License](https://img.shields.io/pypi/l/ttyplayer) [![Tests](https://github.com/webliftro/ttyplayer/actions/workflows/tests.yml/badge.svg)](https://github.com/webliftro/ttyplayer/actions/workflows/tests.yml)
+
+<!-- demo -->
+
+## Install
+
+```
+uv tool install ttyplayer
+pipx install ttyplayer
+curl -LsSf https://raw.githubusercontent.com/webliftro/ttyplayer/main/install.sh | sh
+```
+
+Pick one. Install `'ttyplayer[art]'` instead of `ttyplayer` for album art in the TUI. On Windows (PowerShell) the script is `irm https://raw.githubusercontent.com/webliftro/ttyplayer/main/install.ps1 | iex`; the scripts set up uv, mpv and the art extra for you.
+
+ttyplayer needs mpv: `brew install mpv` on macOS, `sudo apt-get install -y mpv` on Debian and Ubuntu, `winget install -e --id shinchiro.mpv` on Windows.
+
+## What it does
+
+- Search YouTube and play the audio through mpv; `--video` opens a video window as well.
+- Queue links, whole playlists or several search picks; keep a history, favorites and named playlists.
+- Search SoundCloud with `--source soundcloud`, or make it the default.
+- Podcasts: search shows, subscribe, list new episodes, import and export OPML.
+- Import a Spotify playlist: each track is found on YouTube and saved as a playlist.
+- A full-screen TUI with album art, synced lyrics and a stereo level meter.
+- `ttyplayer serve` plays headless, driven from a web remote; `--stream` sends the sound to your phone.
+- Radio mode goes on with related tracks when the queue runs out.
+- A sleep timer that fades out: `ttyplayer sleep 30m`.
+- Long tracks, such as episodes and mixes, resume where you left them.
+- Scrobbling to Last.fm and ListenBrainz.
+- `ttyplayer selfcheck` tries every online part once and prints a table of results.
+
+## Why ttyplayer
+
+ttyplayer bundles no player: it drives the mpv you install. The basics need no API keys and no accounts; Spotify, Last.fm and ListenBrainz are logins you add only if you want them. It is keyboard-first, in the terminal player and in the TUI. It runs on macOS, Linux and Windows. While it plays, any other terminal can pause it, skip a track or ask what is playing, and `ttyplayer serve` lets a phone do the same. If you have used ytfzf, yewtube, musikcube or termusic, ttyplayer lives in the same corner of the terminal.
+
+---
 
 ## Usage
 
@@ -332,7 +369,7 @@ Searching still happens on the laptop; the server looks each picked video up aga
 
 Security: the token is the only gate, and plain HTTP carries it in clear text. That is fine on a home network you trust; it is why `serve` listens on 127.0.0.1 unless told otherwise. To reach it beyond your LAN (a VPS, say), put it behind a reverse proxy with HTTPS. Anyone with the token can control the player, including stopping it; change the token with `ttyplayer config set server_token <new>` and restart.
 
-## Install
+## Install, in detail
 
 One command installs everything ttyplayer needs.
 
@@ -400,7 +437,7 @@ Instead of winget, `scoop install mpv` (from the `extras` bucket) or `choco inst
 
 For covers in the TUI, as the install scripts set up, install `'ttyplayer[art]'` in place of `ttyplayer` (it adds Pillow and textual-image).
 
-`uv tool install ttyplayer` installs from PyPI once ttyplayer is published there. Until then install straight from GitHub:
+`uv tool install ttyplayer` installs the latest release from PyPI. To run the unreleased main branch instead:
 
 ```
 uv tool install git+https://github.com/webliftro/ttyplayer
@@ -446,11 +483,13 @@ uv run pytest -q                                      # default suite, live test
 TTYPLAYER_LIVE=1 uv run pytest -q tests/test_live.py    # live tests, needs network
 ```
 
+What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+
 History lives in `$XDG_DATA_HOME/ttyplayer/history.jsonl`, by default `~/.local/share/ttyplayer/history.jsonl` (`%LOCALAPPDATA%\ttyplayer\history.jsonl` on Windows). Favorites live next to it in `favorites.jsonl`, and each playlist in `playlists/<name>.jsonl`. History and favorites kept under the player's earlier name are moved here on the first run.
 
 ### Releasing
 
-CI (`.github/workflows/tests.yml`) runs the suite on Linux and macOS on every push. Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds with `uv build` and publishes to PyPI through trusted publishing, so there is no token to store.
+CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu, macOS and Windows on every push. Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds with `uv build` and publishes to PyPI through trusted publishing, so there is no token to store.
 
 One-time setup on PyPI: create an account, then under "Publishing" add a pending GitHub publisher for the project `ttyplayer` with owner `webliftro`, repository `ttyplayer` and workflow `release.yml`. The first tagged release creates the project.
 
@@ -472,6 +511,10 @@ brew install --build-from-source ./Formula/ttyplayer.rb
 ## How it works
 
 yt-dlp resolves what to play: a search or a playlist becomes a list of videos, a link becomes one. mpv produces the sound, started in the background with a private IPC socket. ttyplayer talks to it in JSON over that socket, owns the keyboard, and redraws a one-line status. See `docs/architecture.md`.
+
+## Contributing
+
+Clone the repository, then run `uv sync` and `uv run pytest`. CI runs the suite on Ubuntu, macOS and Windows on every push. Issues and pull requests are welcome. Each release is listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
